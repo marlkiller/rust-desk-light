@@ -1,0 +1,14 @@
+[package]
+name = "rust-desk-light-client"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rdl-client"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.34.2"
+rust-desk-light-protocol = { path = "../protocol" }

@@ -1,0 +1,11 @@
+[package]
+name = "rust-desk-light-protocol"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "rdl_protocol"
+path = "src/lib.rs"
+

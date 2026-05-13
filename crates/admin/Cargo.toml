@@ -1,0 +1,14 @@
+[package]
+name = "rust-desk-light-admin"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rdl-admin"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.34.2"
+rust-desk-light-protocol = { path = "../protocol" }

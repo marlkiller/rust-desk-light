@@ -1,0 +1,16 @@
+[workspace]
+members = [
+    "crates/protocol",
+    "crates/server",
+    "crates/client",
+    "crates/admin",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+authors = ["rust-desk-light contributors"]
+license = "AGPL-3.0-or-later"
+repository = "https://local/rust-desk-light"
+
