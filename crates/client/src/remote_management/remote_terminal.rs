@@ -181,7 +181,22 @@ fn command_output_text(
     if text.is_empty() {
         text.push_str("ok");
     }
+    let text = compact_terminal_output(&text);
     truncate_lines(&text, max_lines)
+}
+
+fn compact_terminal_output(value: &str) -> String {
+    let mut lines = Vec::new();
+    let mut previous_blank = false;
+    for line in value.lines().map(str::trim_end) {
+        let blank = line.trim().is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        lines.push(line);
+        previous_blank = blank;
+    }
+    lines.join("\n").trim().to_string()
 }
 
 fn truncate_lines(value: &str, max_lines: usize) -> String {

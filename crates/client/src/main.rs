@@ -13,12 +13,17 @@ use std::fs;
 use std::io;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    mpsc::{self, Receiver, Sender},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::Duration;
 
 const INITIAL_RECONNECT_DELAY_MS: u64 = 500;
 const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
+const NETWORK_POLL_INTERVAL_MS: u64 = 16;
+const GUI_FRAME_INTERVAL_MS: u64 = 16;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -36,16 +41,19 @@ fn run_gui(config: Config) -> eframe::Result {
     let (input_tx, input_rx) = mpsc::channel();
     let app_config = config.clone();
     let network_identity = identity.clone();
+    let repaint_handle = Arc::new(Mutex::new(None));
+    let network_repaint_handle = repaint_handle.clone();
 
     thread::spawn(move || {
+        let event_sink = ClientEventSink::new(event_tx, Some(network_repaint_handle));
         if let Err(error) = client_network_loop(
             app_config,
             network_identity,
             true,
-            event_tx.clone(),
+            event_sink.clone(),
             input_rx,
         ) {
-            let _ = event_tx.send(ClientEvent::Log(format!("network stopped: {error}")));
+            event_sink.send(ClientEvent::Log(format!("network stopped: {error}")));
         }
     });
 
@@ -61,7 +69,12 @@ fn run_gui(config: Config) -> eframe::Result {
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(ClientApp::new(
-                cc, config, identity, event_rx, input_tx,
+                cc,
+                config,
+                identity,
+                event_rx,
+                input_tx,
+                repaint_handle,
             )))
         }),
     )
@@ -80,9 +93,11 @@ fn run_terminal(config: Config) -> io::Result<()> {
     println!("waiting for admin commands; press Ctrl+C to exit");
 
     thread::spawn(move || {
-        if let Err(error) = client_network_loop(config, identity, false, event_tx.clone(), input_rx)
+        let event_sink = ClientEventSink::new(event_tx, None);
+        if let Err(error) =
+            client_network_loop(config, identity, false, event_sink.clone(), input_rx)
         {
-            let _ = event_tx.send(ClientEvent::Log(format!("network stopped: {error}")));
+            event_sink.send(ClientEvent::Log(format!("network stopped: {error}")));
         }
     });
 
@@ -105,7 +120,7 @@ fn client_network_loop(
     config: Config,
     identity: LocalIdentity,
     gui_mode: bool,
-    event_tx: Sender<ClientEvent>,
+    event_sink: ClientEventSink,
     input_rx: Receiver<ClientInput>,
 ) -> io::Result<()> {
     let mut delay = INITIAL_RECONNECT_DELAY_MS;
@@ -114,17 +129,17 @@ fn client_network_loop(
             config.clone(),
             identity.clone(),
             gui_mode,
-            event_tx.clone(),
+            event_sink.clone(),
             &input_rx,
         ) {
             Ok(()) => delay = INITIAL_RECONNECT_DELAY_MS,
             Err(error) => {
-                let _ = event_tx.send(ClientEvent::Log(format!(
+                event_sink.send(ClientEvent::Log(format!(
                     "connect failed: {error}; retrying in {delay}ms"
                 )));
             }
         }
-        let _ = event_tx.send(ClientEvent::Disconnected);
+        event_sink.send(ClientEvent::Disconnected);
         thread::sleep(Duration::from_millis(delay));
         delay = (delay * 2).min(MAX_RECONNECT_DELAY_MS);
     }
@@ -134,16 +149,17 @@ fn client_connection_once(
     config: Config,
     identity: LocalIdentity,
     gui_mode: bool,
-    event_tx: Sender<ClientEvent>,
+    event_sink: ClientEventSink,
     input_rx: &Receiver<ClientInput>,
 ) -> io::Result<()> {
     let stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
-    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
-    let mut writer = stream.try_clone()?;
-    let mut next_message_id = 1u64;
-    send(
-        &mut writer,
-        &mut next_message_id,
+    stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(Duration::from_millis(NETWORK_POLL_INTERVAL_MS)))?;
+    let writer = stream.try_clone()?;
+    let (out_tx, out_rx) = mpsc::channel();
+    thread::spawn(move || client_writer_loop(writer, out_rx));
+    queue_message(
+        &out_tx,
         "",
         Message::Hello {
             role: Role::Client,
@@ -161,9 +177,8 @@ fn client_connection_once(
     loop {
         while let Ok(input) = input_rx.try_recv() {
             match input {
-                ClientInput::ChatReply { text } => send(
-                    &mut writer,
-                    &mut next_message_id,
+                ClientInput::ChatReply { text } => queue_message(
+                    &out_tx,
                     &session_token,
                     Message::CommandAck {
                         client_id: identity.id.clone(),
@@ -186,7 +201,7 @@ fn client_connection_once(
                 continue;
             }
             Err(error) => {
-                let _ = event_tx.send(ClientEvent::Log(format!("network read failed: {error}")));
+                event_sink.send(ClientEvent::Log(format!("network read failed: {error}")));
                 break;
             }
         };
@@ -194,41 +209,41 @@ fn client_connection_once(
         match message {
             Message::Session { token } => {
                 session_token = token;
-                let _ = event_tx.send(ClientEvent::Connected);
+                event_sink.send(ClientEvent::Connected);
             }
             Message::Command {
                 target_id,
                 command,
                 payload,
             } => {
-                let detail = commands::handle_command(&command, &payload, gui_mode);
-                let _ = event_tx.send(ClientEvent::Command {
+                event_sink.send(ClientEvent::Command {
                     command: command.clone(),
                     payload: payload.clone(),
                 });
                 if command == CommandKind::TextChat && gui_mode {
-                    let _ = event_tx.send(ClientEvent::ChatMessage { text: payload });
+                    event_sink.send(ClientEvent::ChatMessage {
+                        text: payload.clone(),
+                    });
                 }
-                send(
-                    &mut writer,
-                    &mut next_message_id,
-                    &session_token,
-                    Message::CommandAck {
-                        client_id: target_id,
-                        command,
-                        accepted: true,
-                        detail,
-                    },
-                )?;
+                let worker_tx = out_tx.clone();
+                let worker_token = session_token.clone();
+                thread::spawn(move || {
+                    let detail = commands::handle_command(&command, &payload, gui_mode);
+                    let _ = queue_message(
+                        &worker_tx,
+                        &worker_token,
+                        Message::CommandAck {
+                            client_id: target_id,
+                            command,
+                            accepted: true,
+                            detail,
+                        },
+                    );
+                });
             }
-            Message::Ping => send(
-                &mut writer,
-                &mut next_message_id,
-                &session_token,
-                Message::Pong,
-            )?,
+            Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
             other => {
-                let _ = event_tx.send(ClientEvent::Log(format!("server: {other:?}")));
+                event_sink.send(ClientEvent::Log(format!("server: {other:?}")));
             }
         }
     }
@@ -253,8 +268,12 @@ impl ClientApp {
         identity: LocalIdentity,
         event_rx: Receiver<ClientEvent>,
         input_tx: Sender<ClientInput>,
+        repaint_handle: Arc<Mutex<Option<egui::Context>>>,
     ) -> Self {
         apply_client_theme(&cc.egui_ctx);
+        if let Ok(mut handle) = repaint_handle.lock() {
+            *handle = Some(cc.egui_ctx.clone());
+        }
         Self {
             config,
             identity,
@@ -266,8 +285,10 @@ impl ClientApp {
         }
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(event) = self.event_rx.try_recv() {
+            changed = true;
             match event {
                 ClientEvent::Connected => {
                     self.connected = true;
@@ -292,6 +313,7 @@ impl ClientApp {
                 self.log_lines.remove(0);
             }
         }
+        changed
     }
 
     fn render_header(&self, ui: &mut egui::Ui) {
@@ -370,7 +392,7 @@ impl ClientApp {
 
 impl eframe::App for ClientApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.drain_events();
+        let changed = self.drain_events();
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
         ui.add_space(18.0);
@@ -386,8 +408,12 @@ impl eframe::App for ClientApp {
             let _ = self.input_tx.send(ClientInput::ChatReply { text });
         }
 
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
+        if changed {
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(GUI_FRAME_INTERVAL_MS));
+        }
     }
 }
 
@@ -468,8 +494,67 @@ enum ClientEvent {
     Log(String),
 }
 
+#[derive(Clone)]
+struct ClientEventSink {
+    tx: Sender<ClientEvent>,
+    repaint_handle: Option<Arc<Mutex<Option<egui::Context>>>>,
+}
+
+impl ClientEventSink {
+    fn new(
+        tx: Sender<ClientEvent>,
+        repaint_handle: Option<Arc<Mutex<Option<egui::Context>>>>,
+    ) -> Self {
+        Self { tx, repaint_handle }
+    }
+
+    fn send(&self, event: ClientEvent) {
+        let _ = self.tx.send(event);
+        if let Some(ctx) = self
+            .repaint_handle
+            .as_ref()
+            .and_then(|handle| handle.lock().ok().and_then(|ctx| ctx.clone()))
+        {
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
+    }
+}
+
 enum ClientInput {
     ChatReply { text: String },
+}
+
+struct ClientOutbound {
+    session_token: String,
+    message: Message,
+}
+
+fn client_writer_loop(mut writer: TcpStream, out_rx: Receiver<ClientOutbound>) {
+    let mut next_message_id = 1u64;
+    for outbound in out_rx {
+        if let Err(error) = send(
+            &mut writer,
+            &mut next_message_id,
+            &outbound.session_token,
+            outbound.message,
+        ) {
+            eprintln!("client write failed: {error}");
+            break;
+        }
+    }
+}
+
+fn queue_message(
+    out_tx: &Sender<ClientOutbound>,
+    session_token: &str,
+    message: Message,
+) -> io::Result<()> {
+    out_tx
+        .send(ClientOutbound {
+            session_token: session_token.to_string(),
+            message,
+        })
+        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))
 }
 
 fn send(

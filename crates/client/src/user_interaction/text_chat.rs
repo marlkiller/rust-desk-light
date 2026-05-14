@@ -59,7 +59,7 @@ pub(crate) fn render_window(ctx: &egui::Context, window: &mut Option<ChatWindow>
     let outbound_queue = window.outbound.clone();
     let close_requested = window.close_requested.clone();
 
-    ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
+    ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
         if ui.ctx().input(|input| input.viewport().close_requested()) {
             close_requested.store(true, Ordering::Relaxed);
         }
@@ -155,6 +155,8 @@ fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mu
             if let Ok(mut draft) = draft.lock() {
                 draft.clear();
             }
+            ui.ctx().request_repaint();
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }
     });
 }

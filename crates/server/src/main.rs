@@ -6,8 +6,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-const HEARTBEAT_INTERVAL_MS: u128 = 5_000;
-const STALE_PEER_MS: u128 = 20_000;
+const HEARTBEAT_INTERVAL_MS: u128 = 10_000;
+const STALE_PEER_MS: u128 = 45_000;
+const MAINTENANCE_TICK_MS: u64 = 100;
 
 #[derive(Debug)]
 enum ServerEvent {
@@ -73,6 +74,9 @@ fn accept_loop(listener: TcpListener, events_tx: Sender<ServerEvent>) {
 }
 
 fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>) {
+    if let Err(error) = stream.set_nodelay(true) {
+        eprintln!("peer {peer_id} set TCP_NODELAY failed: {error}");
+    }
     let (out_tx, out_rx) = mpsc::channel::<Message>();
     if events_tx
         .send(ServerEvent::Connected {
@@ -165,7 +169,7 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
     let mut peers: HashMap<usize, Peer> = HashMap::new();
 
     loop {
-        let event = match events_rx.recv_timeout(Duration::from_millis(500)) {
+        let event = match events_rx.recv_timeout(Duration::from_millis(MAINTENANCE_TICK_MS)) {
             Ok(event) => event,
             Err(RecvTimeoutError::Timeout) => {
                 maintain_peers(&mut peers);
@@ -303,10 +307,6 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                         if peers.get(&peer_id).and_then(|peer| peer.role.as_ref())
                             == Some(&Role::Client)
                         {
-                            println!(
-                                "audit event=heartbeat peer=#{peer_id} identity={}",
-                                peer_identity(peer_id, &peers)
-                            );
                             broadcast_clients(&peers);
                         }
                     }

@@ -22,6 +22,8 @@ use std::time::Duration;
 
 const INITIAL_RECONNECT_DELAY_MS: u64 = 500;
 const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
+const NETWORK_POLL_INTERVAL_MS: u64 = 16;
+const GUI_FRAME_INTERVAL_MS: u64 = 16;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -37,10 +39,13 @@ fn run_gui(config: Config) -> eframe::Result {
     let (input_tx, input_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
     let network_config = config.clone();
+    let repaint_handle = Arc::new(Mutex::new(None));
+    let network_repaint_handle = repaint_handle.clone();
 
     thread::spawn(move || {
-        if let Err(error) = admin_network_loop(network_config, input_rx, event_tx.clone()) {
-            let _ = event_tx.send(AdminEvent::Log(format!("network stopped: {error}")));
+        let event_sink = AdminEventSink::new(event_tx, Some(network_repaint_handle));
+        if let Err(error) = admin_network_loop(network_config, input_rx, event_sink.clone()) {
+            event_sink.send(AdminEvent::Log(format!("network stopped: {error}")));
         }
     });
 
@@ -54,7 +59,15 @@ fn run_gui(config: Config) -> eframe::Result {
     eframe::run_native(
         "rust-desk-light admin",
         native_options,
-        Box::new(move |cc| Ok(Box::new(AdminApp::new(cc, config, input_tx, event_rx)))),
+        Box::new(move |cc| {
+            Ok(Box::new(AdminApp::new(
+                cc,
+                config,
+                input_tx,
+                event_rx,
+                repaint_handle,
+            )))
+        }),
     )
 }
 
@@ -67,8 +80,9 @@ fn run_terminal(config: Config) -> io::Result<()> {
     let (input_tx, input_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
     thread::spawn(move || {
-        if let Err(error) = admin_network_loop(config, input_rx, event_tx.clone()) {
-            let _ = event_tx.send(AdminEvent::Log(format!("network stopped: {error}")));
+        let event_sink = AdminEventSink::new(event_tx, None);
+        if let Err(error) = admin_network_loop(config, input_rx, event_sink.clone()) {
+            event_sink.send(AdminEvent::Log(format!("network stopped: {error}")));
         }
     });
     thread::spawn(move || terminal_input_loop(input_tx));
@@ -113,20 +127,20 @@ fn run_terminal(config: Config) -> io::Result<()> {
 fn admin_network_loop(
     config: Config,
     input_rx: Receiver<AdminInput>,
-    event_tx: Sender<AdminEvent>,
+    event_sink: AdminEventSink,
 ) -> io::Result<()> {
     let mut delay = INITIAL_RECONNECT_DELAY_MS;
     loop {
-        match admin_connection_once(&config, &input_rx, &event_tx) {
+        match admin_connection_once(&config, &input_rx, &event_sink) {
             Ok(AdminConnectionExit::Quit) => return Ok(()),
             Ok(AdminConnectionExit::Disconnected) => delay = INITIAL_RECONNECT_DELAY_MS,
             Err(error) => {
-                let _ = event_tx.send(AdminEvent::Log(format!(
+                event_sink.send(AdminEvent::Log(format!(
                     "connect failed: {error}; retrying in {delay}ms"
                 )));
             }
         }
-        let _ = event_tx.send(AdminEvent::Disconnected);
+        event_sink.send(AdminEvent::Disconnected);
         thread::sleep(Duration::from_millis(delay));
         delay = (delay * 2).min(MAX_RECONNECT_DELAY_MS);
     }
@@ -140,11 +154,12 @@ enum AdminConnectionExit {
 fn admin_connection_once(
     config: &Config,
     input_rx: &Receiver<AdminInput>,
-    event_tx: &Sender<AdminEvent>,
+    event_sink: &AdminEventSink,
 ) -> io::Result<AdminConnectionExit> {
     let identity = load_admin_identity();
     let mut stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
-    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+    stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(Duration::from_millis(NETWORK_POLL_INTERVAL_MS)))?;
     let mut next_message_id = 1u64;
     send(
         &mut stream,
@@ -160,14 +175,14 @@ fn admin_connection_once(
             gui_available: true,
         },
     )?;
-    let session_token = wait_for_session(&mut stream, event_tx)?;
+    let session_token = wait_for_session(&mut stream, event_sink)?;
     send(
         &mut stream,
         &mut next_message_id,
         &session_token,
         Message::ListClients,
     )?;
-    let _ = event_tx.send(AdminEvent::Connected);
+    event_sink.send(AdminEvent::Connected);
 
     loop {
         while let Ok(input) = input_rx.try_recv() {
@@ -213,14 +228,14 @@ fn admin_connection_once(
                 continue;
             }
             Err(error) => {
-                let _ = event_tx.send(AdminEvent::Log(format!("network read failed: {error}")));
+                event_sink.send(AdminEvent::Log(format!("network read failed: {error}")));
                 return Ok(AdminConnectionExit::Disconnected);
             }
         };
 
         match message {
             Message::Clients(clients) => {
-                let _ = event_tx.send(AdminEvent::Clients(clients));
+                event_sink.send(AdminEvent::Clients(clients));
             }
             Message::CommandAck {
                 client_id,
@@ -228,7 +243,7 @@ fn admin_connection_once(
                 accepted,
                 detail,
             } => {
-                let _ = event_tx.send(AdminEvent::Ack {
+                event_sink.send(AdminEvent::Ack {
                     client_id,
                     command,
                     accepted,
@@ -242,13 +257,13 @@ fn admin_connection_once(
                 Message::Pong,
             )?,
             other => {
-                let _ = event_tx.send(AdminEvent::Log(format!("server: {other:?}")));
+                event_sink.send(AdminEvent::Log(format!("server: {other:?}")));
             }
         }
     }
 }
 
-fn wait_for_session(stream: &mut TcpStream, event_tx: &Sender<AdminEvent>) -> io::Result<String> {
+fn wait_for_session(stream: &mut TcpStream, event_sink: &AdminEventSink) -> io::Result<String> {
     loop {
         let message = match read_envelope(stream) {
             Ok(envelope) => envelope.message,
@@ -266,7 +281,7 @@ fn wait_for_session(stream: &mut TcpStream, event_tx: &Sender<AdminEvent>) -> io
         match message {
             Message::Session { token } => return Ok(token),
             other => {
-                let _ = event_tx.send(AdminEvent::Log(format!("server before session: {other:?}")));
+                event_sink.send(AdminEvent::Log(format!("server before session: {other:?}")));
             }
         }
     }
@@ -335,8 +350,12 @@ impl AdminApp {
         config: Config,
         input_tx: Sender<AdminInput>,
         event_rx: Receiver<AdminEvent>,
+        repaint_handle: Arc<Mutex<Option<egui::Context>>>,
     ) -> Self {
         apply_admin_theme(&cc.egui_ctx);
+        if let Ok(mut handle) = repaint_handle.lock() {
+            *handle = Some(cc.egui_ctx.clone());
+        }
         Self {
             config,
             input_tx,
@@ -352,8 +371,10 @@ impl AdminApp {
         }
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(event) = self.event_rx.try_recv() {
+            changed = true;
             match event {
                 AdminEvent::Connected => {
                     self.connected = true;
@@ -367,7 +388,6 @@ impl AdminApp {
                     }
                 }
                 AdminEvent::Clients(clients) => {
-                    self.push_log(format!("online clients refreshed: {}", clients.len()));
                     self.merge_clients(clients);
                     if self.selected_client_id.is_none() {
                         self.selected_client_id =
@@ -386,6 +406,7 @@ impl AdminApp {
                 self.log_lines.remove(0);
             }
         }
+        changed
     }
 
     fn push_log(&mut self, line: impl Into<String>) {
@@ -872,7 +893,7 @@ impl AdminApp {
             let table_selected_row = window.table_selected_row.clone();
             let status_notice = command_status_notice(&command, status, &detail);
 
-            ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
+            ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
                 if ui.ctx().input(|input| input.viewport().close_requested()) {
                     close_requested.store(true, Ordering::Relaxed);
                 }
@@ -942,7 +963,7 @@ impl AdminApp {
 
 impl eframe::App for AdminApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.drain_events();
+        let changed = self.drain_events();
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
         ui.add_space(18.0);
@@ -960,8 +981,12 @@ impl eframe::App for AdminApp {
         self.render_terminal_windows(ui.ctx());
         self.render_chat_windows(ui.ctx());
 
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
+        if changed {
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(GUI_FRAME_INTERVAL_MS));
+        }
     }
 }
 
@@ -1829,6 +1854,32 @@ enum AdminEvent {
         detail: String,
     },
     Log(String),
+}
+
+#[derive(Clone)]
+struct AdminEventSink {
+    tx: Sender<AdminEvent>,
+    repaint_handle: Option<Arc<Mutex<Option<egui::Context>>>>,
+}
+
+impl AdminEventSink {
+    fn new(
+        tx: Sender<AdminEvent>,
+        repaint_handle: Option<Arc<Mutex<Option<egui::Context>>>>,
+    ) -> Self {
+        Self { tx, repaint_handle }
+    }
+
+    fn send(&self, event: AdminEvent) {
+        let _ = self.tx.send(event);
+        if let Some(ctx) = self
+            .repaint_handle
+            .as_ref()
+            .and_then(|handle| handle.lock().ok().and_then(|ctx| ctx.clone()))
+        {
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
+    }
 }
 
 fn terminal_mode() -> bool {
