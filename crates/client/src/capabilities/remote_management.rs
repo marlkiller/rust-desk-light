@@ -34,11 +34,20 @@ fn active_connections() -> String {
 fn process_list() -> String {
     let output = if cfg!(target_os = "windows") {
         run_powershell(
-            "Get-Process | Sort-Object CPU -Descending | Select-Object -First 25 Id,ProcessName,CPU,WorkingSet64 | Format-Table -AutoSize",
+            r#"Write-Output "PID`tName`tCPU`tMemoryMB"; Get-Process | Sort-Object CPU -Descending | Select-Object -First 25 | ForEach-Object { "{0}`t{1}`t{2:N1}`t{3:N1}" -f $_.Id,$_.ProcessName,$_.CPU,($_.WorkingSet64/1MB) }"#,
             40,
         )
     } else {
-        run_command("ps", &["-axo", "pid,ppid,comm,%cpu,%mem"], 30)
+        let output = run_command(
+            "ps",
+            &["-eo", "pid,ppid,comm,pcpu,pmem", "--sort=-pcpu"],
+            30,
+        );
+        if output.contains("failed:") || output.contains("error") {
+            run_command("ps", &["-eo", "pid,ppid,comm"], 30)
+        } else {
+            output
+        }
     };
     join_sections("process_list", vec![output])
 }
@@ -73,7 +82,7 @@ fn performance_snapshot() -> String {
 fn event_log_summary() -> String {
     let output = if cfg!(target_os = "windows") {
         run_powershell(
-            "Get-WinEvent -LogName System -MaxEvents 10 | Select-Object TimeCreated,LevelDisplayName,ProviderName,Id,Message | Format-List",
+            r#"Write-Output "Time`tLevel`tProvider`tId`tMessage"; Get-WinEvent -LogName System -MaxEvents 20 | ForEach-Object { $message=($_.Message -replace "`r|`n|`t", " "); "{0}`t{1}`t{2}`t{3}`t{4}" -f $_.TimeCreated,$_.LevelDisplayName,$_.ProviderName,$_.Id,$message }"#,
             80,
         )
     } else {

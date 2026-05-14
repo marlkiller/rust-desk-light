@@ -11,6 +11,7 @@ use std::io::{self, BufRead};
 use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
 use std::sync::{
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
     Arc,
 };
@@ -288,8 +289,10 @@ struct CommandResultWindow {
     status: CommandResultStatus,
     detail: String,
     open: bool,
+    close_requested: Arc<AtomicBool>,
 }
 
+#[derive(Clone, Copy)]
 enum CommandResultStatus {
     Pending,
     Accepted,
@@ -435,6 +438,7 @@ impl AdminApp {
             status: CommandResultStatus::Pending,
             detail: "Waiting for client result...".to_string(),
             open: true,
+            close_requested: Arc::new(AtomicBool::new(false)),
         });
     }
 
@@ -491,6 +495,7 @@ impl AdminApp {
             },
             detail,
             open: true,
+            close_requested: Arc::new(AtomicBool::new(false)),
         });
     }
 
@@ -661,6 +666,12 @@ impl AdminApp {
 
     fn render_command_windows(&mut self, ctx: &egui::Context) {
         for window in &mut self.command_windows {
+            if window.close_requested.load(Ordering::Relaxed) {
+                window.open = false;
+            }
+        }
+
+        for window in &mut self.command_windows {
             if !window.open {
                 continue;
             }
@@ -669,40 +680,50 @@ impl AdminApp {
                 command_title(&window.command),
                 compact_id(&window.client_id)
             );
-            egui::Window::new(title)
-                .id(egui::Id::new(("command_result", window.id)))
-                .open(&mut window.open)
-                .default_width(680.0)
-                .default_height(420.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Client").color(COLOR_MUTED));
-                        ui.label(egui::RichText::new(&window.client_id).color(COLOR_TEXT));
-                        ui.separator();
-                        ui.label(egui::RichText::new("Command").color(COLOR_MUTED));
-                        ui.label(
-                            egui::RichText::new(window.command.as_str())
-                                .color(COLOR_TEXT)
-                                .strong(),
-                        );
-                        ui.separator();
-                        result_status_badge(ui, &window.status);
-                    });
-                    ui.add_space(10.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt(("command_result_scroll", window.id))
-                        .stick_to_bottom(false)
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(&mut window.detail)
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_width(f32::INFINITY)
-                                    .desired_rows(18)
-                                    .interactive(false),
+            let viewport_id = egui::ViewportId::from_hash_of(("command_result", window.id));
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size([760.0, 460.0])
+                .with_min_inner_size([260.0, 180.0])
+                .with_resizable(true);
+
+            let client_id = window.client_id.clone();
+            let command = window.command.clone();
+            let status = window.status;
+            let detail = window.detail.clone();
+            let close_requested = window.close_requested.clone();
+
+            ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
+                if ui.ctx().input(|input| input.viewport().close_requested()) {
+                    close_requested.store(true, Ordering::Relaxed);
+                }
+
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Client").color(COLOR_MUTED));
+                            ui.label(egui::RichText::new(&client_id).color(COLOR_TEXT));
+                            ui.separator();
+                            ui.label(egui::RichText::new("Command").color(COLOR_MUTED));
+                            ui.label(
+                                egui::RichText::new(command.as_str())
+                                    .color(COLOR_TEXT)
+                                    .strong(),
                             );
+                            ui.separator();
+                            result_status_badge(ui, &status);
                         });
-                });
+                        ui.add_space(10.0);
+                        egui::ScrollArea::both()
+                            .id_salt(("command_result_scroll", viewport_id))
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let mut detail = detail.clone();
+                                render_command_result(ui, &command, &mut detail);
+                            });
+                    });
+            });
         }
         self.command_windows
             .retain(|window| window.open || matches!(window.status, CommandResultStatus::Pending));
@@ -852,6 +873,220 @@ fn result_status_badge(ui: &mut egui::Ui, status: &CommandResultStatus) {
         CommandResultStatus::Failed => ("Failed", COLOR_BAD),
     };
     status_badge(ui, text, color);
+}
+
+fn render_command_result(ui: &mut egui::Ui, command: &CommandKind, detail: &mut String) {
+    let expects_table = matches!(
+        command,
+        CommandKind::ProcessManager | CommandKind::EventLog | CommandKind::ActiveConnections
+    );
+    if expects_table {
+        if let Some(table) = parse_result_table(detail) {
+            render_result_table(ui, command, &table);
+            return;
+        }
+        ui.label(
+            egui::RichText::new("Table data could not be parsed; showing raw output.")
+                .size(12.0)
+                .color(COLOR_WARN),
+        );
+        ui.add_space(8.0);
+    }
+
+    ui.add(
+        egui::TextEdit::multiline(detail)
+            .font(egui::TextStyle::Monospace)
+            .desired_width(f32::INFINITY)
+            .desired_rows(18)
+            .interactive(false),
+    );
+}
+
+struct ResultTable {
+    headers: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+fn parse_result_table(detail: &str) -> Option<ResultTable> {
+    let normalized = detail.replace("`t", "\t");
+    let body = normalized
+        .lines()
+        .skip_while(|line| line.trim().is_empty() || line.trim_end().ends_with(':'))
+        .collect::<Vec<_>>();
+    if body.len() < 2 {
+        return None;
+    }
+
+    if body.iter().any(|line| line.contains('\t')) {
+        return parse_tab_table(&body);
+    }
+
+    parse_whitespace_table(&body)
+}
+
+fn parse_tab_table(lines: &[&str]) -> Option<ResultTable> {
+    let headers = split_tab_row(lines.first()?)
+        .into_iter()
+        .map(clean_cell)
+        .collect();
+    let rows = lines
+        .iter()
+        .skip(1)
+        .map(|line| {
+            split_tab_row(line)
+                .into_iter()
+                .map(clean_cell)
+                .collect::<Vec<_>>()
+        })
+        .filter(|row| row.len() >= 2)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        None
+    } else {
+        Some(ResultTable { headers, rows })
+    }
+}
+
+fn parse_whitespace_table(lines: &[&str]) -> Option<ResultTable> {
+    let headers = split_ws_row(lines.first()?);
+    if headers.len() < 2 {
+        return None;
+    }
+    let rows = lines
+        .iter()
+        .skip(1)
+        .map(|line| split_ws_row(line))
+        .filter(|row| row.len() >= 2)
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        None
+    } else {
+        Some(ResultTable { headers, rows })
+    }
+}
+
+fn split_tab_row(line: &str) -> Vec<&str> {
+    line.split('\t')
+        .filter(|cell| !cell.trim().is_empty())
+        .collect()
+}
+
+fn split_ws_row(line: &str) -> Vec<String> {
+    line.split_whitespace().map(clean_cell).collect()
+}
+
+fn clean_cell(value: impl AsRef<str>) -> String {
+    value.as_ref().trim().to_string()
+}
+
+fn render_result_table(ui: &mut egui::Ui, command: &CommandKind, table: &ResultTable) {
+    let widths = table_column_widths(command, &table.headers, ui.available_width());
+    egui::Frame::default()
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .corner_radius(6.0)
+        .show(ui, |ui| {
+            table_row(ui, &table.headers, &widths, true, 0);
+            for (row_index, row) in table.rows.iter().enumerate() {
+                table_row(ui, row, &widths, false, row_index);
+            }
+        });
+}
+
+fn table_row(ui: &mut egui::Ui, cells: &[String], widths: &[f32], header: bool, row_index: usize) {
+    let fill = if header {
+        egui::Color32::from_rgb(235, 240, 247)
+    } else if row_index % 2 == 0 {
+        COLOR_PANEL
+    } else {
+        egui::Color32::from_rgb(248, 250, 253)
+    };
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        for (index, width) in widths.iter().enumerate() {
+            let cell = cells.get(index).map(String::as_str).unwrap_or("");
+            egui::Frame::default()
+                .fill(fill)
+                .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+                .inner_margin(egui::Margin::symmetric(4, 4))
+                .show(ui, |ui| {
+                    ui.set_width(*width);
+                    ui.label(
+                        egui::RichText::new(truncate_table_cell(cell, *width))
+                            .size(12.0)
+                            .color(if header { COLOR_MUTED } else { COLOR_TEXT })
+                            .strong(),
+                    );
+                });
+        }
+    });
+}
+
+fn table_column_widths(
+    command: &CommandKind,
+    headers: &[String],
+    available_width: f32,
+) -> Vec<f32> {
+    let available_width = available_width.max(1.0);
+    let specs = headers
+        .iter()
+        .map(|header| match command {
+            CommandKind::ProcessManager => process_column_spec(header),
+            CommandKind::EventLog => event_log_column_spec(header),
+            CommandKind::ActiveConnections => connection_column_spec(header),
+            _ => (1.0, 0.0),
+        })
+        .collect::<Vec<_>>();
+    let total_weight = specs
+        .iter()
+        .map(|(weight, _)| *weight)
+        .sum::<f32>()
+        .max(1.0);
+
+    specs
+        .iter()
+        .map(|(weight, _)| (available_width * *weight) / total_weight)
+        .collect()
+}
+
+fn process_column_spec(header: &str) -> (f32, f32) {
+    match header.to_ascii_lowercase().as_str() {
+        "pid" | "ppid" => (0.8, 0.0),
+        "cpu" | "pcpu" | "%cpu" | "memorymb" | "pmem" | "%mem" => (0.9, 0.0),
+        "name" | "processname" | "comm" => (2.4, 0.0),
+        _ => (1.2, 0.0),
+    }
+}
+
+fn event_log_column_spec(header: &str) -> (f32, f32) {
+    match header.to_ascii_lowercase().as_str() {
+        "time" | "timecreated" => (1.6, 0.0),
+        "level" | "leveldisplayname" => (0.9, 0.0),
+        "provider" | "providername" => (1.8, 0.0),
+        "id" => (0.6, 0.0),
+        "message" => (4.2, 0.0),
+        _ => (1.2, 0.0),
+    }
+}
+
+fn connection_column_spec(header: &str) -> (f32, f32) {
+    match header.to_ascii_lowercase().as_str() {
+        "proto" | "netid" | "protocol" => (0.7, 0.0),
+        "local" | "localaddress" | "local-address" | "local_address" => (2.2, 0.0),
+        "foreign" | "peer" | "peeraddress" | "foreignaddress" | "foreign-address" => (2.2, 0.0),
+        "state" => (1.0, 0.0),
+        "pid" | "pid/program" | "pid/program name" => (1.4, 0.0),
+        _ => (1.2, 0.0),
+    }
+}
+
+fn truncate_table_cell(value: &str, width: f32) -> String {
+    let max_chars = (width / 7.0).max(8.0) as usize;
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    format!("{}...", value.chars().take(keep).collect::<String>())
 }
 
 fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
