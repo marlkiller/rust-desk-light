@@ -628,9 +628,6 @@ impl AdminApp {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, "Refresh").clicked() {
-                        let _ = self.input_tx.send(AdminInput::List);
-                    }
                     connection_status_pill(ui, self.connected);
                     ui.label(
                         egui::RichText::new(format!("{}:{}", self.config.ip, self.config.port))
@@ -1678,18 +1675,6 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let month = month_param + if month_param < 10 { 3 } else { -9 };
     year += if month <= 2 { 1 } else { 0 };
     (year, month, day)
-}
-
-fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(label)
-                .color(egui::Color32::WHITE)
-                .strong(),
-        )
-        .fill(COLOR_ACCENT)
-        .corner_radius(7.0),
-    )
 }
 
 fn metric(ui: &mut egui::Ui, label: &str, value: String) {

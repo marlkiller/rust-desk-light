@@ -24,21 +24,21 @@ fn render_session(
         menu_command(
             ui,
             client_id,
-            "Client / Update Client",
+            "Update Client",
             CommandKind::UpdateClient,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Client / Uninstall Client",
+            "Uninstall Client",
             CommandKind::UninstallClient,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Client / Kill Client Process",
+            "Kill Client Process",
             CommandKind::KillClientProcess,
             send_command,
         );
@@ -46,36 +46,30 @@ fn render_session(
         menu_command(
             ui,
             client_id,
-            "Power / Shutdown",
+            "Shutdown",
             CommandKind::Shutdown,
             send_command,
         );
-        menu_command(
-            ui,
-            client_id,
-            "Power / Reboot",
-            CommandKind::Reboot,
-            send_command,
-        );
+        menu_command(ui, client_id, "Reboot", CommandKind::Reboot, send_command);
         ui.separator();
         menu_command(
             ui,
             client_id,
-            "Management / Move To Group",
+            "Move To Group",
             CommandKind::MoveToGroup,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Management / Clone Client Settings",
+            "Clone Client Settings",
             CommandKind::CloneClientSettings,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Management / Delete Client",
+            "Delete Client",
             CommandKind::DeleteClient,
             send_command,
         );
@@ -91,14 +85,14 @@ fn render_remote_management(
         menu_command(
             ui,
             client_id,
-            "Files / File Manager",
+            "File Manager",
             CommandKind::FileManager,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Files / Remote Terminal",
+            "Remote Terminal",
             CommandKind::RemoteTerminal,
             send_command,
         );
@@ -106,42 +100,42 @@ fn render_remote_management(
         menu_command(
             ui,
             client_id,
-            "Tools / Process Manager",
+            "Process Manager",
             CommandKind::ProcessManager,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Tools / Window Manager",
+            "Window Manager",
             CommandKind::WindowManager,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Tools / Startup Manager",
+            "Startup Manager",
             CommandKind::StartupManager,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Tools / Registry Manager",
+            "Registry Manager",
             CommandKind::RegistryManager,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Tools / Driver Manager",
+            "Driver Manager",
             CommandKind::DriverManager,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Tools / Event Log",
+            "Event Log",
             CommandKind::EventLog,
             send_command,
         );
@@ -149,14 +143,14 @@ fn render_remote_management(
         menu_command(
             ui,
             client_id,
-            "Monitoring / Active Connections",
+            "Active Connections",
             CommandKind::ActiveConnections,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Monitoring / Performance Monitor",
+            "Performance Monitor",
             CommandKind::PerformanceMonitor,
             send_command,
         );
@@ -172,22 +166,16 @@ fn render_live_control(
         menu_command(
             ui,
             client_id,
-            "Desktop / Remote Desktop",
+            "Remote Desktop",
             CommandKind::RemoteDesktop,
             send_command,
         );
         ui.separator();
+        menu_command(ui, client_id, "Camera", CommandKind::Camera, send_command);
         menu_command(
             ui,
             client_id,
-            "Media / Camera",
-            CommandKind::Camera,
-            send_command,
-        );
-        menu_command(
-            ui,
-            client_id,
-            "Media / Audio Listen",
+            "Audio Listen",
             CommandKind::AudioListen,
             send_command,
         );
@@ -203,14 +191,14 @@ fn render_user_interaction(
         menu_command(
             ui,
             client_id,
-            "Prompts / Message Box",
+            "Message Box",
             CommandKind::MessageBox,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Prompts / Balloon Tip",
+            "Balloon Tip",
             CommandKind::BalloonTip,
             send_command,
         );
@@ -218,14 +206,14 @@ fn render_user_interaction(
         menu_command(
             ui,
             client_id,
-            "Communication / Text Chat",
+            "Text Chat",
             CommandKind::TextChat,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Communication / Voice Chat",
+            "Voice Chat",
             CommandKind::VoiceChat,
             send_command,
         );
@@ -233,7 +221,7 @@ fn render_user_interaction(
         menu_command(
             ui,
             client_id,
-            "Text / Open Text In Notepad",
+            "Open Text In Notepad",
             CommandKind::OpenTextInNotepad,
             send_command,
         );
@@ -249,25 +237,19 @@ fn render_system_info(
         menu_command(
             ui,
             client_id,
-            "Basics / Computer Info",
+            "Computer Info",
             CommandKind::ComputerInfo,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Basics / Clipboard",
+            "Clipboard",
             CommandKind::Clipboard,
             send_command,
         );
         ui.separator();
-        menu_command(
-            ui,
-            client_id,
-            "Network / Proxy",
-            CommandKind::Proxy,
-            send_command,
-        );
+        menu_command(ui, client_id, "Proxy", CommandKind::Proxy, send_command);
     });
 }
 
@@ -280,14 +262,14 @@ fn render_execute(
         menu_command(
             ui,
             client_id,
-            "Files / Execute File",
+            "Execute File",
             CommandKind::ExecuteFile,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Code / Execute Code",
+            "Execute Code",
             CommandKind::ExecuteCode,
             send_command,
         );
@@ -295,14 +277,14 @@ fn render_execute(
         menu_command(
             ui,
             client_id,
-            "Tasks / Execute Static Command",
+            "Execute Static Command",
             CommandKind::ExecuteStaticCommand,
             send_command,
         );
         menu_command(
             ui,
             client_id,
-            "Tasks / Create Task",
+            "Create Task",
             CommandKind::CreateTask,
             send_command,
         );
@@ -310,7 +292,7 @@ fn render_execute(
         menu_command(
             ui,
             client_id,
-            "Automation / Command Preset",
+            "Command Preset",
             CommandKind::CommandPreset,
             send_command,
         );
@@ -326,7 +308,7 @@ fn render_plugins(
         menu_command(
             ui,
             client_id,
-            "Extensions / Plugin Manager",
+            "Plugin Manager",
             CommandKind::PluginManager,
             send_command,
         );

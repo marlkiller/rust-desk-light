@@ -5,13 +5,13 @@ use std::sync::{
 };
 
 const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
 const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
 const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
 
 pub(crate) struct ChatWindow {
     messages: Arc<Mutex<Vec<ChatLine>>>,
     draft: Arc<Mutex<String>>,
+    outbound: Arc<Mutex<Vec<String>>>,
     open: bool,
     close_requested: Arc<AtomicBool>,
 }
@@ -26,10 +26,12 @@ pub(crate) fn receive_admin_message(window: &mut Option<ChatWindow>, text: Strin
     let window = window.get_or_insert_with(|| ChatWindow {
         messages: Arc::new(Mutex::new(Vec::new())),
         draft: Arc::new(Mutex::new(String::new())),
+        outbound: Arc::new(Mutex::new(Vec::new())),
         open: true,
         close_requested: Arc::new(AtomicBool::new(false)),
     });
     window.open = true;
+    window.close_requested.store(false, Ordering::Relaxed);
     push_line(window, "Admin", &text);
 }
 
@@ -54,9 +56,8 @@ pub(crate) fn render_window(ctx: &egui::Context, window: &mut Option<ChatWindow>
 
     let messages = window.messages.clone();
     let draft = window.draft.clone();
+    let outbound_queue = window.outbound.clone();
     let close_requested = window.close_requested.clone();
-    let send_requested = Arc::new(Mutex::new(None::<String>));
-    let send_requested_ui = send_requested.clone();
 
     ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
         if ui.ctx().input(|input| input.viewport().close_requested()) {
@@ -81,14 +82,15 @@ pub(crate) fn render_window(ctx: &egui::Context, window: &mut Option<ChatWindow>
                             .show(ui, |ui| render_messages(ui, &messages));
                     });
                 ui.add_space(8.0);
-                render_input(ui, &draft, &send_requested_ui);
+                render_input(ui, &draft, &outbound_queue);
             });
     });
 
-    let text = send_requested
+    let text = window
+        .outbound
         .lock()
         .ok()
-        .and_then(|mut request| request.take());
+        .and_then(|mut queue| queue.pop());
     if let Some(text) = text {
         push_line(window, "Me", &text);
         outbound.push(text);
@@ -98,45 +100,57 @@ pub(crate) fn render_window(ctx: &egui::Context, window: &mut Option<ChatWindow>
 
 fn render_messages(ui: &mut egui::Ui, messages: &Arc<Mutex<Vec<ChatLine>>>) {
     if let Ok(messages) = messages.lock() {
-        if messages.is_empty() {
-            ui.label(egui::RichText::new("No messages yet.").color(COLOR_TEXT));
-            return;
-        }
-        for message in messages.iter() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{}:", message.sender))
-                        .strong()
-                        .color(COLOR_TEXT),
-                );
-                ui.label(egui::RichText::new(&message.text).color(COLOR_TEXT));
-            });
-        }
+        let mut transcript = if messages.is_empty() {
+            "No messages yet.".to_string()
+        } else {
+            messages
+                .iter()
+                .map(|message| format!("{}: {}", message.sender, message.text))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        ui.add(
+            egui::TextEdit::multiline(&mut transcript)
+                .font(egui::TextStyle::Monospace)
+                .desired_width(f32::INFINITY)
+                .desired_rows(12),
+        );
     }
 }
 
-fn render_input(
-    ui: &mut egui::Ui,
-    draft: &Arc<Mutex<String>>,
-    send_requested: &Arc<Mutex<Option<String>>>,
-) {
+fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mutex<Vec<String>>>) {
     ui.horizontal(|ui| {
         let mut text = draft.lock().map(|value| value.clone()).unwrap_or_default();
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut text)
-                .hint_text("Reply")
-                .desired_width(f32::INFINITY),
+        let button_width = 72.0;
+        let input_width =
+            (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(80.0);
+        let response = ui.add_sized(
+            [input_width, 28.0],
+            egui::TextEdit::singleline(&mut text).hint_text("Reply"),
         );
+        response.context_menu(|ui| {
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(text.clone());
+                ui.close();
+            }
+            if ui.button("Paste").clicked() {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                ui.close();
+            }
+        });
         if response.changed() {
             if let Ok(mut draft) = draft.lock() {
                 *draft = text.clone();
             }
         }
-        let send_clicked = ui.button("Send").clicked()
+        let send_clicked = ui
+            .add_sized([button_width, 28.0], egui::Button::new("Send"))
+            .clicked()
             || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
         if send_clicked && !text.trim().is_empty() {
-            if let Ok(mut request) = send_requested.lock() {
-                *request = Some(text.trim().to_string());
+            if let Ok(mut queue) = outbound.lock() {
+                queue.insert(0, text.trim().to_string());
             }
             if let Ok(mut draft) = draft.lock() {
                 draft.clear();

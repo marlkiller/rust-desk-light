@@ -190,68 +190,51 @@ They can be reconsidered only after the basic remote assistance flow works relia
 
 ```text
 Session
-  Client
-    Update Client: update_client
-    Uninstall Client: uninstall_client
-    Kill Client Process: kill_client_process
-  Power
-    Shutdown: shutdown
-    Reboot: reboot
-  Session Management
-    Move To Group: move_to_group
-    Clone Client Settings: clone_client_settings
-    Delete Client: delete_client
+  Update Client: update_client
+  Uninstall Client: uninstall_client
+  Kill Client Process: kill_client_process
+  Shutdown: shutdown
+  Reboot: reboot
+  Move To Group: move_to_group
+  Clone Client Settings: clone_client_settings
+  Delete Client: delete_client
 
 Remote Management
-  Files And Terminal
-    File Manager: file_manager
-    Remote Terminal: remote_terminal
-  System Tools
-    Process Manager: process_manager
-    Window Manager: window_manager
-    Startup Manager: startup_manager
-    Registry Manager: registry_manager
-    Driver Manager: driver_manager
-    Event Log: event_log
-  Monitoring
-    Active Connections: active_connections
-    Performance Monitor: performance_monitor
+  File Manager: file_manager
+  Remote Terminal: remote_terminal
+  Process Manager: process_manager
+  Window Manager: window_manager
+  Startup Manager: startup_manager
+  Registry Manager: registry_manager
+  Driver Manager: driver_manager
+  Event Log: event_log
+  Active Connections: active_connections
+  Performance Monitor: performance_monitor
 
 Live Control
-  Desktop
-    Remote Desktop: remote_desktop
-  Media Devices
-    Camera: camera
-    Audio Listen: audio_listen
+  Remote Desktop: remote_desktop
+  Camera: camera
+  Audio Listen: audio_listen
 
 User Interaction
-  Prompts
-    Message Box: message_box
-    Balloon Tip: balloon_tip
-  Communication
-    Text Chat: text_chat
-    Voice Chat: voice_chat
-  Text Actions
-    Open Text In Notepad: open_text_in_notepad
+  Message Box: message_box
+  Balloon Tip: balloon_tip
+  Text Chat: text_chat
+  Voice Chat: voice_chat
+  Open Text In Notepad: open_text_in_notepad
 
 System Info
-  Basics
-    Computer Info: computer_info
-    Clipboard: clipboard
-  Network
-    Proxy: proxy
+  Computer Info: computer_info
+  Clipboard: clipboard
+  Proxy: proxy
 
 Execute
-  Code And Files
-    Execute File: execute_file
-    Execute Code: execute_code
-  Tasks
-    Execute Static Command: execute_static_command
-    Create Task: create_task
-  Automation
-    Command Preset: command_preset
+  Execute File: execute_file
+  Execute Code: execute_code
+  Execute Static Command: execute_static_command
+  Create Task: create_task
+  Command Preset: command_preset
 
 Plugins
-  Extensions
-    Plugin Manager: plugin_manager
+  Plugin Manager: plugin_manager
 ```
