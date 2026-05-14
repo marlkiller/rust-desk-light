@@ -64,8 +64,8 @@ This is the next important milestone. All later features depend on this being st
 - [x] Manually verify client list.
 - [x] Manually verify command forwarding.
 - [x] Manually verify command ack forwarding.
-- [ ] Manually verify reconnect.
-- [ ] Manually verify offline client command failure.
+- [x] Manually verify reconnect.
+- [x] Manually verify offline client command failure.
 
 Notes:
 
