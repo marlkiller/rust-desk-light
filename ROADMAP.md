@@ -38,10 +38,10 @@ complexity. The goal is a practical small tool first.
 
 This is the next important milestone. All later features depend on this being stable.
 
-- [ ] Replace the current ad-hoc pipe-separated text frames with one shared versioned binary protocol.
-- [ ] Use one format everywhere: client, admin, and server must encode/decode the same message model.
-- [ ] Use RustDesk as the architectural reference: framed transport plus typed messages, but keep this project much smaller than RustDesk's full protobuf/rendezvous stack.
-- [ ] Start with a simple custom binary frame instead of JSON:
+- [x] Replace the current ad-hoc pipe-separated text frames with one shared versioned binary protocol.
+- [x] Use one format everywhere: client, admin, and server must encode/decode the same message model.
+- [x] Use RustDesk as the architectural reference: framed transport plus typed messages, but keep this project much smaller than RustDesk's full protobuf/rendezvous stack.
+- [x] Start with a simple custom binary frame instead of JSON:
   - magic bytes: `RDL1`
   - protocol version
   - frame length
@@ -51,11 +51,11 @@ This is the next important milestone. All later features depend on this being st
   - message kind
   - payload length
   - payload bytes
-- [ ] Keep payloads typed in `rdl_protocol`; do not let server/client/admin invent separate encodings.
-- [ ] Keep strings as length-prefixed UTF-8 inside the binary payload.
-- [ ] Keep command enum values stable and documented.
-- [ ] Add encode/decode tests for every message type.
-- [ ] Add protocol errors as first-class messages.
+- [x] Keep payloads typed in `rdl_protocol`; do not let server/client/admin invent separate encodings.
+- [x] Keep strings as length-prefixed UTF-8 inside the binary payload.
+- [x] Keep command enum values stable and documented.
+- [x] Add encode/decode tests for core message types.
+- [x] Add protocol errors as first-class messages.
 - [ ] Add heartbeat messages: `ping`, `pong`, and last-seen timestamps.
 - [ ] Add basic reconnect with backoff for client and admin.
 - [ ] Add stale client cleanup on the server.

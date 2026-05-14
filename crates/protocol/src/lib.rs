@@ -1,14 +1,21 @@
 use std::fmt;
+use std::io::{self, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_SERVER_IP: &str = "127.0.0.1";
 pub const DEFAULT_SERVER_PORT: u16 = 21115;
 pub const PROTOCOL_VERSION: u16 = 1;
+pub const FRAME_MAGIC: [u8; 4] = *b"RDL1";
+pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
+
+const HEADER_LEN: usize = 10;
+const ENVELOPE_FIXED_LEN: usize = 23;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Role {
     Client,
     Admin,
+    Server,
 }
 
 impl Role {
@@ -16,6 +23,7 @@ impl Role {
         match self {
             Self::Client => "client",
             Self::Admin => "admin",
+            Self::Server => "server",
         }
     }
 
@@ -23,7 +31,25 @@ impl Role {
         match value {
             "client" => Some(Self::Client),
             "admin" => Some(Self::Admin),
+            "server" => Some(Self::Server),
             _ => None,
+        }
+    }
+
+    fn to_code(&self) -> u8 {
+        match self {
+            Self::Client => 1,
+            Self::Admin => 2,
+            Self::Server => 3,
+        }
+    }
+
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            1 => Ok(Self::Client),
+            2 => Ok(Self::Admin),
+            3 => Ok(Self::Server),
+            _ => Err(ProtocolError::InvalidRole),
         }
     }
 }
@@ -148,6 +174,87 @@ impl CommandKind {
             _ => return None,
         })
     }
+
+    fn to_code(&self) -> u16 {
+        match self {
+            Self::UpdateClient => 1,
+            Self::UninstallClient => 2,
+            Self::KillClientProcess => 3,
+            Self::Shutdown => 4,
+            Self::Reboot => 5,
+            Self::MoveToGroup => 6,
+            Self::CloneClientSettings => 7,
+            Self::DeleteClient => 8,
+            Self::FileManager => 9,
+            Self::RemoteTerminal => 10,
+            Self::ProcessManager => 11,
+            Self::WindowManager => 12,
+            Self::StartupManager => 13,
+            Self::RegistryManager => 14,
+            Self::DriverManager => 15,
+            Self::EventLog => 16,
+            Self::ActiveConnections => 17,
+            Self::PerformanceMonitor => 18,
+            Self::RemoteDesktop => 19,
+            Self::Camera => 20,
+            Self::AudioListen => 21,
+            Self::MessageBox => 22,
+            Self::BalloonTip => 23,
+            Self::TextChat => 24,
+            Self::VoiceChat => 25,
+            Self::OpenTextInNotepad => 26,
+            Self::ComputerInfo => 27,
+            Self::Clipboard => 28,
+            Self::Proxy => 29,
+            Self::ExecuteFile => 30,
+            Self::ExecuteCode => 31,
+            Self::ExecuteStaticCommand => 32,
+            Self::CreateTask => 33,
+            Self::CommandPreset => 34,
+            Self::PluginManager => 35,
+        }
+    }
+
+    fn from_code(value: u16) -> Result<Self, ProtocolError> {
+        Ok(match value {
+            1 => Self::UpdateClient,
+            2 => Self::UninstallClient,
+            3 => Self::KillClientProcess,
+            4 => Self::Shutdown,
+            5 => Self::Reboot,
+            6 => Self::MoveToGroup,
+            7 => Self::CloneClientSettings,
+            8 => Self::DeleteClient,
+            9 => Self::FileManager,
+            10 => Self::RemoteTerminal,
+            11 => Self::ProcessManager,
+            12 => Self::WindowManager,
+            13 => Self::StartupManager,
+            14 => Self::RegistryManager,
+            15 => Self::DriverManager,
+            16 => Self::EventLog,
+            17 => Self::ActiveConnections,
+            18 => Self::PerformanceMonitor,
+            19 => Self::RemoteDesktop,
+            20 => Self::Camera,
+            21 => Self::AudioListen,
+            22 => Self::MessageBox,
+            23 => Self::BalloonTip,
+            24 => Self::TextChat,
+            25 => Self::VoiceChat,
+            26 => Self::OpenTextInNotepad,
+            27 => Self::ComputerInfo,
+            28 => Self::Clipboard,
+            29 => Self::Proxy,
+            30 => Self::ExecuteFile,
+            31 => Self::ExecuteCode,
+            32 => Self::ExecuteStaticCommand,
+            33 => Self::CreateTask,
+            34 => Self::CommandPreset,
+            35 => Self::PluginManager,
+            _ => return Err(ProtocolError::InvalidCommand),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,7 +298,20 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn encode(&self) -> String {
+    fn kind_code(&self) -> u16 {
+        match self {
+            Self::Hello { .. } => 1,
+            Self::ListClients => 2,
+            Self::Clients(_) => 3,
+            Self::Command { .. } => 4,
+            Self::CommandAck { .. } => 5,
+            Self::Error { .. } => 6,
+            Self::Ping => 7,
+            Self::Pong => 8,
+        }
+    }
+
+    fn encode_payload(&self, writer: &mut BinaryWriter) {
         match self {
             Self::Hello {
                 role,
@@ -200,142 +320,248 @@ impl Message {
                 os,
                 username,
                 gui_available,
-            } => join_fields(&[
-                "HELLO",
-                role.as_str(),
-                id,
-                hostname,
-                os,
-                username,
-                if *gui_available { "1" } else { "0" },
-            ]),
-            Self::ListClients => "LIST_CLIENTS".to_string(),
+            } => {
+                writer.u8(role.to_code());
+                writer.string(id);
+                writer.string(hostname);
+                writer.string(os);
+                writer.string(username);
+                writer.bool(*gui_available);
+            }
+            Self::ListClients | Self::Ping | Self::Pong => {}
             Self::Clients(clients) => {
-                let mut fields = vec!["CLIENTS".to_string(), clients.len().to_string()];
+                writer.u32(clients.len() as u32);
                 for client in clients {
-                    fields.push(client.id.clone());
-                    fields.push(client.hostname.clone());
-                    fields.push(client.os.clone());
-                    fields.push(client.username.clone());
-                    fields.push(if client.gui_available { "1" } else { "0" }.to_string());
-                    fields.push(client.started_at_epoch_ms.to_string());
+                    writer.string(&client.id);
+                    writer.string(&client.hostname);
+                    writer.string(&client.os);
+                    writer.string(&client.username);
+                    writer.bool(client.gui_available);
+                    writer.u128(client.started_at_epoch_ms);
                 }
-                join_owned_fields(&fields)
             }
             Self::Command {
                 target_id,
                 command,
                 payload,
-            } => join_fields(&["COMMAND", target_id, command.as_str(), payload]),
+            } => {
+                writer.string(target_id);
+                writer.u16(command.to_code());
+                writer.string(payload);
+            }
             Self::CommandAck {
                 client_id,
                 command,
                 accepted,
                 detail,
-            } => join_fields(&[
-                "COMMAND_ACK",
-                client_id,
-                command.as_str(),
-                if *accepted { "1" } else { "0" },
-                detail,
-            ]),
-            Self::Error { detail } => join_fields(&["ERROR", detail]),
-            Self::Ping => "PING".to_string(),
-            Self::Pong => "PONG".to_string(),
+            } => {
+                writer.string(client_id);
+                writer.u16(command.to_code());
+                writer.bool(*accepted);
+                writer.string(detail);
+            }
+            Self::Error { detail } => writer.string(detail),
         }
     }
 
-    pub fn decode(line: &str) -> Result<Self, ProtocolError> {
-        let fields = split_fields(line.trim_end_matches(['\r', '\n']));
-        let tag = fields.first().map(String::as_str).unwrap_or_default();
-
-        match tag {
-            "HELLO" => {
-                if fields.len() != 7 {
-                    return Err(ProtocolError::InvalidFieldCount("HELLO"));
-                }
-                Ok(Self::Hello {
-                    role: Role::parse(&fields[1]).ok_or(ProtocolError::InvalidRole)?,
-                    id: fields[2].clone(),
-                    hostname: fields[3].clone(),
-                    os: fields[4].clone(),
-                    username: fields[5].clone(),
-                    gui_available: fields[6] == "1",
-                })
-            }
-            "LIST_CLIENTS" => Ok(Self::ListClients),
-            "CLIENTS" => {
-                if fields.len() < 2 {
-                    return Err(ProtocolError::InvalidFieldCount("CLIENTS"));
-                }
-                let count: usize = fields[1]
-                    .parse()
-                    .map_err(|_| ProtocolError::InvalidNumber)?;
-                let expected_len = 2 + count * 6;
-                if fields.len() != expected_len {
-                    return Err(ProtocolError::InvalidFieldCount("CLIENTS"));
-                }
+    fn decode_payload(kind: u16, payload: &[u8]) -> Result<Self, ProtocolError> {
+        let mut reader = BinaryReader::new(payload);
+        let message = match kind {
+            1 => Self::Hello {
+                role: Role::from_code(reader.u8()?)?,
+                id: reader.string()?,
+                hostname: reader.string()?,
+                os: reader.string()?,
+                username: reader.string()?,
+                gui_available: reader.bool()?,
+            },
+            2 => Self::ListClients,
+            3 => {
+                let count = reader.u32()? as usize;
                 let mut clients = Vec::with_capacity(count);
-                for chunk in fields[2..].chunks_exact(6) {
-                    clients.push(parse_client_info_fields(chunk)?);
+                for _ in 0..count {
+                    clients.push(ClientInfo {
+                        id: reader.string()?,
+                        hostname: reader.string()?,
+                        os: reader.string()?,
+                        username: reader.string()?,
+                        gui_available: reader.bool()?,
+                        started_at_epoch_ms: reader.u128()?,
+                    });
                 }
-                Ok(Self::Clients(clients))
+                Self::Clients(clients)
             }
-            "COMMAND" => {
-                if fields.len() != 4 {
-                    return Err(ProtocolError::InvalidFieldCount("COMMAND"));
-                }
-                Ok(Self::Command {
-                    target_id: fields[1].clone(),
-                    command: CommandKind::parse(&fields[2]).ok_or(ProtocolError::InvalidCommand)?,
-                    payload: fields[3].clone(),
-                })
-            }
-            "COMMAND_ACK" => {
-                if fields.len() != 5 {
-                    return Err(ProtocolError::InvalidFieldCount("COMMAND_ACK"));
-                }
-                Ok(Self::CommandAck {
-                    client_id: fields[1].clone(),
-                    command: CommandKind::parse(&fields[2]).ok_or(ProtocolError::InvalidCommand)?,
-                    accepted: fields[3] == "1",
-                    detail: fields[4].clone(),
-                })
-            }
-            "ERROR" => {
-                if fields.len() != 2 {
-                    return Err(ProtocolError::InvalidFieldCount("ERROR"));
-                }
-                Ok(Self::Error {
-                    detail: fields[1].clone(),
-                })
-            }
-            "PING" => Ok(Self::Ping),
-            "PONG" => Ok(Self::Pong),
-            _ => Err(ProtocolError::UnknownTag(tag.to_string())),
-        }
+            4 => Self::Command {
+                target_id: reader.string()?,
+                command: CommandKind::from_code(reader.u16()?)?,
+                payload: reader.string()?,
+            },
+            5 => Self::CommandAck {
+                client_id: reader.string()?,
+                command: CommandKind::from_code(reader.u16()?)?,
+                accepted: reader.bool()?,
+                detail: reader.string()?,
+            },
+            6 => Self::Error {
+                detail: reader.string()?,
+            },
+            7 => Self::Ping,
+            8 => Self::Pong,
+            _ => return Err(ProtocolError::InvalidMessageKind(kind)),
+        };
+        reader.finish()?;
+        Ok(message)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Envelope {
+    pub version: u16,
+    pub message_id: u64,
+    pub correlation_id: Option<u64>,
+    pub role: Role,
+    pub message: Message,
+}
+
+pub fn encode_envelope(envelope: &Envelope) -> Result<Vec<u8>, ProtocolError> {
+    let mut payload = BinaryWriter::default();
+    envelope.message.encode_payload(&mut payload);
+    let payload = payload.into_inner();
+    let remaining_len = ENVELOPE_FIXED_LEN
+        .checked_add(payload.len())
+        .ok_or(ProtocolError::FrameTooLarge)?;
+    if remaining_len > MAX_FRAME_LEN as usize {
+        return Err(ProtocolError::FrameTooLarge);
+    }
+
+    let mut frame = Vec::with_capacity(HEADER_LEN + remaining_len);
+    frame.extend_from_slice(&FRAME_MAGIC);
+    frame.extend_from_slice(&envelope.version.to_be_bytes());
+    frame.extend_from_slice(&(remaining_len as u32).to_be_bytes());
+    frame.extend_from_slice(&envelope.message_id.to_be_bytes());
+    frame.extend_from_slice(&envelope.correlation_id.unwrap_or_default().to_be_bytes());
+    frame.push(envelope.role.to_code());
+    frame.extend_from_slice(&envelope.message.kind_code().to_be_bytes());
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+pub fn decode_envelope(frame: &[u8]) -> Result<Envelope, ProtocolError> {
+    if frame.len() < HEADER_LEN + ENVELOPE_FIXED_LEN {
+        return Err(ProtocolError::TruncatedFrame);
+    }
+    if frame[0..4] != FRAME_MAGIC {
+        return Err(ProtocolError::InvalidMagic);
+    }
+
+    let version = u16::from_be_bytes([frame[4], frame[5]]);
+    if version != PROTOCOL_VERSION {
+        return Err(ProtocolError::UnsupportedVersion(version));
+    }
+
+    let remaining_len = u32::from_be_bytes([frame[6], frame[7], frame[8], frame[9]]) as usize;
+    if remaining_len > MAX_FRAME_LEN as usize {
+        return Err(ProtocolError::FrameTooLarge);
+    }
+    if frame.len() != HEADER_LEN + remaining_len {
+        return Err(ProtocolError::InvalidFrameLength);
+    }
+
+    let mut reader = BinaryReader::new(&frame[HEADER_LEN..]);
+    let message_id = reader.u64()?;
+    let correlation_id = match reader.u64()? {
+        0 => None,
+        value => Some(value),
+    };
+    let role = Role::from_code(reader.u8()?)?;
+    let kind = reader.u16()?;
+    let payload_len = reader.u32()? as usize;
+    let payload = reader.bytes(payload_len)?;
+    reader.finish()?;
+
+    Ok(Envelope {
+        version,
+        message_id,
+        correlation_id,
+        role,
+        message: Message::decode_payload(kind, payload)?,
+    })
+}
+
+pub fn write_envelope(
+    writer: &mut impl Write,
+    role: Role,
+    message_id: u64,
+    correlation_id: Option<u64>,
+    message: Message,
+) -> io::Result<()> {
+    let envelope = Envelope {
+        version: PROTOCOL_VERSION,
+        message_id,
+        correlation_id,
+        role,
+        message,
+    };
+    let frame = encode_envelope(&envelope).map_err(to_invalid_data)?;
+    writer.write_all(&frame)
+}
+
+pub fn read_envelope(reader: &mut impl Read) -> io::Result<Envelope> {
+    let mut header = [0u8; HEADER_LEN];
+    reader.read_exact(&mut header)?;
+    if header[0..4] != FRAME_MAGIC {
+        return Err(to_invalid_data(ProtocolError::InvalidMagic));
+    }
+    let version = u16::from_be_bytes([header[4], header[5]]);
+    if version != PROTOCOL_VERSION {
+        return Err(to_invalid_data(ProtocolError::UnsupportedVersion(version)));
+    }
+    let remaining_len = u32::from_be_bytes([header[6], header[7], header[8], header[9]]);
+    if remaining_len > MAX_FRAME_LEN {
+        return Err(to_invalid_data(ProtocolError::FrameTooLarge));
+    }
+
+    let mut frame = Vec::with_capacity(HEADER_LEN + remaining_len as usize);
+    frame.extend_from_slice(&header);
+    frame.resize(HEADER_LEN + remaining_len as usize, 0);
+    reader.read_exact(&mut frame[HEADER_LEN..])?;
+    decode_envelope(&frame).map_err(to_invalid_data)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProtocolError {
-    UnknownTag(String),
-    InvalidFieldCount(&'static str),
+    InvalidMagic,
+    UnsupportedVersion(u16),
+    InvalidFrameLength,
+    TruncatedFrame,
+    FrameTooLarge,
     InvalidRole,
     InvalidCommand,
-    InvalidClientInfo,
-    InvalidNumber,
+    InvalidMessageKind(u16),
+    InvalidBool(u8),
+    InvalidUtf8,
+    TrailingBytes(usize),
+    UnexpectedEof,
 }
 
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownTag(tag) => write!(f, "unknown message tag: {tag}"),
-            Self::InvalidFieldCount(tag) => write!(f, "invalid field count for {tag}"),
+            Self::InvalidMagic => write!(f, "invalid frame magic"),
+            Self::UnsupportedVersion(version) => {
+                write!(f, "unsupported protocol version: {version}")
+            }
+            Self::InvalidFrameLength => write!(f, "invalid frame length"),
+            Self::TruncatedFrame => write!(f, "truncated frame"),
+            Self::FrameTooLarge => write!(f, "frame too large"),
             Self::InvalidRole => write!(f, "invalid role"),
             Self::InvalidCommand => write!(f, "invalid command"),
-            Self::InvalidClientInfo => write!(f, "invalid client info"),
-            Self::InvalidNumber => write!(f, "invalid number"),
+            Self::InvalidMessageKind(kind) => write!(f, "invalid message kind: {kind}"),
+            Self::InvalidBool(value) => write!(f, "invalid bool byte: {value}"),
+            Self::InvalidUtf8 => write!(f, "invalid utf-8 string"),
+            Self::TrailingBytes(count) => write!(f, "payload has {count} trailing bytes"),
+            Self::UnexpectedEof => write!(f, "unexpected end of payload"),
         }
     }
 }
@@ -349,102 +575,174 @@ pub fn now_epoch_ms() -> u128 {
         .unwrap_or_default()
 }
 
-fn parse_client_info_fields(fields: &[String]) -> Result<ClientInfo, ProtocolError> {
-    if fields.len() != 6 {
-        return Err(ProtocolError::InvalidClientInfo);
+fn to_invalid_data(error: ProtocolError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+#[derive(Default)]
+struct BinaryWriter {
+    buffer: Vec<u8>,
+}
+
+impl BinaryWriter {
+    fn into_inner(self) -> Vec<u8> {
+        self.buffer
     }
-    Ok(ClientInfo {
-        id: fields[0].clone(),
-        hostname: fields[1].clone(),
-        os: fields[2].clone(),
-        username: fields[3].clone(),
-        gui_available: fields[4] == "1",
-        started_at_epoch_ms: fields[5]
-            .parse()
-            .map_err(|_| ProtocolError::InvalidNumber)?,
-    })
+
+    fn u8(&mut self, value: u8) {
+        self.buffer.push(value);
+    }
+
+    fn bool(&mut self, value: bool) {
+        self.u8(if value { 1 } else { 0 });
+    }
+
+    fn u16(&mut self, value: u16) {
+        self.buffer.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn u32(&mut self, value: u32) {
+        self.buffer.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn u128(&mut self, value: u128) {
+        self.buffer.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn string(&mut self, value: &str) {
+        self.u32(value.len() as u32);
+        self.buffer.extend_from_slice(value.as_bytes());
+    }
 }
 
-fn join_fields(fields: &[&str]) -> String {
-    fields
-        .iter()
-        .map(|field| escape(field))
-        .collect::<Vec<_>>()
-        .join("|")
+struct BinaryReader<'a> {
+    data: &'a [u8],
+    offset: usize,
 }
 
-fn join_owned_fields(fields: &[String]) -> String {
-    fields
-        .iter()
-        .map(|field| escape(field))
-        .collect::<Vec<_>>()
-        .join("|")
-}
+impl<'a> BinaryReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
 
-fn split_fields(value: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut current = String::new();
-    let mut escaped = false;
-
-    for ch in value.chars() {
-        if escaped {
-            current.push(match ch {
-                'n' => '\n',
-                'r' => '\r',
-                'p' => '|',
-                'b' => '\\',
-                other => other,
-            });
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == '|' {
-            fields.push(current);
-            current = String::new();
+    fn finish(&self) -> Result<(), ProtocolError> {
+        let trailing = self.data.len().saturating_sub(self.offset);
+        if trailing == 0 {
+            Ok(())
         } else {
-            current.push(ch);
+            Err(ProtocolError::TrailingBytes(trailing))
         }
     }
-    fields.push(current);
-    fields
-}
 
-fn escape(value: &str) -> String {
-    value
-        .replace('\\', "\\b")
-        .replace('|', "\\p")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
+    fn bytes(&mut self, len: usize) -> Result<&'a [u8], ProtocolError> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(ProtocolError::UnexpectedEof)?;
+        if end > self.data.len() {
+            return Err(ProtocolError::UnexpectedEof);
+        }
+        let bytes = &self.data[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+
+    fn u8(&mut self) -> Result<u8, ProtocolError> {
+        Ok(self.bytes(1)?[0])
+    }
+
+    fn bool(&mut self) -> Result<bool, ProtocolError> {
+        match self.u8()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            value => Err(ProtocolError::InvalidBool(value)),
+        }
+    }
+
+    fn u16(&mut self) -> Result<u16, ProtocolError> {
+        let bytes = self.bytes(2)?;
+        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn u32(&mut self) -> Result<u32, ProtocolError> {
+        let bytes = self.bytes(4)?;
+        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn u64(&mut self) -> Result<u64, ProtocolError> {
+        let bytes = self.bytes(8)?;
+        Ok(u64::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn u128(&mut self) -> Result<u128, ProtocolError> {
+        let bytes = self.bytes(16)?;
+        Ok(u128::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ]))
+    }
+
+    fn string(&mut self) -> Result<String, ProtocolError> {
+        let len = self.u32()? as usize;
+        let bytes = self.bytes(len)?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| ProtocolError::InvalidUtf8)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
-    fn command_round_trips() {
-        let message = Message::Command {
-            target_id: "client|1".to_string(),
-            command: CommandKind::RemoteTerminal,
-            payload: "whoami\nhostname".to_string(),
+    fn command_frame_round_trips() {
+        let envelope = Envelope {
+            version: PROTOCOL_VERSION,
+            message_id: 7,
+            correlation_id: Some(3),
+            role: Role::Admin,
+            message: Message::Command {
+                target_id: "client|1".to_string(),
+                command: CommandKind::RemoteTerminal,
+                payload: "whoami\nhostname".to_string(),
+            },
         };
 
-        let decoded = Message::decode(&message.encode()).unwrap();
-        assert_eq!(message, decoded);
+        let decoded = decode_envelope(&encode_envelope(&envelope).unwrap()).unwrap();
+        assert_eq!(envelope, decoded);
     }
 
     #[test]
-    fn clients_round_trip() {
-        let message = Message::Clients(vec![ClientInfo {
-            id: "a".to_string(),
-            hostname: "host".to_string(),
-            os: "linux".to_string(),
-            username: "user".to_string(),
-            gui_available: true,
-            started_at_epoch_ms: 42,
-        }]);
+    fn clients_frame_round_trips() {
+        let envelope = Envelope {
+            version: PROTOCOL_VERSION,
+            message_id: 8,
+            correlation_id: None,
+            role: Role::Server,
+            message: Message::Clients(vec![ClientInfo {
+                id: "a".to_string(),
+                hostname: "host".to_string(),
+                os: "linux".to_string(),
+                username: "user".to_string(),
+                gui_available: true,
+                started_at_epoch_ms: 42,
+            }]),
+        };
 
-        let decoded = Message::decode(&message.encode()).unwrap();
-        assert_eq!(message, decoded);
+        let decoded = decode_envelope(&encode_envelope(&envelope).unwrap()).unwrap();
+        assert_eq!(envelope, decoded);
+    }
+
+    #[test]
+    fn stream_helpers_round_trip() {
+        let mut buffer = Vec::new();
+        write_envelope(&mut buffer, Role::Client, 1, None, Message::Ping).unwrap();
+
+        let decoded = read_envelope(&mut Cursor::new(buffer)).unwrap();
+        assert_eq!(decoded.role, Role::Client);
+        assert_eq!(decoded.message_id, 1);
+        assert_eq!(decoded.message, Message::Ping);
     }
 }

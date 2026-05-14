@@ -1,9 +1,10 @@
 use eframe::egui;
 use rdl_protocol::{
-    ClientInfo, CommandKind, Message, Role, DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT,
+    read_envelope, write_envelope, ClientInfo, CommandKind, Message, Role, DEFAULT_SERVER_IP,
+    DEFAULT_SERVER_PORT,
 };
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::io::{self, BufRead};
+use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
@@ -100,8 +101,10 @@ fn admin_network_loop(
 ) -> io::Result<()> {
     let stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
     let mut writer = stream.try_clone()?;
+    let mut next_message_id = 1u64;
     send(
         &mut writer,
+        &mut next_message_id,
         Message::Hello {
             role: Role::Admin,
             id: "admin".to_string(),
@@ -111,27 +114,36 @@ fn admin_network_loop(
             gui_available: true,
         },
     )?;
-    send(&mut writer, Message::ListClients)?;
+    send(&mut writer, &mut next_message_id, Message::ListClients)?;
     let _ = event_tx.send(AdminEvent::Connected);
 
     let mut input_writer = writer.try_clone()?;
+    let mut input_next_message_id = next_message_id;
     thread::spawn(move || {
         for input in input_rx {
             let result = match input {
-                AdminInput::List => send(&mut input_writer, Message::ListClients),
+                AdminInput::List => send(
+                    &mut input_writer,
+                    &mut input_next_message_id,
+                    Message::ListClients,
+                ),
                 AdminInput::Command {
                     target_id,
                     command,
                     payload,
                 } => send(
                     &mut input_writer,
+                    &mut input_next_message_id,
                     Message::Command {
                         target_id,
                         command,
                         payload,
                     },
                 ),
-                AdminInput::Quit => break,
+                AdminInput::Quit => {
+                    let _ = input_writer.shutdown(Shutdown::Both);
+                    break;
+                }
             };
             if result.is_err() {
                 break;
@@ -139,19 +151,26 @@ fn admin_network_loop(
         }
     });
 
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = line?;
-        match Message::decode(&line) {
-            Ok(Message::Clients(clients)) => {
+    let mut reader = stream;
+    loop {
+        let message = match read_envelope(&mut reader) {
+            Ok(envelope) => envelope.message,
+            Err(error) => {
+                let _ = event_tx.send(AdminEvent::Log(format!("network read failed: {error}")));
+                break;
+            }
+        };
+
+        match message {
+            Message::Clients(clients) => {
                 let _ = event_tx.send(AdminEvent::Clients(clients));
             }
-            Ok(Message::CommandAck {
+            Message::CommandAck {
                 client_id,
                 command,
                 accepted,
                 detail,
-            }) => {
+            } => {
                 let _ = event_tx.send(AdminEvent::Ack {
                     client_id,
                     command,
@@ -159,11 +178,8 @@ fn admin_network_loop(
                     detail,
                 });
             }
-            Ok(other) => {
+            other => {
                 let _ = event_tx.send(AdminEvent::Log(format!("server: {other:?}")));
-            }
-            Err(error) => {
-                let _ = event_tx.send(AdminEvent::Log(format!("protocol error: {error}")));
             }
         }
     }
@@ -754,6 +770,7 @@ fn terminal_input_loop(input_tx: Sender<AdminInput>) {
         };
         let trimmed = line.trim();
         if trimmed == "quit" || trimmed == "exit" {
+            thread::sleep(std::time::Duration::from_millis(1200));
             let _ = input_tx.send(AdminInput::Quit);
             break;
         }
@@ -780,8 +797,10 @@ fn terminal_input_loop(input_tx: Sender<AdminInput>) {
     }
 }
 
-fn send(writer: &mut TcpStream, message: Message) -> io::Result<()> {
-    writeln!(writer, "{}", message.encode())
+fn send(writer: &mut TcpStream, next_message_id: &mut u64, message: Message) -> io::Result<()> {
+    let result = write_envelope(writer, Role::Admin, *next_message_id, None, message);
+    *next_message_id = next_message_id.saturating_add(1);
+    result
 }
 
 enum AdminInput {

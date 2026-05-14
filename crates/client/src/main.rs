@@ -1,6 +1,9 @@
 use eframe::egui;
-use rdl_protocol::{CommandKind, Message, Role, DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT};
-use std::io::{self, BufRead, BufReader, Write};
+use rdl_protocol::{
+    read_envelope, write_envelope, CommandKind, Message, Role, DEFAULT_SERVER_IP,
+    DEFAULT_SERVER_PORT,
+};
+use std::io;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -81,8 +84,10 @@ fn client_network_loop(
 ) -> io::Result<()> {
     let stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
     let mut writer = stream.try_clone()?;
+    let mut next_message_id = 1u64;
     send(
         &mut writer,
+        &mut next_message_id,
         Message::Hello {
             role: Role::Client,
             id: client_id,
@@ -94,15 +99,22 @@ fn client_network_loop(
     )?;
     let _ = event_tx.send(ClientEvent::Connected);
 
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = line?;
-        match Message::decode(&line) {
-            Ok(Message::Command {
+    let mut reader = stream;
+    loop {
+        let message = match read_envelope(&mut reader) {
+            Ok(envelope) => envelope.message,
+            Err(error) => {
+                let _ = event_tx.send(ClientEvent::Log(format!("network read failed: {error}")));
+                break;
+            }
+        };
+
+        match message {
+            Message::Command {
                 target_id,
                 command,
                 payload,
-            }) => {
+            } => {
                 let detail = handle_command(&command, &payload, gui_mode);
                 let _ = event_tx.send(ClientEvent::Command {
                     command: command.clone(),
@@ -110,6 +122,7 @@ fn client_network_loop(
                 });
                 send(
                     &mut writer,
+                    &mut next_message_id,
                     Message::CommandAck {
                         client_id: target_id,
                         command,
@@ -118,12 +131,9 @@ fn client_network_loop(
                     },
                 )?;
             }
-            Ok(Message::Ping) => send(&mut writer, Message::Pong)?,
-            Ok(other) => {
+            Message::Ping => send(&mut writer, &mut next_message_id, Message::Pong)?,
+            other => {
                 let _ = event_tx.send(ClientEvent::Log(format!("server: {other:?}")));
-            }
-            Err(error) => {
-                let _ = event_tx.send(ClientEvent::Log(format!("protocol error: {error}")));
             }
         }
     }
@@ -374,8 +384,10 @@ fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> Strin
     }
 }
 
-fn send(writer: &mut TcpStream, message: Message) -> io::Result<()> {
-    writeln!(writer, "{}", message.encode())
+fn send(writer: &mut TcpStream, next_message_id: &mut u64, message: Message) -> io::Result<()> {
+    let result = write_envelope(writer, Role::Client, *next_message_id, None, message);
+    *next_message_id = next_message_id.saturating_add(1);
+    result
 }
 
 fn stable_client_id() -> String {

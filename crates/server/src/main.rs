@@ -1,6 +1,6 @@
-use rdl_protocol::{now_epoch_ms, ClientInfo, Message, Role};
+use rdl_protocol::{now_epoch_ms, read_envelope, write_envelope, ClientInfo, Message, Role};
 use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
@@ -81,25 +81,25 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
 
     thread::spawn(move || writer_loop(peer_id, writer, out_rx));
 
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
+    let mut reader = stream;
+    loop {
+        let envelope = match read_envelope(&mut reader) {
+            Ok(envelope) => envelope,
             Err(error) => {
                 eprintln!("peer {peer_id} read failed: {error}");
                 break;
             }
         };
 
-        match Message::decode(&line) {
-            Ok(Message::Hello {
+        match envelope.message {
+            Message::Hello {
                 role,
                 id,
                 hostname,
                 os,
                 username,
                 gui_available,
-            }) => {
+            } => {
                 let info = if role == Role::Client {
                     Some(ClientInfo {
                         id,
@@ -118,16 +118,8 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
                     info,
                 });
             }
-            Ok(message) => {
+            message => {
                 let _ = events_tx.send(ServerEvent::Message { peer_id, message });
-            }
-            Err(error) => {
-                let _ = events_tx.send(ServerEvent::Message {
-                    peer_id,
-                    message: Message::Error {
-                        detail: format!("decode failed: {error}"),
-                    },
-                });
             }
         }
     }
@@ -136,9 +128,12 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
 }
 
 fn writer_loop(peer_id: usize, mut writer: TcpStream, out_rx: Receiver<Message>) {
+    let mut next_message_id = 1u64;
     for message in out_rx {
-        if writeln!(writer, "{}", message.encode()).is_err() {
-            eprintln!("peer {peer_id} write failed");
+        let result = write_envelope(&mut writer, Role::Server, next_message_id, None, message);
+        next_message_id = next_message_id.saturating_add(1);
+        if let Err(error) = result {
+            eprintln!("peer {peer_id} write failed: {error}");
             break;
         }
     }
