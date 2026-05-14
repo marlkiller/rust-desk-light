@@ -1,4 +1,4 @@
-use super::support::{join_sections, run_command, run_first_available, run_powershell};
+use crate::support::{join_sections, run_command, run_first_available, run_powershell};
 use rdl_protocol::CommandKind;
 
 pub fn handle(command: &CommandKind, payload: &str) -> String {

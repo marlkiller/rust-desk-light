@@ -1,4 +1,5 @@
 mod command_menu;
+mod user_interaction;
 
 use eframe::egui;
 use rdl_protocol::{
@@ -279,6 +280,7 @@ struct AdminApp {
     client_filter: String,
     selected_client_id: Option<String>,
     command_windows: Vec<CommandResultWindow>,
+    chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     log_lines: Vec<String>,
 }
 
@@ -342,6 +344,7 @@ impl AdminApp {
             client_filter: String::new(),
             selected_client_id: None,
             command_windows: Vec::new(),
+            chat_windows: Vec::new(),
             log_lines: vec![timestamped_log("admin gui started")],
         }
     }
@@ -433,6 +436,10 @@ impl AdminApp {
     }
 
     fn send_command(&mut self, client_id: &str, command: CommandKind) {
+        if command == CommandKind::TextChat {
+            self.open_chat_window(client_id);
+            return;
+        }
         let _ = self.input_tx.send(AdminInput::Command {
             target_id: client_id.to_string(),
             command: command.clone(),
@@ -444,6 +451,16 @@ impl AdminApp {
             command.as_str(),
             client_id
         ));
+    }
+
+    fn open_chat_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        user_interaction::text_chat::open_window(
+            &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+        );
     }
 
     fn open_command_window(&mut self, client_id: &str, command: CommandKind) {
@@ -501,6 +518,11 @@ impl AdminApp {
             return;
         }
 
+        if command == CommandKind::TextChat {
+            self.handle_chat_ack(&client_id, accepted, detail);
+            return;
+        }
+
         let (hostname, username) = self.client_window_identity(&client_id);
         if let Some(window) = self.command_windows.iter_mut().rev().find(|window| {
             window.client_id == client_id
@@ -552,6 +574,18 @@ impl AdminApp {
             table_sort: Arc::new(Mutex::new(None)),
             table_selected_row: Arc::new(Mutex::new(None)),
         });
+    }
+
+    fn handle_chat_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        user_interaction::text_chat::handle_ack(
+            &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+            accepted,
+            detail,
+        );
     }
 
     fn refresh_process_window(&mut self, client_id: &str) {
@@ -850,6 +884,17 @@ impl AdminApp {
         self.command_windows
             .retain(|window| window.open || matches!(window.status, CommandResultStatus::Pending));
     }
+
+    fn render_chat_windows(&mut self, ctx: &egui::Context) {
+        for outbound in user_interaction::text_chat::render_windows(ctx, &mut self.chat_windows) {
+            let _ = self.input_tx.send(AdminInput::Command {
+                target_id: outbound.client_id.clone(),
+                command: CommandKind::TextChat,
+                payload: outbound.text,
+            });
+            self.push_log(format!("sent text_chat to {}", outbound.client_id));
+        }
+    }
 }
 
 impl eframe::App for AdminApp {
@@ -869,6 +914,7 @@ impl eframe::App for AdminApp {
             self.render_activity(ui);
         });
         self.render_command_windows(ui.ctx());
+        self.render_chat_windows(ui.ctx());
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(200));

@@ -1,4 +1,8 @@
-mod capabilities;
+mod commands;
+mod remote_management;
+mod support;
+mod system_info;
+mod user_interaction;
 
 use eframe::egui;
 use rdl_protocol::{
@@ -29,13 +33,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run_gui(config: Config) -> eframe::Result {
     let identity = load_client_identity();
     let (event_tx, event_rx) = mpsc::channel();
+    let (input_tx, input_rx) = mpsc::channel();
     let app_config = config.clone();
     let network_identity = identity.clone();
 
     thread::spawn(move || {
-        if let Err(error) =
-            client_network_loop(app_config, network_identity, true, event_tx.clone())
-        {
+        if let Err(error) = client_network_loop(
+            app_config,
+            network_identity,
+            true,
+            event_tx.clone(),
+            input_rx,
+        ) {
             let _ = event_tx.send(ClientEvent::Log(format!("network stopped: {error}")));
         }
     });
@@ -50,13 +59,18 @@ fn run_gui(config: Config) -> eframe::Result {
     eframe::run_native(
         "rust-desk-light client",
         native_options,
-        Box::new(move |cc| Ok(Box::new(ClientApp::new(cc, config, identity, event_rx)))),
+        Box::new(move |cc| {
+            Ok(Box::new(ClientApp::new(
+                cc, config, identity, event_rx, input_tx,
+            )))
+        }),
     )
 }
 
 fn run_terminal(config: Config) -> io::Result<()> {
     let identity = load_client_identity();
     let (event_tx, event_rx) = mpsc::channel();
+    let (_input_tx, input_rx) = mpsc::channel();
     println!(
         "rust-desk-light client terminal fallback, server={}:{}",
         config.ip, config.port
@@ -66,7 +80,8 @@ fn run_terminal(config: Config) -> io::Result<()> {
     println!("waiting for admin commands; press Ctrl+C to exit");
 
     thread::spawn(move || {
-        if let Err(error) = client_network_loop(config, identity, false, event_tx.clone()) {
+        if let Err(error) = client_network_loop(config, identity, false, event_tx.clone(), input_rx)
+        {
             let _ = event_tx.send(ClientEvent::Log(format!("network stopped: {error}")));
         }
     });
@@ -78,6 +93,7 @@ fn run_terminal(config: Config) -> io::Result<()> {
             ClientEvent::Command { command, payload } => {
                 println!("command={} payload={payload}", command.as_str());
             }
+            ClientEvent::ChatMessage { text } => println!("text_chat={text}"),
             ClientEvent::Log(line) => println!("{line}"),
         }
     }
@@ -90,10 +106,17 @@ fn client_network_loop(
     identity: LocalIdentity,
     gui_mode: bool,
     event_tx: Sender<ClientEvent>,
+    input_rx: Receiver<ClientInput>,
 ) -> io::Result<()> {
     let mut delay = INITIAL_RECONNECT_DELAY_MS;
     loop {
-        match client_connection_once(config.clone(), identity.clone(), gui_mode, event_tx.clone()) {
+        match client_connection_once(
+            config.clone(),
+            identity.clone(),
+            gui_mode,
+            event_tx.clone(),
+            &input_rx,
+        ) {
             Ok(()) => delay = INITIAL_RECONNECT_DELAY_MS,
             Err(error) => {
                 let _ = event_tx.send(ClientEvent::Log(format!(
@@ -112,8 +135,10 @@ fn client_connection_once(
     identity: LocalIdentity,
     gui_mode: bool,
     event_tx: Sender<ClientEvent>,
+    input_rx: &Receiver<ClientInput>,
 ) -> io::Result<()> {
     let stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     let mut writer = stream.try_clone()?;
     let mut next_message_id = 1u64;
     send(
@@ -134,8 +159,32 @@ fn client_connection_once(
     let mut reader = stream;
     let mut session_token = String::new();
     loop {
+        while let Ok(input) = input_rx.try_recv() {
+            match input {
+                ClientInput::ChatReply { text } => send(
+                    &mut writer,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::CommandAck {
+                        client_id: identity.id.clone(),
+                        command: CommandKind::TextChat,
+                        accepted: true,
+                        detail: format!("chat_message:{text}"),
+                    },
+                )?,
+            }
+        }
+
         let message = match read_envelope(&mut reader) {
             Ok(envelope) => envelope.message,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
             Err(error) => {
                 let _ = event_tx.send(ClientEvent::Log(format!("network read failed: {error}")));
                 break;
@@ -152,11 +201,14 @@ fn client_connection_once(
                 command,
                 payload,
             } => {
-                let detail = capabilities::handle_command(&command, &payload, gui_mode);
+                let detail = commands::handle_command(&command, &payload, gui_mode);
                 let _ = event_tx.send(ClientEvent::Command {
                     command: command.clone(),
-                    payload,
+                    payload: payload.clone(),
                 });
+                if command == CommandKind::TextChat && gui_mode {
+                    let _ = event_tx.send(ClientEvent::ChatMessage { text: payload });
+                }
                 send(
                     &mut writer,
                     &mut next_message_id,
@@ -187,9 +239,11 @@ fn client_connection_once(
 struct ClientApp {
     config: Config,
     identity: LocalIdentity,
+    input_tx: Sender<ClientInput>,
     event_rx: Receiver<ClientEvent>,
     connected: bool,
     log_lines: Vec<String>,
+    chat_window: Option<user_interaction::text_chat::ChatWindow>,
 }
 
 impl ClientApp {
@@ -198,14 +252,17 @@ impl ClientApp {
         config: Config,
         identity: LocalIdentity,
         event_rx: Receiver<ClientEvent>,
+        input_tx: Sender<ClientInput>,
     ) -> Self {
         apply_client_theme(&cc.egui_ctx);
         Self {
             config,
             identity,
+            input_tx,
             event_rx,
             connected: false,
             log_lines: vec!["client gui started".to_string()],
+            chat_window: None,
         }
     }
 
@@ -225,6 +282,9 @@ impl ClientApp {
                         "received command={} payload={payload}",
                         command.as_str()
                     ));
+                }
+                ClientEvent::ChatMessage { text } => {
+                    user_interaction::text_chat::receive_admin_message(&mut self.chat_window, text);
                 }
                 ClientEvent::Log(line) => self.log_lines.push(line),
             }
@@ -322,6 +382,9 @@ impl eframe::App for ClientApp {
             ui.add_space(12.0);
             self.render_activity(ui);
         });
+        for text in user_interaction::text_chat::render_window(ui.ctx(), &mut self.chat_window) {
+            let _ = self.input_tx.send(ClientInput::ChatReply { text });
+        }
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(200));
@@ -399,7 +462,14 @@ enum ClientEvent {
         command: CommandKind,
         payload: String,
     },
+    ChatMessage {
+        text: String,
+    },
     Log(String),
+}
+
+enum ClientInput {
+    ChatReply { text: String },
 }
 
 fn send(

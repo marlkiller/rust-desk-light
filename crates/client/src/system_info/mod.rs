@@ -1,4 +1,4 @@
-use super::support::{
+use crate::support::{
     current_dir_label, hostname, join_sections, run_command, run_command_with_stdin,
     run_first_available, run_first_available_with_stdin, run_powershell, run_powershell_with_stdin,
     truncate_chars, username,
