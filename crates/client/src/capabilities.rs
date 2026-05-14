@@ -19,7 +19,8 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> S
         | CommandKind::DriverManager
         | CommandKind::EventLog
         | CommandKind::ActiveConnections
-        | CommandKind::PerformanceMonitor => remote_management::handle(command, payload),
+        | CommandKind::PerformanceMonitor
+        | CommandKind::KillTargetProcess => remote_management::handle(command, payload),
         CommandKind::MessageBox
         | CommandKind::BalloonTip
         | CommandKind::TextChat

@@ -4,6 +4,7 @@ use rdl_protocol::CommandKind;
 pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {
         CommandKind::ActiveConnections => active_connections(),
+        CommandKind::KillTargetProcess => kill_target_process(payload),
         CommandKind::ProcessManager => process_list(),
         CommandKind::PerformanceMonitor => performance_snapshot(),
         CommandKind::EventLog => event_log_summary(),
@@ -34,22 +35,39 @@ fn active_connections() -> String {
 fn process_list() -> String {
     let output = if cfg!(target_os = "windows") {
         run_powershell(
-            r#"Write-Output "PID`tName`tCPU`tMemoryMB"; Get-Process | Sort-Object CPU -Descending | Select-Object -First 25 | ForEach-Object { "{0}`t{1}`t{2:N1}`t{3:N1}" -f $_.Id,$_.ProcessName,$_.CPU,($_.WorkingSet64/1MB) }"#,
-            40,
+            r#"Write-Output "PID`tName`tCPU`tMemoryMB"; Get-Process | Sort-Object CPU -Descending | ForEach-Object { "{0}`t{1}`t{2:N1}`t{3:N1}" -f $_.Id,$_.ProcessName,$_.CPU,($_.WorkingSet64/1MB) }"#,
+            10_000,
         )
     } else {
         let output = run_command(
             "ps",
             &["-eo", "pid,ppid,comm,pcpu,pmem", "--sort=-pcpu"],
-            30,
+            10_000,
         );
         if output.contains("failed:") || output.contains("error") {
-            run_command("ps", &["-eo", "pid,ppid,comm"], 30)
+            run_command("ps", &["-eo", "pid,ppid,comm"], 10_000)
         } else {
             output
         }
     };
     join_sections("process_list", vec![output])
+}
+
+fn kill_target_process(payload: &str) -> String {
+    let pid = payload.trim();
+    if pid.is_empty() || !pid.chars().all(|ch| ch.is_ascii_digit()) {
+        return "kill_target_process requires numeric pid payload".to_string();
+    }
+    if pid == std::process::id().to_string() {
+        return format!("kill_target_process refused: pid {pid} is this client process");
+    }
+
+    let output = if cfg!(target_os = "windows") {
+        run_powershell(&format!("Stop-Process -Id {pid} -Force"), 20)
+    } else {
+        run_command("kill", &[pid], 20)
+    };
+    join_sections("kill_target_process", vec![output])
 }
 
 fn performance_snapshot() -> String {

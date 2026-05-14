@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
-    Arc,
+    Arc, Mutex,
 };
 use std::thread;
 use std::time::Duration;
@@ -285,11 +285,18 @@ struct AdminApp {
 struct CommandResultWindow {
     id: u64,
     client_id: String,
+    hostname: String,
+    username: String,
     command: CommandKind,
     status: CommandResultStatus,
     detail: String,
     open: bool,
     close_requested: Arc<AtomicBool>,
+    refresh_requested: Arc<AtomicBool>,
+    process_kill_requested: Arc<Mutex<Option<String>>>,
+    table_filter: Arc<Mutex<String>>,
+    table_sort: Arc<Mutex<Option<TableSort>>>,
+    table_selected_row: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -297,6 +304,12 @@ enum CommandResultStatus {
     Pending,
     Accepted,
     Failed,
+}
+
+#[derive(Clone, Copy)]
+struct TableSort {
+    column: usize,
+    ascending: bool,
 }
 
 #[derive(Clone)]
@@ -329,7 +342,7 @@ impl AdminApp {
             client_filter: String::new(),
             selected_client_id: None,
             command_windows: Vec::new(),
-            log_lines: vec!["admin gui started".to_string()],
+            log_lines: vec![timestamped_log("admin gui started")],
         }
     }
 
@@ -338,18 +351,17 @@ impl AdminApp {
             match event {
                 AdminEvent::Connected => {
                     self.connected = true;
-                    self.log_lines.push("connected to server".to_string());
+                    self.push_log("connected to server");
                 }
                 AdminEvent::Disconnected => {
                     self.connected = false;
-                    self.log_lines.push("disconnected from server".to_string());
+                    self.push_log("disconnected from server");
                     for client in &mut self.clients {
                         client.status = ClientStatus::Offline;
                     }
                 }
                 AdminEvent::Clients(clients) => {
-                    self.log_lines
-                        .push(format!("online clients refreshed: {}", clients.len()));
+                    self.push_log(format!("online clients refreshed: {}", clients.len()));
                     self.merge_clients(clients);
                     if self.selected_client_id.is_none() {
                         self.selected_client_id =
@@ -362,12 +374,16 @@ impl AdminApp {
                     accepted,
                     detail,
                 } => self.handle_command_ack(client_id, command, accepted, detail),
-                AdminEvent::Log(line) => self.log_lines.push(line),
+                AdminEvent::Log(line) => self.push_log(line),
             }
             if self.log_lines.len() > 300 {
                 self.log_lines.remove(0);
             }
         }
+    }
+
+    fn push_log(&mut self, line: impl Into<String>) {
+        self.log_lines.push(timestamped_log(line));
     }
 
     fn merge_clients(&mut self, clients: Vec<ClientInfo>) {
@@ -423,7 +439,7 @@ impl AdminApp {
             payload: String::new(),
         });
         self.open_command_window(client_id, command.clone());
-        self.log_lines.push(format!(
+        self.push_log(format!(
             "sent command={} to {}",
             command.as_str(),
             client_id
@@ -431,14 +447,22 @@ impl AdminApp {
     }
 
     fn open_command_window(&mut self, client_id: &str, command: CommandKind) {
+        let (hostname, username) = self.client_window_identity(client_id);
         self.command_windows.push(CommandResultWindow {
             id: self.next_command_window_id(),
             client_id: client_id.to_string(),
+            hostname,
+            username,
             command,
             status: CommandResultStatus::Pending,
             detail: "Waiting for client result...".to_string(),
             open: true,
             close_requested: Arc::new(AtomicBool::new(false)),
+            refresh_requested: Arc::new(AtomicBool::new(false)),
+            process_kill_requested: Arc::new(Mutex::new(None)),
+            table_filter: Arc::new(Mutex::new(String::new())),
+            table_sort: Arc::new(Mutex::new(None)),
+            table_selected_row: Arc::new(Mutex::new(None)),
         });
     }
 
@@ -451,6 +475,14 @@ impl AdminApp {
             .saturating_add(1)
     }
 
+    fn client_window_identity(&self, client_id: &str) -> (String, String) {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| (row.info.hostname.clone(), row.info.username.clone()))
+            .unwrap_or_else(|| ("unknown-host".to_string(), "unknown-user".to_string()))
+    }
+
     fn handle_command_ack(
         &mut self,
         client_id: String,
@@ -458,7 +490,7 @@ impl AdminApp {
         accepted: bool,
         detail: String,
     ) {
-        self.log_lines.push(format!(
+        self.push_log(format!(
             "ack client={} command={} accepted={}",
             client_id,
             command.as_str(),
@@ -469,24 +501,42 @@ impl AdminApp {
             return;
         }
 
+        let (hostname, username) = self.client_window_identity(&client_id);
         if let Some(window) = self.command_windows.iter_mut().rev().find(|window| {
             window.client_id == client_id
                 && window.command == command
                 && matches!(window.status, CommandResultStatus::Pending)
         }) {
-            window.status = if accepted {
-                CommandResultStatus::Accepted
-            } else {
-                CommandResultStatus::Failed
-            };
-            window.detail = detail;
-            window.open = true;
+            update_command_window(window, accepted, detail, hostname, username);
+            return;
+        }
+
+        if let Some(window) = self
+            .command_windows
+            .iter_mut()
+            .rev()
+            .find(|window| window.client_id == client_id && window.command == command)
+        {
+            update_command_window(window, accepted, detail, hostname, username);
+            return;
+        }
+
+        if command == CommandKind::KillTargetProcess {
+            self.push_log(format!(
+                "kill target process result client={} accepted={} detail={}",
+                client_id, accepted, detail
+            ));
+            if accepted && kill_target_process_succeeded(&detail) {
+                self.refresh_process_window(&client_id);
+            }
             return;
         }
 
         self.command_windows.push(CommandResultWindow {
             id: self.next_command_window_id(),
             client_id,
+            hostname,
+            username,
             command,
             status: if accepted {
                 CommandResultStatus::Accepted
@@ -496,7 +546,30 @@ impl AdminApp {
             detail,
             open: true,
             close_requested: Arc::new(AtomicBool::new(false)),
+            refresh_requested: Arc::new(AtomicBool::new(false)),
+            process_kill_requested: Arc::new(Mutex::new(None)),
+            table_filter: Arc::new(Mutex::new(String::new())),
+            table_sort: Arc::new(Mutex::new(None)),
+            table_selected_row: Arc::new(Mutex::new(None)),
         });
+    }
+
+    fn refresh_process_window(&mut self, client_id: &str) {
+        let Some(window) = self.command_windows.iter_mut().rev().find(|window| {
+            window.client_id == client_id && window.command == CommandKind::ProcessManager
+        }) else {
+            return;
+        };
+
+        let _ = self.input_tx.send(AdminInput::Command {
+            target_id: client_id.to_string(),
+            command: CommandKind::ProcessManager,
+            payload: String::new(),
+        });
+        window.status = CommandResultStatus::Pending;
+        window.detail = "Refreshing process list...".to_string();
+        window.open = true;
+        self.push_log(format!("refresh command=process_manager to {client_id}"));
     }
 
     fn render_menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -516,8 +589,7 @@ impl AdminApp {
                 }
                 ui.menu_button("中文测试", |ui| {
                     if ui.button("输出中文日志").clicked() {
-                        self.log_lines
-                            .push("中文日志测试：菜单和日志应正常显示，不应乱码。".to_string());
+                        self.push_log("中文日志测试：菜单和日志应正常显示，不应乱码。");
                         ui.close();
                     }
                 });
@@ -657,18 +729,56 @@ impl AdminApp {
                 .stick_to_bottom(true)
                 .max_height(180.0)
                 .show(ui, |ui| {
-                    for line in &self.log_lines {
-                        ui.label(egui::RichText::new(line).size(12.0).color(COLOR_MUTED));
-                    }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(ui.available_width());
+                        for line in &self.log_lines {
+                            ui.label(egui::RichText::new(line).size(12.0).color(COLOR_MUTED));
+                        }
+                    });
                 });
         });
     }
 
     fn render_command_windows(&mut self, ctx: &egui::Context) {
+        let mut pending_logs = Vec::new();
         for window in &mut self.command_windows {
             if window.close_requested.load(Ordering::Relaxed) {
                 window.open = false;
             }
+            if window.refresh_requested.swap(false, Ordering::Relaxed) {
+                let _ = self.input_tx.send(AdminInput::Command {
+                    target_id: window.client_id.clone(),
+                    command: window.command.clone(),
+                    payload: String::new(),
+                });
+                window.status = CommandResultStatus::Pending;
+                window.detail = "Refreshing command result...".to_string();
+                window.open = true;
+                pending_logs.push(format!(
+                    "refresh command={} to {}",
+                    window.command.as_str(),
+                    window.client_id
+                ));
+            }
+            let process_id = window
+                .process_kill_requested
+                .lock()
+                .ok()
+                .and_then(|mut value| value.take());
+            if let Some(process_id) = process_id {
+                let _ = self.input_tx.send(AdminInput::Command {
+                    target_id: window.client_id.clone(),
+                    command: CommandKind::KillTargetProcess,
+                    payload: process_id.clone(),
+                });
+                pending_logs.push(format!(
+                    "kill target process pid={} on {}",
+                    process_id, window.client_id
+                ));
+            }
+        }
+        for line in pending_logs {
+            self.push_log(line);
         }
 
         for window in &mut self.command_windows {
@@ -678,7 +788,7 @@ impl AdminApp {
             let title = format!(
                 "{} - {}",
                 command_title(&window.command),
-                compact_id(&window.client_id)
+                command_window_identity_title(&window.hostname, &window.username)
             );
             let viewport_id = egui::ViewportId::from_hash_of(("command_result", window.id));
             let builder = egui::ViewportBuilder::default()
@@ -687,11 +797,16 @@ impl AdminApp {
                 .with_min_inner_size([260.0, 180.0])
                 .with_resizable(true);
 
-            let client_id = window.client_id.clone();
             let command = window.command.clone();
             let status = window.status;
             let detail = window.detail.clone();
             let close_requested = window.close_requested.clone();
+            let refresh_requested = window.refresh_requested.clone();
+            let process_kill_requested = window.process_kill_requested.clone();
+            let table_filter = window.table_filter.clone();
+            let table_sort = window.table_sort.clone();
+            let table_selected_row = window.table_selected_row.clone();
+            let status_notice = command_status_notice(&command, status, &detail);
 
             ctx.show_viewport_deferred(viewport_id, builder, move |ui, _class| {
                 if ui.ctx().input(|input| input.viewport().close_requested()) {
@@ -701,27 +816,34 @@ impl AdminApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
                     .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Client").color(COLOR_MUTED));
-                            ui.label(egui::RichText::new(&client_id).color(COLOR_TEXT));
-                            ui.separator();
-                            ui.label(egui::RichText::new("Command").color(COLOR_MUTED));
-                            ui.label(
-                                egui::RichText::new(command.as_str())
-                                    .color(COLOR_TEXT)
-                                    .strong(),
-                            );
-                            ui.separator();
-                            result_status_badge(ui, &status);
-                        });
-                        ui.add_space(10.0);
-                        egui::ScrollArea::both()
-                            .id_salt(("command_result_scroll", viewport_id))
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                let mut detail = detail.clone();
-                                render_command_result(ui, &command, &mut detail);
-                            });
+                        let status_bar_height = 44.0;
+                        let content_height =
+                            (ui.available_height() - status_bar_height - 8.0).max(0.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), content_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::ScrollArea::both()
+                                    .id_salt(("command_result_scroll", viewport_id))
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        let mut detail = detail.clone();
+                                        render_command_result(
+                                            ui,
+                                            &command,
+                                            &mut detail,
+                                            &table_filter,
+                                            &table_sort,
+                                            &table_selected_row,
+                                            &refresh_requested,
+                                            matches!(status, CommandResultStatus::Pending),
+                                            &process_kill_requested,
+                                        );
+                                    });
+                            },
+                        );
+                        ui.add_space(8.0);
+                        render_command_window_status_bar(ui, &status, status_notice.as_deref());
                     });
             });
         }
@@ -866,31 +988,150 @@ fn client_status_badge(ui: &mut egui::Ui, status: ClientStatus) {
     status_badge(ui, text, color);
 }
 
-fn result_status_badge(ui: &mut egui::Ui, status: &CommandResultStatus) {
-    let (text, color) = match status {
-        CommandResultStatus::Pending => ("Pending", COLOR_WARN),
-        CommandResultStatus::Accepted => ("Done", COLOR_GOOD),
-        CommandResultStatus::Failed => ("Failed", COLOR_BAD),
-    };
-    status_badge(ui, text, color);
+fn timestamped_log(line: impl Into<String>) -> String {
+    format!("[{}] {}", activity_time_label(), line.into())
 }
 
-fn render_command_result(ui: &mut egui::Ui, command: &CommandKind, detail: &mut String) {
+fn activity_time_label() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let china_time = now + 8 * 60 * 60;
+    let seconds_today = china_time % (24 * 60 * 60);
+    let hour = seconds_today / 3600;
+    let minute = (seconds_today % 3600) / 60;
+    let second = seconds_today % 60;
+    format!("{hour:02}:{minute:02}:{second:02}")
+}
+
+fn update_command_window(
+    window: &mut CommandResultWindow,
+    accepted: bool,
+    detail: String,
+    hostname: String,
+    username: String,
+) {
+    window.status = if accepted {
+        CommandResultStatus::Accepted
+    } else {
+        CommandResultStatus::Failed
+    };
+    window.detail = detail;
+    window.hostname = hostname;
+    window.username = username;
+    window.open = true;
+}
+
+fn render_command_window_status_bar(
+    ui: &mut egui::Ui,
+    status: &CommandResultStatus,
+    notice: Option<&str>,
+) {
+    let (status_text, default_progress_text, color) = command_window_status(status);
+    let progress_text = notice.unwrap_or(default_progress_text);
+    egui::Frame::default()
+        .fill(COLOR_PANEL)
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .corner_radius(egui::CornerRadius::same(6))
+        .show(ui, |ui| {
+            ui.set_min_height(26.0);
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 4.0, color);
+                ui.label(
+                    egui::RichText::new(status_text)
+                        .size(12.0)
+                        .color(COLOR_TEXT)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(progress_text)
+                        .size(12.0)
+                        .color(COLOR_MUTED),
+                );
+            });
+        });
+}
+
+fn command_window_status(
+    status: &CommandResultStatus,
+) -> (&'static str, &'static str, egui::Color32) {
+    match status {
+        CommandResultStatus::Pending => ("Pending", "Waiting for client result", COLOR_WARN),
+        CommandResultStatus::Accepted => ("Done", "Result received", COLOR_GOOD),
+        CommandResultStatus::Failed => ("Failed", "Command failed", COLOR_BAD),
+    }
+}
+
+fn command_window_identity_title(hostname: &str, username: &str) -> String {
+    match (hostname.trim(), username.trim()) {
+        ("", "") => "unknown-host".to_string(),
+        (host, "") => host.to_string(),
+        ("", user) => user.to_string(),
+        (host, user) => format!("{host} / {user}"),
+    }
+}
+
+fn command_status_notice(
+    command: &CommandKind,
+    status: CommandResultStatus,
+    detail: &str,
+) -> Option<String> {
+    let expects_table = matches!(
+        command,
+        CommandKind::ProcessManager | CommandKind::EventLog | CommandKind::ActiveConnections
+    );
+    if expects_table
+        && matches!(status, CommandResultStatus::Accepted)
+        && parse_result_table(detail).is_none()
+    {
+        Some("Table data could not be parsed; showing raw output".to_string())
+    } else {
+        None
+    }
+}
+
+fn kill_target_process_succeeded(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    detail.contains("ok")
+        && !detail.contains("refused")
+        && !detail.contains("requires")
+        && !detail.contains("failed")
+        && !detail.contains("exited with error")
+}
+
+fn render_command_result(
+    ui: &mut egui::Ui,
+    command: &CommandKind,
+    detail: &mut String,
+    table_filter: &Arc<Mutex<String>>,
+    table_sort: &Arc<Mutex<Option<TableSort>>>,
+    table_selected_row: &Arc<Mutex<Option<String>>>,
+    refresh_requested: &Arc<AtomicBool>,
+    refresh_in_flight: bool,
+    process_kill_requested: &Arc<Mutex<Option<String>>>,
+) {
     let expects_table = matches!(
         command,
         CommandKind::ProcessManager | CommandKind::EventLog | CommandKind::ActiveConnections
     );
     if expects_table {
+        render_table_toolbar(ui, table_filter, refresh_requested, refresh_in_flight);
+        ui.add_space(8.0);
         if let Some(table) = parse_result_table(detail) {
-            render_result_table(ui, command, &table);
+            render_result_table(
+                ui,
+                command,
+                &table,
+                table_filter,
+                table_sort,
+                table_selected_row,
+                process_kill_requested,
+            );
             return;
         }
-        ui.label(
-            egui::RichText::new("Table data could not be parsed; showing raw output.")
-                .size(12.0)
-                .color(COLOR_WARN),
-        );
-        ui.add_space(8.0);
     }
 
     ui.add(
@@ -900,6 +1141,43 @@ fn render_command_result(ui: &mut egui::Ui, command: &CommandKind, detail: &mut 
             .desired_rows(18)
             .interactive(false),
     );
+}
+
+fn render_table_toolbar(
+    ui: &mut egui::Ui,
+    table_filter: &Arc<Mutex<String>>,
+    refresh_requested: &Arc<AtomicBool>,
+    refresh_in_flight: bool,
+) {
+    let mut filter = table_filter
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Filter").size(12.0).color(COLOR_MUTED));
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut filter)
+                .hint_text("Filter table content")
+                .desired_width(240.0),
+        );
+        if response.changed() {
+            if let Ok(mut value) = table_filter.lock() {
+                *value = filter.clone();
+            }
+        }
+        let label = if refresh_in_flight {
+            "Refreshing..."
+        } else {
+            "Refresh"
+        };
+        if ui
+            .add_enabled(!refresh_in_flight, egui::Button::new(label))
+            .clicked()
+        {
+            refresh_requested.store(true, Ordering::Relaxed);
+        }
+    });
 }
 
 struct ResultTable {
@@ -979,21 +1257,174 @@ fn clean_cell(value: impl AsRef<str>) -> String {
     value.as_ref().trim().to_string()
 }
 
-fn render_result_table(ui: &mut egui::Ui, command: &CommandKind, table: &ResultTable) {
+fn render_result_table(
+    ui: &mut egui::Ui,
+    command: &CommandKind,
+    table: &ResultTable,
+    table_filter: &Arc<Mutex<String>>,
+    table_sort: &Arc<Mutex<Option<TableSort>>>,
+    table_selected_row: &Arc<Mutex<Option<String>>>,
+    process_kill_requested: &Arc<Mutex<Option<String>>>,
+) {
     let widths = table_column_widths(command, &table.headers, ui.available_width());
+    let filter = table_filter
+        .lock()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut sort = table_sort.lock().map(|value| *value).unwrap_or(None);
+    let selected_row = table_selected_row
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or(None);
+    let mut rows = filtered_table_rows(table, &filter);
+    sort_table_rows(&mut rows, sort);
+
     egui::Frame::default()
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            table_row(ui, &table.headers, &widths, true, 0);
-            for (row_index, row) in table.rows.iter().enumerate() {
-                table_row(ui, row, &widths, false, row_index);
+            table_header_row(ui, &table.headers, &widths, &mut sort);
+            for (row_index, row) in rows.iter().enumerate() {
+                let row_key = table_row_key(row);
+                table_row(
+                    ui,
+                    row,
+                    &widths,
+                    false,
+                    row_index,
+                    selected_row.as_deref() == Some(row_key.as_str()),
+                    &row_key,
+                    table_selected_row,
+                    process_row_pid(command, &table.headers, row),
+                    process_kill_requested,
+                );
             }
         });
+
+    if let Ok(mut value) = table_sort.lock() {
+        *value = sort;
+    }
+    if rows.is_empty() {
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new("No rows match the current filter.")
+                .size(12.0)
+                .color(COLOR_MUTED),
+        );
+    }
 }
 
-fn table_row(ui: &mut egui::Ui, cells: &[String], widths: &[f32], header: bool, row_index: usize) {
-    let fill = if header {
+fn filtered_table_rows(table: &ResultTable, filter: &str) -> Vec<Vec<String>> {
+    table
+        .rows
+        .iter()
+        .filter(|row| {
+            filter.is_empty()
+                || row
+                    .iter()
+                    .any(|cell| cell.to_ascii_lowercase().contains(filter))
+        })
+        .cloned()
+        .collect()
+}
+
+fn sort_table_rows(rows: &mut [Vec<String>], sort: Option<TableSort>) {
+    let Some(sort) = sort else {
+        return;
+    };
+    rows.sort_by(|left, right| {
+        let left = left.get(sort.column).map(String::as_str).unwrap_or("");
+        let right = right.get(sort.column).map(String::as_str).unwrap_or("");
+        let ordering = compare_table_cells(left, right);
+        if sort.ascending {
+            ordering
+        } else {
+            ordering.reverse()
+        }
+    });
+}
+
+fn compare_table_cells(left: &str, right: &str) -> std::cmp::Ordering {
+    match (left.trim().parse::<f64>(), right.trim().parse::<f64>()) {
+        (Ok(left), Ok(right)) => left
+            .partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        _ => left.to_ascii_lowercase().cmp(&right.to_ascii_lowercase()),
+    }
+}
+
+fn table_row_key(row: &[String]) -> String {
+    row.join("\t")
+}
+
+fn table_header_row(
+    ui: &mut egui::Ui,
+    cells: &[String],
+    widths: &[f32],
+    sort: &mut Option<TableSort>,
+) {
+    let fill = egui::Color32::from_rgb(235, 240, 247);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        for (index, width) in widths.iter().enumerate() {
+            let cell = cells.get(index).map(String::as_str).unwrap_or("");
+            let marker = match sort {
+                Some(current) if current.column == index && current.ascending => " ^",
+                Some(current) if current.column == index => " v",
+                _ => "",
+            };
+            egui::Frame::default()
+                .fill(fill)
+                .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+                .inner_margin(egui::Margin::symmetric(4, 4))
+                .show(ui, |ui| {
+                    ui.set_width(*width);
+                    let response = ui.add_sized(
+                        [*width, 18.0],
+                        egui::Button::new(
+                            egui::RichText::new(format!(
+                                "{}{}",
+                                truncate_table_cell(cell, *width - 14.0),
+                                marker
+                            ))
+                            .size(12.0)
+                            .color(COLOR_MUTED)
+                            .strong(),
+                        )
+                        .frame(false),
+                    );
+                    if response.clicked() {
+                        *sort = match sort {
+                            Some(current) if current.column == index => Some(TableSort {
+                                column: index,
+                                ascending: !current.ascending,
+                            }),
+                            _ => Some(TableSort {
+                                column: index,
+                                ascending: true,
+                            }),
+                        };
+                    }
+                });
+        }
+    });
+}
+
+fn table_row(
+    ui: &mut egui::Ui,
+    cells: &[String],
+    widths: &[f32],
+    header: bool,
+    row_index: usize,
+    selected: bool,
+    row_key: &str,
+    table_selected_row: &Arc<Mutex<Option<String>>>,
+    process_id: Option<String>,
+    process_kill_requested: &Arc<Mutex<Option<String>>>,
+) {
+    let fill = if selected {
+        egui::Color32::from_rgb(219, 234, 254)
+    } else if header {
         egui::Color32::from_rgb(235, 240, 247)
     } else if row_index % 2 == 0 {
         COLOR_PANEL
@@ -1003,6 +1434,7 @@ fn table_row(ui: &mut egui::Ui, cells: &[String], widths: &[f32], header: bool, 
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        let row_text = cells.join("\t");
         for (index, width) in widths.iter().enumerate() {
             let cell = cells.get(index).map(String::as_str).unwrap_or("");
             egui::Frame::default()
@@ -1011,15 +1443,61 @@ fn table_row(ui: &mut egui::Ui, cells: &[String], widths: &[f32], header: bool, 
                 .inner_margin(egui::Margin::symmetric(4, 4))
                 .show(ui, |ui| {
                     ui.set_width(*width);
-                    ui.label(
-                        egui::RichText::new(truncate_table_cell(cell, *width))
-                            .size(12.0)
-                            .color(if header { COLOR_MUTED } else { COLOR_TEXT })
-                            .strong(),
+                    let response = ui.add_sized(
+                        [*width, 18.0],
+                        egui::Label::new(
+                            egui::RichText::new(truncate_table_cell(cell, *width))
+                                .size(12.0)
+                                .color(if header { COLOR_MUTED } else { COLOR_TEXT })
+                                .strong(),
+                        )
+                        .sense(egui::Sense::click()),
                     );
+                    if response.clicked() && !header {
+                        if let Ok(mut value) = table_selected_row.lock() {
+                            *value = Some(row_key.to_string());
+                        }
+                    }
+                    response.context_menu(|ui| {
+                        if ui.button("Copy Cell").clicked() {
+                            ui.ctx().copy_text(cell.to_string());
+                            ui.close();
+                        }
+                        if ui.button("Copy Row").clicked() {
+                            ui.ctx().copy_text(row_text.clone());
+                            ui.close();
+                        }
+                        if let Some(process_id) = process_id.clone() {
+                            ui.separator();
+                            if ui.button("Kill Process").clicked() {
+                                if let Ok(mut selected) = table_selected_row.lock() {
+                                    *selected = Some(row_key.to_string());
+                                }
+                                if let Ok(mut value) = process_kill_requested.lock() {
+                                    *value = Some(process_id.clone());
+                                }
+                                ui.close();
+                            }
+                        }
+                    });
                 });
         }
     });
+}
+
+fn process_row_pid(command: &CommandKind, headers: &[String], row: &[String]) -> Option<String> {
+    if *command != CommandKind::ProcessManager {
+        return None;
+    }
+    let pid_index = headers
+        .iter()
+        .position(|header| header.eq_ignore_ascii_case("pid"))?;
+    let pid = row.get(pid_index)?.trim();
+    if pid.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(pid.to_string())
+    } else {
+        None
+    }
 }
 
 fn table_column_widths(

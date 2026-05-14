@@ -59,6 +59,7 @@ pub enum CommandKind {
     UpdateClient,
     UninstallClient,
     KillClientProcess,
+    KillTargetProcess,
     Shutdown,
     Reboot,
     MoveToGroup,
@@ -99,6 +100,7 @@ impl CommandKind {
             Self::UpdateClient => "update_client",
             Self::UninstallClient => "uninstall_client",
             Self::KillClientProcess => "kill_client_process",
+            Self::KillTargetProcess => "kill_target_process",
             Self::Shutdown => "shutdown",
             Self::Reboot => "reboot",
             Self::MoveToGroup => "move_to_group",
@@ -139,6 +141,7 @@ impl CommandKind {
             "update_client" => Self::UpdateClient,
             "uninstall_client" => Self::UninstallClient,
             "kill_client_process" => Self::KillClientProcess,
+            "kill_target_process" => Self::KillTargetProcess,
             "shutdown" => Self::Shutdown,
             "reboot" => Self::Reboot,
             "move_to_group" => Self::MoveToGroup,
@@ -212,6 +215,7 @@ impl CommandKind {
             Self::CreateTask => 33,
             Self::CommandPreset => 34,
             Self::PluginManager => 35,
+            Self::KillTargetProcess => 36,
         }
     }
 
@@ -252,6 +256,7 @@ impl CommandKind {
             33 => Self::CreateTask,
             34 => Self::CommandPreset,
             35 => Self::PluginManager,
+            36 => Self::KillTargetProcess,
             _ => return Err(ProtocolError::InvalidCommand),
         })
     }

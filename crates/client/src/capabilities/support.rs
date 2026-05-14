@@ -176,5 +176,5 @@ fn truncate_lines(value: &str, max_lines: usize) -> String {
     if value.lines().count() > max_lines {
         lines.push_str("\n...");
     }
-    truncate_chars(&lines, 8_000)
+    truncate_chars(&lines, 256_000)
 }
