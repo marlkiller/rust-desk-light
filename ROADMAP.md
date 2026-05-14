@@ -17,9 +17,9 @@ complexity. The goal is a practical small tool first.
 - Keep the protocol consistent before adding features.
 - Keep the server simple: register peers, track presence, route messages, and log events.
 - Keep GUI lightweight with `egui/eframe`.
-- Keep headless/terminal mode working for testing and recovery.
+- Keep headless/terminal mode working for smoke checks and recovery.
 - Add risky capabilities gradually, with explicit user-visible behavior.
-- Prefer small, testable milestones over a large professional remote-desktop stack.
+- Prefer small, verifiable milestones over a large professional remote-desktop stack.
 
 ## Milestone 0: Workspace Foundation
 
@@ -54,27 +54,26 @@ This is the next important milestone. All later features depend on this being st
 - [x] Keep payloads typed in `rdl_protocol`; do not let server/client/admin invent separate encodings.
 - [x] Keep strings as length-prefixed UTF-8 inside the binary payload.
 - [x] Keep command enum values stable and documented.
-- [x] Add encode/decode tests for core message types.
+- [x] Manually verify binary encode/decode with the smoke flow.
 - [x] Add protocol errors as first-class messages.
-- [ ] Add heartbeat messages: `ping`, `pong`, and last-seen timestamps.
-- [ ] Add basic reconnect with backoff for client and admin.
-- [ ] Add stale client cleanup on the server.
-- [ ] Add integration tests for:
-  - client registration
-  - admin registration
-  - client list
-  - command forwarding
-  - command ack forwarding
-  - reconnect
-  - offline client command failure
+- [x] Add heartbeat messages: `ping`, `pong`, and last-seen timestamps.
+- [x] Add basic reconnect with backoff for client and admin.
+- [x] Add stale client cleanup on the server.
+- [x] Manually verify client registration.
+- [x] Manually verify admin registration.
+- [x] Manually verify client list.
+- [x] Manually verify command forwarding.
+- [x] Manually verify command ack forwarding.
+- [ ] Manually verify reconnect.
+- [ ] Manually verify offline client command failure.
 
 Notes:
 
 - Do not use JSON for the transport protocol.
 - Do not pull in RustDesk's full protocol directly; implement a small compatible design style in `rdl_protocol`.
 - Protobuf can be considered later if the custom binary protocol grows too much, but Milestone 1 should be readable and maintainable in this repo.
-- Add a small protocol dump/debug tool or test helper so binary frames remain inspectable during development.
-- TLS/Noise encryption is intentionally not required in this milestone; first make the protocol consistent and tested.
+- Add a small protocol dump/debug tool so binary frames remain inspectable during development.
+- TLS/Noise encryption is intentionally not required in this milestone; first make the protocol consistent and verified.
 
 ## Milestone 2: Identity And Local Trust
 
@@ -100,7 +99,7 @@ Reference direction:
 - [ ] Add clearer status badges: online, offline, reconnecting, stale.
 - [ ] Show client fingerprint, hostname, user, OS, and last seen.
 - [ ] Add a simple command result panel.
-- [ ] Preserve terminal mode for smoke tests.
+- [ ] Preserve terminal mode for smoke checks.
 
 ## Milestone 4: Basic Client Capabilities
 

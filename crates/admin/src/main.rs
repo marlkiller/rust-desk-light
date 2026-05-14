@@ -7,6 +7,10 @@ use std::io::{self, BufRead};
 use std::net::{Shutdown, TcpStream};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
+
+const INITIAL_RECONNECT_DELAY_MS: u64 = 500;
+const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -99,11 +103,38 @@ fn admin_network_loop(
     input_rx: Receiver<AdminInput>,
     event_tx: Sender<AdminEvent>,
 ) -> io::Result<()> {
-    let stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
-    let mut writer = stream.try_clone()?;
+    let mut delay = INITIAL_RECONNECT_DELAY_MS;
+    loop {
+        match admin_connection_once(&config, &input_rx, &event_tx) {
+            Ok(AdminConnectionExit::Quit) => return Ok(()),
+            Ok(AdminConnectionExit::Disconnected) => delay = INITIAL_RECONNECT_DELAY_MS,
+            Err(error) => {
+                let _ = event_tx.send(AdminEvent::Log(format!(
+                    "connect failed: {error}; retrying in {delay}ms"
+                )));
+            }
+        }
+        let _ = event_tx.send(AdminEvent::Disconnected);
+        thread::sleep(Duration::from_millis(delay));
+        delay = (delay * 2).min(MAX_RECONNECT_DELAY_MS);
+    }
+}
+
+enum AdminConnectionExit {
+    Disconnected,
+    Quit,
+}
+
+fn admin_connection_once(
+    config: &Config,
+    input_rx: &Receiver<AdminInput>,
+    event_tx: &Sender<AdminEvent>,
+) -> io::Result<AdminConnectionExit> {
+    let mut stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
     let mut next_message_id = 1u64;
     send(
-        &mut writer,
+        &mut stream,
         &mut next_message_id,
         Message::Hello {
             role: Role::Admin,
@@ -114,26 +145,20 @@ fn admin_network_loop(
             gui_available: true,
         },
     )?;
-    send(&mut writer, &mut next_message_id, Message::ListClients)?;
+    send(&mut stream, &mut next_message_id, Message::ListClients)?;
     let _ = event_tx.send(AdminEvent::Connected);
 
-    let mut input_writer = writer.try_clone()?;
-    let mut input_next_message_id = next_message_id;
-    thread::spawn(move || {
-        for input in input_rx {
+    loop {
+        while let Ok(input) = input_rx.try_recv() {
             let result = match input {
-                AdminInput::List => send(
-                    &mut input_writer,
-                    &mut input_next_message_id,
-                    Message::ListClients,
-                ),
+                AdminInput::List => send(&mut stream, &mut next_message_id, Message::ListClients),
                 AdminInput::Command {
                     target_id,
                     command,
                     payload,
                 } => send(
-                    &mut input_writer,
-                    &mut input_next_message_id,
+                    &mut stream,
+                    &mut next_message_id,
                     Message::Command {
                         target_id,
                         command,
@@ -141,23 +166,28 @@ fn admin_network_loop(
                     },
                 ),
                 AdminInput::Quit => {
-                    let _ = input_writer.shutdown(Shutdown::Both);
-                    break;
+                    let _ = stream.shutdown(Shutdown::Both);
+                    return Ok(AdminConnectionExit::Quit);
                 }
             };
             if result.is_err() {
-                break;
+                return Ok(AdminConnectionExit::Disconnected);
             }
         }
-    });
 
-    let mut reader = stream;
-    loop {
-        let message = match read_envelope(&mut reader) {
+        let message = match read_envelope(&mut stream) {
             Ok(envelope) => envelope.message,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
             Err(error) => {
                 let _ = event_tx.send(AdminEvent::Log(format!("network read failed: {error}")));
-                break;
+                return Ok(AdminConnectionExit::Disconnected);
             }
         };
 
@@ -178,14 +208,12 @@ fn admin_network_loop(
                     detail,
                 });
             }
+            Message::Ping => send(&mut stream, &mut next_message_id, Message::Pong)?,
             other => {
                 let _ = event_tx.send(AdminEvent::Log(format!("server: {other:?}")));
             }
         }
     }
-
-    let _ = event_tx.send(AdminEvent::Disconnected);
-    Ok(())
 }
 
 struct AdminApp {

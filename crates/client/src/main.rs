@@ -7,6 +7,10 @@ use std::io;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
+
+const INITIAL_RECONNECT_DELAY_MS: u64 = 500;
+const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -82,6 +86,33 @@ fn client_network_loop(
     gui_mode: bool,
     event_tx: Sender<ClientEvent>,
 ) -> io::Result<()> {
+    let mut delay = INITIAL_RECONNECT_DELAY_MS;
+    loop {
+        match client_connection_once(
+            config.clone(),
+            client_id.clone(),
+            gui_mode,
+            event_tx.clone(),
+        ) {
+            Ok(()) => delay = INITIAL_RECONNECT_DELAY_MS,
+            Err(error) => {
+                let _ = event_tx.send(ClientEvent::Log(format!(
+                    "connect failed: {error}; retrying in {delay}ms"
+                )));
+            }
+        }
+        let _ = event_tx.send(ClientEvent::Disconnected);
+        thread::sleep(Duration::from_millis(delay));
+        delay = (delay * 2).min(MAX_RECONNECT_DELAY_MS);
+    }
+}
+
+fn client_connection_once(
+    config: Config,
+    client_id: String,
+    gui_mode: bool,
+    event_tx: Sender<ClientEvent>,
+) -> io::Result<()> {
     let stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
     let mut writer = stream.try_clone()?;
     let mut next_message_id = 1u64;
@@ -138,7 +169,6 @@ fn client_network_loop(
         }
     }
 
-    let _ = event_tx.send(ClientEvent::Disconnected);
     Ok(())
 }
 

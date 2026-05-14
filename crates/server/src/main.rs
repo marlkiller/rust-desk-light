@@ -2,8 +2,12 @@ use rdl_protocol::{now_epoch_ms, read_envelope, write_envelope, ClientInfo, Mess
 use std::collections::HashMap;
 use std::io;
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
+use std::time::Duration;
+
+const HEARTBEAT_INTERVAL_MS: u128 = 5_000;
+const STALE_PEER_MS: u128 = 20_000;
 
 #[derive(Debug)]
 enum ServerEvent {
@@ -30,6 +34,8 @@ struct Peer {
     role: Option<Role>,
     sender: Sender<Message>,
     client_info: Option<ClientInfo>,
+    last_seen_epoch_ms: u128,
+    last_ping_epoch_ms: u128,
 }
 
 fn main() -> io::Result<()> {
@@ -142,7 +148,16 @@ fn writer_loop(peer_id: usize, mut writer: TcpStream, out_rx: Receiver<Message>)
 fn event_loop(events_rx: Receiver<ServerEvent>) {
     let mut peers: HashMap<usize, Peer> = HashMap::new();
 
-    for event in events_rx {
+    loop {
+        let event = match events_rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(event) => event,
+            Err(RecvTimeoutError::Timeout) => {
+                maintain_peers(&mut peers);
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+
         match event {
             ServerEvent::Connected { peer_id, sender } => {
                 peers.insert(
@@ -151,6 +166,8 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                         role: None,
                         sender,
                         client_info: None,
+                        last_seen_epoch_ms: now_epoch_ms(),
+                        last_ping_epoch_ms: 0,
                     },
                 );
                 println!("peer #{peer_id} connected");
@@ -163,17 +180,22 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                 if let Some(peer) = peers.get_mut(&peer_id) {
                     peer.role = Some(role.clone());
                     peer.client_info = info.clone();
+                    peer.last_seen_epoch_ms = now_epoch_ms();
                 }
                 println!("peer #{peer_id} registered as {}", role.as_str());
                 broadcast_clients(&peers);
             }
             ServerEvent::Message { peer_id, message } => match message {
-                Message::ListClients => send_clients(peer_id, &peers),
+                Message::ListClients => {
+                    mark_seen(peer_id, &mut peers);
+                    send_clients(peer_id, &peers);
+                }
                 Message::Command {
                     target_id,
                     command,
                     payload,
                 } => {
+                    mark_seen(peer_id, &mut peers);
                     let detail = route_command(&peers, &target_id, command.clone(), payload);
                     if let Some(peer) = peers.get(&peer_id) {
                         let _ = peer.sender.send(Message::CommandAck {
@@ -185,6 +207,7 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                     }
                 }
                 Message::CommandAck { .. } => {
+                    mark_seen(peer_id, &mut peers);
                     for peer in peers.values() {
                         if peer.role == Some(Role::Admin) {
                             let _ = peer.sender.send(message.clone());
@@ -192,9 +215,13 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                     }
                 }
                 Message::Ping => {
+                    mark_seen(peer_id, &mut peers);
                     if let Some(peer) = peers.get(&peer_id) {
                         let _ = peer.sender.send(Message::Pong);
                     }
+                }
+                Message::Pong => {
+                    mark_seen(peer_id, &mut peers);
                 }
                 other => eprintln!("peer #{peer_id} sent unsupported message: {other:?}"),
             },
@@ -206,6 +233,38 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                 }
             }
         }
+        maintain_peers(&mut peers);
+    }
+}
+
+fn mark_seen(peer_id: usize, peers: &mut HashMap<usize, Peer>) {
+    if let Some(peer) = peers.get_mut(&peer_id) {
+        peer.last_seen_epoch_ms = now_epoch_ms();
+    }
+}
+
+fn maintain_peers(peers: &mut HashMap<usize, Peer>) {
+    let now = now_epoch_ms();
+    let mut stale_client_removed = false;
+
+    for (peer_id, peer) in peers.iter_mut() {
+        if now.saturating_sub(peer.last_ping_epoch_ms) >= HEARTBEAT_INTERVAL_MS {
+            peer.last_ping_epoch_ms = now;
+            let _ = peer.sender.send(Message::Ping);
+        }
+        if now.saturating_sub(peer.last_seen_epoch_ms) > STALE_PEER_MS {
+            println!("peer #{peer_id} stale; removing from presence");
+        }
+    }
+
+    let before = peers.len();
+    peers.retain(|_, peer| now.saturating_sub(peer.last_seen_epoch_ms) <= STALE_PEER_MS);
+    if peers.len() != before {
+        stale_client_removed = true;
+    }
+
+    if stale_client_removed {
+        broadcast_clients(peers);
     }
 }
 
