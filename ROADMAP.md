@@ -99,9 +99,9 @@ Reference direction:
 - [x] Client GUI with status and activity log.
 - [x] Add admin search/filter for clients.
 - [x] Add clearer status badges: online, offline, reconnecting, stale.
-- [x] Show client fingerprint, hostname, user, OS, and last seen.
-- [ ] Add a simple command result panel.
-- [ ] Preserve terminal mode for smoke checks.
+- [x] Show client fingerprint, hostname, user, OS, and last heartbeat.
+- [x] Add a simple command result panel.
+- [x] Preserve terminal mode for smoke checks.
 
 ## Milestone 4: Basic Client Capabilities
 
@@ -122,14 +122,14 @@ Reference direction:
 
 - [ ] Message box.
 - [ ] System notification / balloon tip.
-- [ ] Text chat.
+- [x] Text chat.
 - [ ] Open text in notepad or platform equivalent.
 
 These are useful before full remote desktop because they validate bidirectional command/result flow.
 
 ## Milestone 6: File And Terminal Basics
 
-- [ ] Remote terminal command execution with timeout.
+- [x] Remote terminal command execution with timeout.
 - [ ] Command output streaming.
 - [ ] File list for a selected directory.
 - [ ] File download.
@@ -190,51 +190,51 @@ They can be reconsidered only after the basic remote assistance flow works relia
 
 ```text
 Session
-  Update Client: update_client
-  Uninstall Client: uninstall_client
-  Kill Client Process: kill_client_process
-  Shutdown: shutdown
-  Reboot: reboot
-  Move To Group: move_to_group
-  Clone Client Settings: clone_client_settings
-  Delete Client: delete_client
+  [ ] Update Client: update_client
+  [ ] Uninstall Client: uninstall_client
+  [ ] Kill Client Process: kill_client_process
+  [ ] Shutdown: shutdown
+  [ ] Reboot: reboot
+  [ ] Move To Group: move_to_group
+  [ ] Clone Client Settings: clone_client_settings
+  [ ] Delete Client: delete_client
 
 Remote Management
-  File Manager: file_manager
-  Remote Terminal: remote_terminal
-  Process Manager: process_manager
-  Window Manager: window_manager
-  Startup Manager: startup_manager
-  Registry Manager: registry_manager
-  Driver Manager: driver_manager
-  Event Log: event_log
-  Active Connections: active_connections
-  Performance Monitor: performance_monitor
+  [ ] File Manager: file_manager
+  [x] Remote Terminal: remote_terminal
+  [x] Process Manager: process_manager
+  [ ] Window Manager: window_manager
+  [ ] Startup Manager: startup_manager
+  [ ] Registry Manager: registry_manager
+  [ ] Driver Manager: driver_manager
+  [x] Event Log: event_log
+  [x] Active Connections: active_connections
+  [x] Performance Monitor: performance_monitor
 
 Live Control
-  Remote Desktop: remote_desktop
-  Camera: camera
-  Audio Listen: audio_listen
+  [ ] Remote Desktop: remote_desktop
+  [ ] Camera: camera
+  [ ] Audio Listen: audio_listen
 
 User Interaction
-  Message Box: message_box
-  Balloon Tip: balloon_tip
-  Text Chat: text_chat
-  Voice Chat: voice_chat
-  Open Text In Notepad: open_text_in_notepad
+  [ ] Message Box: message_box
+  [ ] Balloon Tip: balloon_tip
+  [x] Text Chat: text_chat
+  [ ] Voice Chat: voice_chat
+  [ ] Open Text In Notepad: open_text_in_notepad
 
 System Info
-  Computer Info: computer_info
-  Clipboard: clipboard
-  Proxy: proxy
+  [x] Computer Info: computer_info
+  [x] Clipboard: clipboard
+  [ ] Proxy: proxy
 
 Execute
-  Execute File: execute_file
-  Execute Code: execute_code
-  Execute Static Command: execute_static_command
-  Create Task: create_task
-  Command Preset: command_preset
+  [ ] Execute File: execute_file
+  [ ] Execute Code: execute_code
+  [ ] Execute Static Command: execute_static_command
+  [ ] Create Task: create_task
+  [ ] Command Preset: command_preset
 
 Plugins
-  Plugin Manager: plugin_manager
+  [ ] Plugin Manager: plugin_manager
 ```
