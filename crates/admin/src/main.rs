@@ -29,14 +29,16 @@ fn run_gui(config: Config) -> eframe::Result {
     });
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1080.0, 680.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1180.0, 740.0])
+            .with_min_inner_size([980.0, 620.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "rust-desk-light admin",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(AdminApp::new(config, input_tx, event_rx)))),
+        Box::new(move |cc| Ok(Box::new(AdminApp::new(cc, config, input_tx, event_rx)))),
     )
 }
 
@@ -177,12 +179,17 @@ struct AdminApp {
     connected: bool,
     clients: Vec<ClientInfo>,
     selected_client_id: Option<String>,
-    payload: String,
     log_lines: Vec<String>,
 }
 
 impl AdminApp {
-    fn new(config: Config, input_tx: Sender<AdminInput>, event_rx: Receiver<AdminEvent>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        config: Config,
+        input_tx: Sender<AdminInput>,
+        event_rx: Receiver<AdminEvent>,
+    ) -> Self {
+        apply_admin_theme(&cc.egui_ctx);
         Self {
             config,
             input_tx,
@@ -190,7 +197,6 @@ impl AdminApp {
             connected: false,
             clients: Vec::new(),
             selected_client_id: None,
-            payload: String::new(),
             log_lines: vec!["admin gui started".to_string()],
         }
     }
@@ -235,12 +241,18 @@ impl AdminApp {
         }
     }
 
+    fn selected_client(&self) -> Option<&ClientInfo> {
+        let selected_id = self.selected_client_id.as_deref()?;
+        self.clients
+            .iter()
+            .find(|client| client.id.as_str() == selected_id)
+    }
+
     fn send_command(&mut self, client_id: &str, command: CommandKind) {
-        let payload = self.payload.clone();
         let _ = self.input_tx.send(AdminInput::Command {
             target_id: client_id.to_string(),
             command: command.clone(),
-            payload,
+            payload: String::new(),
         });
         self.log_lines.push(format!(
             "sent command={} to {}",
@@ -248,98 +260,155 @@ impl AdminApp {
             client_id
         ));
     }
+
+    fn render_menu_bar(&mut self, ui: &mut egui::Ui) {
+        panel(ui, |ui| {
+            ui.horizontal(|ui| {
+                section_title(ui, "Commands");
+                ui.separator();
+                if let Some(client_id) = self.selected_client_id.clone() {
+                    render_context_menu(ui, &client_id, self);
+                } else {
+                    ui.label(
+                        egui::RichText::new("Select a client to enable command menus")
+                            .color(COLOR_MUTED),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if primary_button(ui, "Refresh").clicked() {
+                        let _ = self.input_tx.send(AdminInput::List);
+                    }
+                    status_pill(ui, self.connected);
+                    ui.label(
+                        egui::RichText::new(format!("{}:{}", self.config.ip, self.config.port))
+                            .color(COLOR_MUTED),
+                    );
+                });
+            });
+        });
+    }
+
+    fn render_overview(&mut self, ui: &mut egui::Ui) {
+        panel(ui, |ui| {
+            section_title(ui, "Overview");
+            ui.add_space(8.0);
+            ui.columns(4, |columns| {
+                metric(
+                    &mut columns[0],
+                    "Online clients",
+                    self.clients.len().to_string(),
+                );
+                metric(
+                    &mut columns[1],
+                    "Selected",
+                    self.selected_client_id
+                        .as_deref()
+                        .unwrap_or("None")
+                        .to_string(),
+                );
+                metric(
+                    &mut columns[2],
+                    "Connection",
+                    if self.connected { "Online" } else { "Offline" }.to_string(),
+                );
+                if let Some(client) = self.selected_client() {
+                    metric(&mut columns[3], "Host", client.hostname.clone());
+                } else {
+                    metric(&mut columns[3], "Host", "None".to_string());
+                }
+            });
+        });
+    }
+
+    fn render_clients(&mut self, ui: &mut egui::Ui) {
+        panel(ui, |ui| {
+            ui.horizontal(|ui| {
+                section_title(ui, "Clients");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("Right click a row for commands")
+                            .size(12.0)
+                            .color(COLOR_MUTED),
+                    );
+                });
+            });
+            ui.add_space(10.0);
+
+            if self.clients.is_empty() {
+                empty_state(ui);
+                return;
+            }
+
+            egui::ScrollArea::vertical()
+                .id_salt("admin_clients_scroll_area")
+                .show(ui, |ui| {
+                    egui::Grid::new("client_table")
+                        .striped(true)
+                        .num_columns(5)
+                        .spacing([18.0, 10.0])
+                        .min_col_width(92.0)
+                        .show(ui, |ui| {
+                            table_header(ui, "Client ID");
+                            table_header(ui, "Host");
+                            table_header(ui, "OS");
+                            table_header(ui, "User");
+                            table_header(ui, "GUI");
+                            ui.end_row();
+
+                            let clients = self.clients.clone();
+                            for client in clients {
+                                let selected =
+                                    self.selected_client_id.as_deref() == Some(client.id.as_str());
+                                let response = ui.selectable_label(selected, &client.id);
+                                if response.clicked() {
+                                    self.selected_client_id = Some(client.id.clone());
+                                }
+                                response
+                                    .context_menu(|ui| render_context_menu(ui, &client.id, self));
+
+                                ui.label(&client.hostname);
+                                ui.label(&client.os);
+                                ui.label(&client.username);
+                                ui.label(if client.gui_available { "Yes" } else { "No" });
+                                ui.end_row();
+                            }
+                        });
+                });
+        });
+    }
+
+    fn render_activity(&mut self, ui: &mut egui::Ui) {
+        panel(ui, |ui| {
+            section_title(ui, "Activity");
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical()
+                .id_salt("admin_activity_scroll_area")
+                .stick_to_bottom(true)
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for line in &self.log_lines {
+                        ui.monospace(egui::RichText::new(line).size(12.0).color(COLOR_MUTED));
+                    }
+                });
+        });
+    }
 }
 
 impl eframe::App for AdminApp {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let _ = frame;
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
 
-        ui.horizontal(|ui| {
-            ui.heading("rust-desk-light admin");
-            ui.separator();
-            ui.label(if self.connected { "Online" } else { "Offline" });
-            ui.separator();
-            ui.monospace(format!("server {}:{}", self.config.ip, self.config.port));
-            if ui.button("Refresh").clicked() {
-                let _ = self.input_tx.send(AdminInput::List);
-            }
-        });
-        ui.separator();
-
-        ui.columns(2, |columns| {
-            columns[0].vertical(|ui| {
-                ui.heading("Online Clients");
-                ui.label("Right-click a client row to open the management menu.");
-                ui.separator();
-
-                egui::Grid::new("client_table")
-                    .striped(true)
-                    .min_col_width(90.0)
-                    .show(ui, |ui| {
-                        ui.strong("Client ID");
-                        ui.strong("Host");
-                        ui.strong("OS");
-                        ui.strong("User");
-                        ui.strong("GUI");
-                        ui.end_row();
-
-                        let clients = self.clients.clone();
-                        for client in clients {
-                            let selected =
-                                self.selected_client_id.as_deref() == Some(client.id.as_str());
-                            let response = ui.selectable_label(selected, &client.id);
-                            if response.clicked() {
-                                self.selected_client_id = Some(client.id.clone());
-                            }
-                            response.context_menu(|ui| {
-                                render_context_menu(ui, &client.id, self);
-                            });
-                            ui.label(&client.hostname);
-                            ui.label(&client.os);
-                            ui.label(&client.username);
-                            ui.label(if client.gui_available { "yes" } else { "no" });
-                            ui.end_row();
-                        }
-                    });
-            });
-
-            columns[1].vertical(|ui| {
-                ui.heading("Action");
-                ui.label("Payload");
-                ui.text_edit_multiline(&mut self.payload);
-                ui.separator();
-
-                if let Some(client_id) = self.selected_client_id.clone() {
-                    ui.label("Selected Client");
-                    ui.monospace(&client_id);
-                    ui.separator();
-                    command_button(ui, "Computer Info", || {
-                        self.send_command(&client_id, CommandKind::ComputerInfo)
-                    });
-                    command_button(ui, "Message Box", || {
-                        self.send_command(&client_id, CommandKind::MessageBox)
-                    });
-                    command_button(ui, "Remote Terminal", || {
-                        self.send_command(&client_id, CommandKind::RemoteTerminal)
-                    });
-                    command_button(ui, "Remote Desktop", || {
-                        self.send_command(&client_id, CommandKind::RemoteDesktop)
-                    });
-                } else {
-                    ui.label("No client selected");
-                }
-
-                ui.separator();
-                ui.heading("Log");
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for line in &self.log_lines {
-                            ui.monospace(line);
-                        }
-                    });
-            });
+        ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
+        ui.add_space(18.0);
+        ui.vertical_centered_justified(|ui| {
+            ui.set_max_width(1120.0);
+            self.render_menu_bar(ui);
+            ui.add_space(12.0);
+            self.render_overview(ui);
+            ui.add_space(12.0);
+            self.render_clients(ui);
+            ui.add_space(12.0);
+            self.render_activity(ui);
         });
 
         ui.ctx()
@@ -347,148 +416,314 @@ impl eframe::App for AdminApp {
     }
 }
 
-fn command_button(ui: &mut egui::Ui, label: &str, action: impl FnOnce()) {
-    if ui.button(label).clicked() {
-        action();
-    }
+const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
+const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
+const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
+const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
+const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 99, 188);
+const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
+const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
+
+fn apply_admin_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.global_style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.visuals = egui::Visuals::light();
+    style.visuals.window_fill = COLOR_PANEL;
+    style.visuals.panel_fill = COLOR_BG;
+    style.visuals.widgets.noninteractive.fg_stroke.color = COLOR_TEXT;
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(238, 242, 247);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(226, 234, 244);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(216, 228, 242);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(216, 232, 252);
+    style.visuals.selection.stroke.color = COLOR_ACCENT;
+    ctx.set_global_style(style);
+}
+
+fn panel(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::default()
+        .fill(COLOR_PANEL)
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .corner_radius(8.0)
+        .inner_margin(14.0)
+        .show(ui, add_contents);
+}
+
+fn section_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        egui::RichText::new(title)
+            .size(14.0)
+            .color(COLOR_TEXT)
+            .strong(),
+    );
+}
+
+fn table_header(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        egui::RichText::new(title)
+            .size(12.0)
+            .color(COLOR_MUTED)
+            .strong(),
+    );
+}
+
+fn status_pill(ui: &mut egui::Ui, connected: bool) {
+    let (text, color) = if connected {
+        ("Online", COLOR_GOOD)
+    } else {
+        ("Offline", COLOR_BAD)
+    };
+    egui::Frame::default()
+        .fill(color.gamma_multiply(0.10))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.35)))
+        .corner_radius(999.0)
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).color(color).strong());
+        });
+}
+
+fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .color(egui::Color32::WHITE)
+                .strong(),
+        )
+        .fill(COLOR_ACCENT)
+        .corner_radius(7.0),
+    )
+}
+
+fn metric(ui: &mut egui::Ui, label: &str, value: String) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).color(COLOR_MUTED));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(value).color(COLOR_TEXT).strong());
+        });
+    });
+}
+
+fn empty_state(ui: &mut egui::Ui) {
+    ui.add_space(48.0);
+    ui.vertical_centered(|ui| {
+        ui.label(
+            egui::RichText::new("No clients online")
+                .size(16.0)
+                .color(COLOR_TEXT),
+        );
+        ui.label(
+            egui::RichText::new("Start a client or refresh after it connects.")
+                .size(13.0)
+                .color(COLOR_MUTED),
+        );
+    });
+    ui.add_space(48.0);
 }
 
 fn render_context_menu(ui: &mut egui::Ui, client_id: &str, app: &mut AdminApp) {
-    ui.menu_button("会话", |ui| {
-        ui.menu_button("客户端", |ui| {
-            menu_command(ui, app, client_id, "更新客户端", CommandKind::UpdateClient);
+    ui.menu_button("Session", |ui| {
+        ui.menu_button("Client", |ui| {
             menu_command(
                 ui,
                 app,
                 client_id,
-                "卸载客户端",
+                "Update Client",
+                CommandKind::UpdateClient,
+            );
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Uninstall Client",
                 CommandKind::UninstallClient,
             );
             menu_command(
                 ui,
                 app,
                 client_id,
-                "结束客户端进程",
+                "Kill Client Process",
                 CommandKind::KillClientProcess,
             );
         });
-        ui.menu_button("系统电源", |ui| {
-            menu_command(ui, app, client_id, "关机", CommandKind::Shutdown);
-            menu_command(ui, app, client_id, "重启", CommandKind::Reboot);
+        ui.menu_button("Power", |ui| {
+            menu_command(ui, app, client_id, "Shutdown", CommandKind::Shutdown);
+            menu_command(ui, app, client_id, "Reboot", CommandKind::Reboot);
         });
-        ui.menu_button("会话管理", |ui| {
-            menu_command(ui, app, client_id, "移动到分组", CommandKind::MoveToGroup);
+        ui.menu_button("Session Management", |ui| {
             menu_command(
                 ui,
                 app,
                 client_id,
-                "克隆客户端设置",
+                "Move To Group",
+                CommandKind::MoveToGroup,
+            );
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Clone Client Settings",
                 CommandKind::CloneClientSettings,
             );
-            menu_command(ui, app, client_id, "删除客户端", CommandKind::DeleteClient);
-        });
-    });
-    ui.menu_button("远程管理", |ui| {
-        ui.menu_button("文件与终端", |ui| {
-            menu_command(ui, app, client_id, "文件管理", CommandKind::FileManager);
-            menu_command(ui, app, client_id, "远程终端", CommandKind::RemoteTerminal);
-        });
-        ui.menu_button("系统管理", |ui| {
-            menu_command(ui, app, client_id, "进程管理", CommandKind::ProcessManager);
-            menu_command(ui, app, client_id, "窗口管理", CommandKind::WindowManager);
             menu_command(
                 ui,
                 app,
                 client_id,
-                "启动项管理",
+                "Delete Client",
+                CommandKind::DeleteClient,
+            );
+        });
+    });
+    ui.menu_button("Remote Management", |ui| {
+        ui.menu_button("Files And Terminal", |ui| {
+            menu_command(ui, app, client_id, "File Manager", CommandKind::FileManager);
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Remote Terminal",
+                CommandKind::RemoteTerminal,
+            );
+        });
+        ui.menu_button("System Tools", |ui| {
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Process Manager",
+                CommandKind::ProcessManager,
+            );
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Window Manager",
+                CommandKind::WindowManager,
+            );
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Startup Manager",
                 CommandKind::StartupManager,
             );
             menu_command(
                 ui,
                 app,
                 client_id,
-                "注册表管理",
+                "Registry Manager",
                 CommandKind::RegistryManager,
             );
-            menu_command(ui, app, client_id, "驱动管理", CommandKind::DriverManager);
-            menu_command(ui, app, client_id, "事件日志", CommandKind::EventLog);
-        });
-        ui.menu_button("系统监控", |ui| {
             menu_command(
                 ui,
                 app,
                 client_id,
-                "活动连接",
+                "Driver Manager",
+                CommandKind::DriverManager,
+            );
+            menu_command(ui, app, client_id, "Event Log", CommandKind::EventLog);
+        });
+        ui.menu_button("Monitoring", |ui| {
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Active Connections",
                 CommandKind::ActiveConnections,
             );
             menu_command(
                 ui,
                 app,
                 client_id,
-                "性能监视",
+                "Performance Monitor",
                 CommandKind::PerformanceMonitor,
             );
         });
     });
-    ui.menu_button("实时控制", |ui| {
-        ui.menu_button("桌面控制", |ui| {
-            menu_command(ui, app, client_id, "远程桌面", CommandKind::RemoteDesktop);
-        });
-        ui.menu_button("媒体设备", |ui| {
-            menu_command(ui, app, client_id, "摄像头", CommandKind::Camera);
-            menu_command(ui, app, client_id, "音频监听", CommandKind::AudioListen);
-        });
-    });
-    ui.menu_button("用户交互", |ui| {
-        ui.menu_button("用户提示", |ui| {
-            menu_command(ui, app, client_id, "消息框", CommandKind::MessageBox);
-            menu_command(ui, app, client_id, "气泡提示", CommandKind::BalloonTip);
-        });
-        ui.menu_button("通信功能", |ui| {
-            menu_command(ui, app, client_id, "文本聊天", CommandKind::TextChat);
-            menu_command(ui, app, client_id, "语音聊天", CommandKind::VoiceChat);
-        });
-        ui.menu_button("文本交互", |ui| {
+    ui.menu_button("Live Control", |ui| {
+        ui.menu_button("Desktop", |ui| {
             menu_command(
                 ui,
                 app,
                 client_id,
-                "记事本打开文本",
+                "Remote Desktop",
+                CommandKind::RemoteDesktop,
+            );
+        });
+        ui.menu_button("Media Devices", |ui| {
+            menu_command(ui, app, client_id, "Camera", CommandKind::Camera);
+            menu_command(ui, app, client_id, "Audio Listen", CommandKind::AudioListen);
+        });
+    });
+    ui.menu_button("User Interaction", |ui| {
+        ui.menu_button("Prompts", |ui| {
+            menu_command(ui, app, client_id, "Message Box", CommandKind::MessageBox);
+            menu_command(ui, app, client_id, "Balloon Tip", CommandKind::BalloonTip);
+        });
+        ui.menu_button("Communication", |ui| {
+            menu_command(ui, app, client_id, "Text Chat", CommandKind::TextChat);
+            menu_command(ui, app, client_id, "Voice Chat", CommandKind::VoiceChat);
+        });
+        ui.menu_button("Text Actions", |ui| {
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Open Text In Notepad",
                 CommandKind::OpenTextInNotepad,
             );
         });
     });
-    ui.menu_button("系统信息", |ui| {
-        ui.menu_button("基础信息", |ui| {
-            menu_command(ui, app, client_id, "计算机信息", CommandKind::ComputerInfo);
-            menu_command(ui, app, client_id, "剪贴板", CommandKind::Clipboard);
-        });
-        ui.menu_button("网络能力", |ui| {
-            menu_command(ui, app, client_id, "代理", CommandKind::Proxy);
-        });
-    });
-    ui.menu_button("执行", |ui| {
-        ui.menu_button("代码与文件执行", |ui| {
-            menu_command(ui, app, client_id, "执行文件", CommandKind::ExecuteFile);
-            menu_command(ui, app, client_id, "代码执行", CommandKind::ExecuteCode);
-        });
-        ui.menu_button("任务功能", |ui| {
+    ui.menu_button("System Info", |ui| {
+        ui.menu_button("Basics", |ui| {
             menu_command(
                 ui,
                 app,
                 client_id,
-                "执行静态命令",
-                CommandKind::ExecuteStaticCommand,
+                "Computer Info",
+                CommandKind::ComputerInfo,
             );
-            menu_command(ui, app, client_id, "创建任务", CommandKind::CreateTask);
+            menu_command(ui, app, client_id, "Clipboard", CommandKind::Clipboard);
         });
-        ui.menu_button("自动化", |ui| {
-            menu_command(ui, app, client_id, "命令预设", CommandKind::CommandPreset);
+        ui.menu_button("Network", |ui| {
+            menu_command(ui, app, client_id, "Proxy", CommandKind::Proxy);
         });
     });
-    ui.menu_button("插件", |ui| {
-        ui.menu_button("扩展功能", |ui| {
-            menu_command(ui, app, client_id, "插件管理", CommandKind::PluginManager);
+    ui.menu_button("Execute", |ui| {
+        ui.menu_button("Code And Files", |ui| {
+            menu_command(ui, app, client_id, "Execute File", CommandKind::ExecuteFile);
+            menu_command(ui, app, client_id, "Execute Code", CommandKind::ExecuteCode);
+        });
+        ui.menu_button("Tasks", |ui| {
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Execute Static Command",
+                CommandKind::ExecuteStaticCommand,
+            );
+            menu_command(ui, app, client_id, "Create Task", CommandKind::CreateTask);
+        });
+        ui.menu_button("Automation", |ui| {
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Command Preset",
+                CommandKind::CommandPreset,
+            );
+        });
+    });
+    ui.menu_button("Plugins", |ui| {
+        ui.menu_button("Extensions", |ui| {
+            menu_command(
+                ui,
+                app,
+                client_id,
+                "Plugin Manager",
+                CommandKind::PluginManager,
+            );
         });
     });
 }

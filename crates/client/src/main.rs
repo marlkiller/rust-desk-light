@@ -30,14 +30,16 @@ fn run_gui(config: Config) -> eframe::Result {
     });
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([760.0, 480.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([780.0, 520.0])
+            .with_min_inner_size([680.0, 440.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "rust-desk-light client",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(ClientApp::new(config, client_id, event_rx)))),
+        Box::new(move |cc| Ok(Box::new(ClientApp::new(cc, config, client_id, event_rx)))),
     )
 }
 
@@ -139,7 +141,13 @@ struct ClientApp {
 }
 
 impl ClientApp {
-    fn new(config: Config, client_id: String, event_rx: Receiver<ClientEvent>) -> Self {
+    fn new(
+        cc: &eframe::CreationContext<'_>,
+        config: Config,
+        client_id: String,
+        event_rx: Receiver<ClientEvent>,
+    ) -> Self {
+        apply_client_theme(&cc.egui_ctx);
         Self {
             config,
             client_id,
@@ -173,61 +181,161 @@ impl ClientApp {
             }
         }
     }
+
+    fn render_header(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("Rust Desk Light")
+                        .size(22.0)
+                        .color(COLOR_TEXT)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new("Client Agent")
+                        .size(13.0)
+                        .color(COLOR_MUTED),
+                );
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                status_pill(ui, self.connected);
+            });
+        });
+    }
+
+    fn render_status(&self, ui: &mut egui::Ui) {
+        panel(ui, |ui| {
+            section_title(ui, "Status");
+            ui.add_space(10.0);
+            egui::Grid::new("client_status_grid")
+                .num_columns(2)
+                .spacing([18.0, 10.0])
+                .show(ui, |ui| {
+                    detail_row(
+                        ui,
+                        "Connection",
+                        if self.connected {
+                            "Online"
+                        } else {
+                            "Connecting / Offline"
+                        },
+                    );
+                    detail_row(ui, "Client ID", &self.client_id);
+                    detail_row(
+                        ui,
+                        "Server",
+                        &format!("{}:{}", self.config.ip, self.config.port),
+                    );
+                    detail_row(ui, "Host", &hostname());
+                    detail_row(
+                        ui,
+                        "Runtime",
+                        &format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
+                    );
+                    detail_row(ui, "User", &username());
+                });
+        });
+    }
+
+    fn render_activity(&self, ui: &mut egui::Ui) {
+        panel(ui, |ui| {
+            section_title(ui, "Activity");
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .id_salt("client_activity_scroll_area")
+                .stick_to_bottom(true)
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for line in &self.log_lines {
+                        ui.monospace(egui::RichText::new(line).size(12.0).color(COLOR_MUTED));
+                    }
+                });
+        });
+    }
 }
 
 impl eframe::App for ClientApp {
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        let _ = frame;
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_events();
 
-        ui.heading("rust-desk-light client");
-        ui.separator();
-
-        egui::Grid::new("client_status")
-            .num_columns(2)
-            .show(ui, |ui| {
-                ui.label("Status");
-                ui.label(if self.connected {
-                    "Online"
-                } else {
-                    "Connecting / Offline"
-                });
-                ui.end_row();
-
-                ui.label("Client ID");
-                ui.monospace(&self.client_id);
-                ui.end_row();
-
-                ui.label("Server");
-                ui.monospace(format!("{}:{}", self.config.ip, self.config.port));
-                ui.end_row();
-
-                ui.label("Host");
-                ui.monospace(hostname());
-                ui.end_row();
-
-                ui.label("OS");
-                ui.monospace(format!(
-                    "{} {}",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                ));
-                ui.end_row();
-            });
-
-        ui.separator();
-        ui.label("Session Log");
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for line in &self.log_lines {
-                    ui.monospace(line);
-                }
-            });
+        ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
+        ui.add_space(18.0);
+        ui.vertical_centered_justified(|ui| {
+            ui.set_max_width(700.0);
+            self.render_header(ui);
+            ui.add_space(14.0);
+            self.render_status(ui);
+            ui.add_space(12.0);
+            self.render_activity(ui);
+        });
 
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(200));
     }
+}
+
+const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
+const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
+const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
+const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
+const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
+const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
+
+fn apply_client_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.global_style()).clone();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.visuals = egui::Visuals::light();
+    style.visuals.window_fill = COLOR_PANEL;
+    style.visuals.panel_fill = COLOR_BG;
+    style.visuals.widgets.noninteractive.fg_stroke.color = COLOR_TEXT;
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(238, 242, 247);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(226, 234, 244);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(216, 228, 242);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(216, 232, 252);
+    ctx.set_global_style(style);
+}
+
+fn panel(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::default()
+        .fill(COLOR_PANEL)
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .corner_radius(8.0)
+        .inner_margin(14.0)
+        .show(ui, add_contents);
+}
+
+fn section_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(
+        egui::RichText::new(title)
+            .size(14.0)
+            .color(COLOR_TEXT)
+            .strong(),
+    );
+}
+
+fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(egui::RichText::new(label).color(COLOR_MUTED));
+    ui.label(egui::RichText::new(value).color(COLOR_TEXT).strong());
+    ui.end_row();
+}
+
+fn status_pill(ui: &mut egui::Ui, connected: bool) {
+    let (text, color) = if connected {
+        ("Online", COLOR_GOOD)
+    } else {
+        ("Offline", COLOR_BAD)
+    };
+    egui::Frame::default()
+        .fill(color.gamma_multiply(0.10))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.35)))
+        .corner_radius(999.0)
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).color(color).strong());
+        });
 }
 
 #[derive(Debug)]
