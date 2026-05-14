@@ -1,4 +1,5 @@
 mod command_menu;
+mod remote_management;
 mod user_interaction;
 
 use eframe::egui;
@@ -280,6 +281,7 @@ struct AdminApp {
     client_filter: String,
     selected_client_id: Option<String>,
     command_windows: Vec<CommandResultWindow>,
+    terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     log_lines: Vec<String>,
 }
@@ -344,6 +346,7 @@ impl AdminApp {
             client_filter: String::new(),
             selected_client_id: None,
             command_windows: Vec::new(),
+            terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
             log_lines: vec![timestamped_log("admin gui started")],
         }
@@ -440,6 +443,10 @@ impl AdminApp {
             self.open_chat_window(client_id);
             return;
         }
+        if command == CommandKind::RemoteTerminal {
+            self.open_terminal_window(client_id);
+            return;
+        }
         let _ = self.input_tx.send(AdminInput::Command {
             target_id: client_id.to_string(),
             command: command.clone(),
@@ -457,6 +464,16 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         user_interaction::text_chat::open_window(
             &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+        );
+    }
+
+    fn open_terminal_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        remote_management::remote_terminal::open_window(
+            &mut self.terminal_windows,
             client_id,
             hostname,
             username,
@@ -522,6 +539,10 @@ impl AdminApp {
             self.handle_chat_ack(&client_id, accepted, detail);
             return;
         }
+        if command == CommandKind::RemoteTerminal {
+            self.handle_terminal_ack(&client_id, accepted, detail);
+            return;
+        }
 
         let (hostname, username) = self.client_window_identity(&client_id);
         if let Some(window) = self.command_windows.iter_mut().rev().find(|window| {
@@ -580,6 +601,18 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         user_interaction::text_chat::handle_ack(
             &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+            accepted,
+            detail,
+        );
+    }
+
+    fn handle_terminal_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        remote_management::remote_terminal::handle_ack(
+            &mut self.terminal_windows,
             client_id,
             hostname,
             username,
@@ -892,6 +925,19 @@ impl AdminApp {
             self.push_log(format!("sent text_chat to {}", outbound.client_id));
         }
     }
+
+    fn render_terminal_windows(&mut self, ctx: &egui::Context) {
+        for outbound in
+            remote_management::remote_terminal::render_windows(ctx, &mut self.terminal_windows)
+        {
+            let _ = self.input_tx.send(AdminInput::Command {
+                target_id: outbound.client_id.clone(),
+                command: CommandKind::RemoteTerminal,
+                payload: outbound.command,
+            });
+            self.push_log(format!("sent remote_terminal to {}", outbound.client_id));
+        }
+    }
 }
 
 impl eframe::App for AdminApp {
@@ -911,6 +957,7 @@ impl eframe::App for AdminApp {
             self.render_activity(ui);
         });
         self.render_command_windows(ui.ctx());
+        self.render_terminal_windows(ui.ctx());
         self.render_chat_windows(ui.ctx());
 
         ui.ctx()

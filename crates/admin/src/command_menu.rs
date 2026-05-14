@@ -339,6 +339,7 @@ fn command_is_implemented(command: &CommandKind) -> bool {
         CommandKind::ComputerInfo
             | CommandKind::Clipboard
             | CommandKind::ProcessManager
+            | CommandKind::RemoteTerminal
             | CommandKind::EventLog
             | CommandKind::ActiveConnections
             | CommandKind::PerformanceMonitor

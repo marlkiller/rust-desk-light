@@ -1,11 +1,14 @@
 use crate::support::{join_sections, run_command, run_first_available, run_powershell};
 use rdl_protocol::CommandKind;
 
+mod remote_terminal;
+
 pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {
         CommandKind::ActiveConnections => active_connections(),
         CommandKind::KillTargetProcess => kill_target_process(payload),
         CommandKind::ProcessManager => process_list(),
+        CommandKind::RemoteTerminal => remote_terminal::execute(payload),
         CommandKind::PerformanceMonitor => performance_snapshot(),
         CommandKind::EventLog => event_log_summary(),
         _ => format!(
