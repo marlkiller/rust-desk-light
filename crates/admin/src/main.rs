@@ -926,7 +926,7 @@ impl AdminApp {
                                 let selected =
                                     self.selected_client_id.as_deref() == Some(client.id.as_str());
                                 row.set_selected(selected);
-                                row.col(|ui| client_status_badge(ui, row_data.status));
+                                row.col(|ui| client_status_text(ui, row_data.status));
                                 row.col(|ui| {
                                     ui.label(
                                         egui::RichText::new(compact_id(&client.id)).size(12.0),
@@ -1302,13 +1302,13 @@ fn connection_status_pill(ui: &mut egui::Ui, connected: bool) {
     status_badge(ui, text, color);
 }
 
-fn client_status_badge(ui: &mut egui::Ui, status: ClientStatus) {
+fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
     let (text, color) = match status {
         ClientStatus::Online => ("Online", COLOR_GOOD),
         ClientStatus::Stale => ("Stale", COLOR_WARN),
         ClientStatus::Offline => ("Offline", COLOR_BAD),
     };
-    status_badge(ui, text, color);
+    ui.label(egui::RichText::new(text).size(12.0).color(color).strong());
 }
 
 fn timestamped_log(line: impl Into<String>) -> String {
