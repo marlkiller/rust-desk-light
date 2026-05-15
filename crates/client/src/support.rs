@@ -1,8 +1,41 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub fn run_command(program: &str, args: &[&str], max_lines: usize) -> String {
-    match Command::new(program).args(args).output() {
+    run_command_timeout(program, args, max_lines, Duration::from_secs(12))
+}
+
+pub fn run_command_timeout(
+    program: &str,
+    args: &[&str],
+    max_lines: usize,
+    timeout: Duration,
+) -> String {
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => return format!("{program} failed: {error}"),
+    };
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return format!("{program} timed out after {}s", timeout.as_secs());
+            }
+            Err(error) => return format!("{program} wait failed: {error}"),
+        }
+    }
+    match child.wait_with_output() {
         Ok(output) => command_output_text(
             program,
             output.status.success(),

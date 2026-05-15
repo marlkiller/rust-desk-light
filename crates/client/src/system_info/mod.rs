@@ -36,7 +36,10 @@ fn os_label() -> String {
         }
     }
     if cfg!(target_os = "windows") {
-        let output = run_command("cmd", &["/C", "ver"], 10);
+        let output = run_powershell(
+            "(Get-CimInstance Win32_OperatingSystem).Caption + ' ' + (Get-CimInstance Win32_OperatingSystem).Version",
+            10,
+        );
         let trimmed = output.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
@@ -54,7 +57,9 @@ fn os_label() -> String {
 
 fn kernel_label() -> String {
     if cfg!(target_os = "windows") {
-        return run_command("cmd", &["/C", "ver"], 10).trim().to_string();
+        return run_powershell("(Get-CimInstance Win32_OperatingSystem).BuildNumber", 10)
+            .trim()
+            .to_string();
     }
     let output = run_command("uname", &["-r"], 10);
     let trimmed = output.trim();
@@ -75,26 +80,7 @@ fn gui_session_label() -> String {
 
 fn platform_computer_info() -> Vec<String> {
     if cfg!(target_os = "windows") {
-        return vec![
-            format!("windows_system={}", trim_command(run_command(
-                "powershell",
-                &[
-                    "-NoProfile",
-                    "-Command",
-                    "(Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,TotalPhysicalMemory | ConvertTo-Json -Compress)",
-                ],
-                20,
-            ))),
-            format!("windows_os={}", trim_command(run_command(
-                "powershell",
-                &[
-                    "-NoProfile",
-                    "-Command",
-                    "(Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,LastBootUpTime | ConvertTo-Json -Compress)",
-                ],
-                20,
-            ))),
-        ];
+        return windows_computer_info();
     }
     if cfg!(target_os = "linux") {
         return vec![
@@ -153,6 +139,27 @@ fn platform_computer_info() -> Vec<String> {
         ];
     }
     Vec::new()
+}
+
+fn windows_computer_info() -> Vec<String> {
+    let script = r#"
+$system = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,TotalPhysicalMemory,Domain,Workgroup
+$os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture,LastBootUpTime
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors
+$ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+  Where-Object {$_.IPAddress -notlike '169.254*'} |
+  Select-Object InterfaceAlias,IPAddress
+[pscustomobject]@{
+  system = $system
+  os = $os
+  cpu = $cpu
+  ip = $ip
+} | ConvertTo-Json -Compress -Depth 4
+"#;
+    vec![format!(
+        "windows={}",
+        trim_command(run_powershell(script, 80))
+    )]
 }
 
 fn os_release_value(key: &str) -> Option<String> {

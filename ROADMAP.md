@@ -100,7 +100,9 @@ Reference direction:
 - [x] Add admin search/filter for clients.
 - [x] Add clearer status badges: online, offline, reconnecting, stale.
 - [x] Show client fingerprint, hostname, user, OS, and last heartbeat.
+- [x] Show client IP address, OS version, GUI availability, and full-row selection in the admin client list.
 - [x] Add a simple command result panel.
+- [x] Allow command result text selection/copy for plain text outputs.
 - [x] Preserve terminal mode for smoke checks.
 
 ## Milestone 4: Basic Client Capabilities
@@ -108,6 +110,7 @@ Reference direction:
 Implement read-only and low-risk commands first.
 
 - [x] Computer info.
+- [x] Expanded computer info with OS version, kernel/build, CPU, memory, session, and IP details where available.
 - [x] Clipboard read/write as explicit command stubs, then real implementation.
 - [x] Active connections.
 - [x] Process list.
@@ -147,6 +150,8 @@ Build view-only remote desktop before input control.
 - [x] Display remote screen in admin.
 - [x] Add frame rate limit. Polling MVP with a conservative refresh interval.
 - [x] Add screen selection before starting the remote desktop session.
+- [x] Add Ubuntu X11 testing documentation for Linux remote desktop.
+- [x] Improve admin remote desktop frame handling by coalescing frames and decoding off the UI thread.
 
 Reference direction:
 
@@ -154,9 +159,10 @@ Reference direction:
 
 ## Milestone 8: Remote Control
 
-- [ ] Mouse movement.
-- [x] Mouse click. Windows lightweight MVP.
+- [x] Mouse movement. Windows and X11 lightweight MVP.
+- [x] Mouse click. Windows and X11 lightweight MVP.
 - [x] Keyboard input. Text send MVP; raw key events still pending.
+- [x] Separate desktop capture, mouse movement, and mouse click controls in the admin remote desktop window.
 - [ ] Clipboard sync during remote session.
 - [ ] Local visible indicator while remote control is active.
 
