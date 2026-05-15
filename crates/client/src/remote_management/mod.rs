@@ -179,11 +179,16 @@ fn macos_log_row(line: &str) -> Option<String> {
     }
 
     let (time, rest) = split_at_checked(line, 23)?;
+    if !is_macos_compact_timestamp(time) {
+        return None;
+    }
     let rest = rest.trim_start();
-    let mut parts = rest.splitn(3, char::is_whitespace);
-    let level = parts.next()?.trim();
-    let process = parts.next()?.trim();
-    let message = parts.next().unwrap_or_default().trim();
+    let level_end = rest.find(char::is_whitespace)?;
+    let level = rest[..level_end].trim();
+    let rest = rest[level_end..].trim_start();
+    let process_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let process = rest[..process_end].trim();
+    let message = rest[process_end..].trim_start();
     if time.trim().is_empty() || level.is_empty() || process.is_empty() {
         return None;
     }
@@ -203,6 +208,20 @@ fn macos_log_row(line: &str) -> Option<String> {
     ))
 }
 
+fn is_macos_compact_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 23
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b' '
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'.'
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7 | 10 | 13 | 16 | 19) || byte.is_ascii_digit()
+        })
+}
+
 fn split_at_checked(value: &str, mid: usize) -> Option<(&str, &str)> {
     if value.len() < mid || !value.is_char_boundary(mid) {
         return None;
@@ -212,4 +231,28 @@ fn split_at_checked(value: &str, mid: usize) -> Option<(&str, &str)> {
 
 fn sanitize_table_cell(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::macos_log_row;
+
+    #[test]
+    fn macos_log_row_parses_compact_error_lines_with_extra_spacing() {
+        let row = macos_log_row(
+            "2026-05-15 22:21:40.247 E  WindowServer[596:11a3] [com.apple.SkyLight:default] _CGXPackagesSetWindowConstraints: Invalid window",
+        )
+        .expect("row should parse");
+
+        assert_eq!(
+            row,
+            "2026-05-15 22:21:40.247\tE\tcom.apple.SkyLight:default\t-\t[com.apple.SkyLight:default] _CGXPackagesSetWindowConstraints: Invalid window"
+        );
+    }
+
+    #[test]
+    fn macos_log_row_ignores_log_show_status_lines() {
+        assert!(macos_log_row("Filtering the log data using \"type == 1024\"").is_none());
+        assert!(macos_log_row("Skipping info and debug messages").is_none());
+    }
 }
