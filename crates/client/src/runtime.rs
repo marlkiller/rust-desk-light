@@ -1,7 +1,11 @@
 use rdl_protocol::{DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT};
 use std::fs;
+use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
+
+static HOSTNAME_CACHE: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -62,9 +66,14 @@ pub(crate) fn gui_available() -> bool {
 }
 
 pub(crate) fn hostname() -> String {
+    HOSTNAME_CACHE.get_or_init(resolve_hostname).clone()
+}
+
+fn resolve_hostname() -> String {
     std::env::var("HOSTNAME")
         .map_err(|error| error.to_string())
         .or_else(|_| std::env::var("COMPUTERNAME").map_err(|error| error.to_string()))
+        .or_else(|_| platform_hostname())
         .or_else(|_| command_first_line("scutil", &["--get", "ComputerName"]))
         .or_else(|_| command_first_line("scutil", &["--get", "LocalHostName"]))
         .or_else(|_| command_first_line("hostname", &[]))
@@ -82,6 +91,30 @@ pub(crate) fn hostname() -> String {
             }
         })
         .unwrap_or_else(|_| "unknown-host".to_string())
+}
+
+#[cfg(target_family = "unix")]
+fn platform_hostname() -> Result<String, String> {
+    let mut buffer = [0_u8; 256];
+    let result = unsafe { gethostname(buffer.as_mut_ptr().cast::<c_char>(), buffer.len()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let len = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf8(buffer[..len].to_vec()).map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_family = "unix"))]
+fn platform_hostname() -> Result<String, String> {
+    Err("platform hostname unavailable".to_string())
+}
+
+#[cfg(target_family = "unix")]
+extern "C" {
+    fn gethostname(name: *mut c_char, len: usize) -> c_int;
 }
 
 pub(crate) fn os_label() -> String {
