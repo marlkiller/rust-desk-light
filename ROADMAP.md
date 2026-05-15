@@ -127,10 +127,10 @@ Reference direction:
 
 ## Milestone 5: User Interaction
 
-- [ ] Message box.
-- [ ] System notification / balloon tip.
+- [x] Message box.
+- [x] System notification / balloon tip.
 - [x] Text chat.
-- [ ] Open text in notepad or platform equivalent.
+- [x] Open text in notepad or platform equivalent.
 
 These are useful before full remote desktop because they validate bidirectional command/result flow.
 
@@ -256,11 +256,11 @@ Live Control
   [ ] Audio Listen: audio_listen
 
 User Interaction
-  [ ] Message Box: message_box
-  [ ] Balloon Tip: balloon_tip
+  [x] Message Box: message_box
+  [x] Balloon Tip: balloon_tip
   [x] Text Chat: text_chat
   [ ] Voice Chat: voice_chat
-  [ ] Open Text In Notepad: open_text_in_notepad
+  [x] Open Text In Notepad: open_text_in_notepad
 
 System Info
   [x] Computer Info: computer_info

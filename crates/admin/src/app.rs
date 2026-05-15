@@ -559,6 +559,7 @@ struct AdminApp {
     camera_windows: Vec<live_control::camera::CameraWindow>,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
+    interaction_command_windows: Vec<user_interaction::commands::InteractionCommandWindow>,
     file_transfer_cancel_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
@@ -637,6 +638,7 @@ impl AdminApp {
             camera_windows: Vec::new(),
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
+            interaction_command_windows: Vec::new(),
             file_transfer_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             ignored_file_transfers,
             log_lines: vec![timestamped_log(format!(
@@ -979,6 +981,13 @@ impl AdminApp {
             self.open_camera_window(client_id);
             return;
         }
+        if matches!(
+            command,
+            CommandKind::MessageBox | CommandKind::BalloonTip | CommandKind::OpenTextInNotepad
+        ) {
+            self.open_interaction_command_window(client_id, command);
+            return;
+        }
         let _ = self.input_tx.send(AdminInput::Command {
             target_id: client_id.to_string(),
             command: command.clone(),
@@ -1035,6 +1044,17 @@ impl AdminApp {
     fn open_camera_window(&mut self, client_id: &str) {
         let (hostname, username) = self.client_window_identity(client_id);
         live_control::camera::open_window(&mut self.camera_windows, client_id, hostname, username);
+    }
+
+    fn open_interaction_command_window(&mut self, client_id: &str, command: CommandKind) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        user_interaction::commands::open_window(
+            &mut self.interaction_command_windows,
+            client_id,
+            hostname,
+            username,
+            command,
+        );
     }
 
     fn open_command_window(&mut self, client_id: &str, command: CommandKind) {
@@ -1110,6 +1130,16 @@ impl AdminApp {
         }
         if command == CommandKind::Camera {
             self.handle_camera_ack(&client_id, accepted, detail);
+            return;
+        }
+        if quiet_user_interaction_command(&command) {
+            self.push_log(format!(
+                "result client={} command={} accepted={} detail={}",
+                client_id,
+                command.as_str(),
+                accepted,
+                sanitize_log_value(&detail)
+            ));
             return;
         }
 
@@ -1614,6 +1644,23 @@ impl AdminApp {
         }
     }
 
+    fn render_interaction_command_windows(&mut self, ctx: &egui::Context) {
+        for outbound in
+            user_interaction::commands::render_windows(ctx, &mut self.interaction_command_windows)
+        {
+            let _ = self.input_tx.send(AdminInput::Command {
+                target_id: outbound.client_id.clone(),
+                command: outbound.command.clone(),
+                payload: outbound.payload,
+            });
+            self.push_log(format!(
+                "sent command={} to {}",
+                outbound.command.as_str(),
+                outbound.client_id
+            ));
+        }
+    }
+
     fn render_file_manager_windows(&mut self, ctx: &egui::Context) {
         for outbound in
             remote_management::file_manager::render_windows(ctx, &mut self.file_manager_windows)
@@ -1871,6 +1918,7 @@ impl eframe::App for AdminApp {
         self.render_camera_windows(ui.ctx());
         self.render_terminal_windows(ui.ctx());
         self.render_chat_windows(ui.ctx());
+        self.render_interaction_command_windows(ui.ctx());
 
         if changed {
             ui.ctx().request_repaint();
@@ -2158,6 +2206,13 @@ fn kill_target_process_succeeded(detail: &str) -> bool {
         && !detail.contains("requires")
         && !detail.contains("failed")
         && !detail.contains("exited with error")
+}
+
+fn quiet_user_interaction_command(command: &CommandKind) -> bool {
+    matches!(
+        command,
+        CommandKind::MessageBox | CommandKind::BalloonTip | CommandKind::OpenTextInNotepad
+    )
 }
 
 fn render_command_result(

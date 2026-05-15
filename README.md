@@ -31,6 +31,7 @@ TODO: Screenshots will be added later.
 - Remote mouse movement, mouse click, and text input where supported.
 - Camera live view with device selection, quality selection, save-current-frame, and binary video frame transport.
 - Text chat between admin and client.
+- User interaction commands for message boxes, system notifications / balloon tips, and opening text in Notepad or the platform editor.
 - Terminal fallback mode for smoke tests, headless recovery, and protocol checks.
 - GitHub Actions release workflow for Linux, macOS, and Windows artifacts.
 

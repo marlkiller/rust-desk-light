@@ -342,10 +342,13 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::ProcessManager
             | CommandKind::RemoteDesktop
             | CommandKind::Camera
+            | CommandKind::MessageBox
+            | CommandKind::BalloonTip
             | CommandKind::RemoteTerminal
             | CommandKind::EventLog
             | CommandKind::ActiveConnections
             | CommandKind::PerformanceMonitor
             | CommandKind::TextChat
+            | CommandKind::OpenTextInNotepad
     )
 }
