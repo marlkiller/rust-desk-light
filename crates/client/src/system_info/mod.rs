@@ -15,16 +15,181 @@ pub fn handle(command: &CommandKind, payload: &str) -> String {
 }
 
 fn computer_info() -> String {
-    join_sections(
-        "computer_info",
-        vec![
-            format!("hostname={}", hostname()),
-            format!("user={}", username()),
-            format!("os={}", std::env::consts::OS),
-            format!("arch={}", std::env::consts::ARCH),
-            format!("current_dir={}", current_dir_label()),
-        ],
-    )
+    let mut sections = vec![
+        format!("hostname={}", hostname()),
+        format!("user={}", username()),
+        format!("os={}", os_label()),
+        format!("kernel={}", kernel_label()),
+        format!("arch={}", std::env::consts::ARCH),
+        format!("current_dir={}", current_dir_label()),
+        format!("process_id={}", std::process::id()),
+        format!("gui_session={}", gui_session_label()),
+    ];
+    sections.extend(platform_computer_info());
+    join_sections("computer_info", sections)
+}
+
+fn os_label() -> String {
+    if cfg!(target_os = "linux") {
+        if let Some(value) = os_release_value("PRETTY_NAME") {
+            return value;
+        }
+    }
+    if cfg!(target_os = "windows") {
+        let output = run_command("cmd", &["/C", "ver"], 10);
+        let trimmed = output.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if cfg!(target_os = "macos") {
+        let output = run_command("sw_vers", &["-productVersion"], 10);
+        let trimmed = output.trim();
+        if !trimmed.is_empty() {
+            return format!("macOS {trimmed}");
+        }
+    }
+    std::env::consts::OS.to_string()
+}
+
+fn kernel_label() -> String {
+    if cfg!(target_os = "windows") {
+        return run_command("cmd", &["/C", "ver"], 10).trim().to_string();
+    }
+    let output = run_command("uname", &["-r"], 10);
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn gui_session_label() -> String {
+    std::env::var("XDG_SESSION_TYPE")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .or_else(|_| std::env::var("WAYLAND_DISPLAY").map(|_| "wayland".to_string()))
+        .or_else(|_| std::env::var("DISPLAY").map(|_| "x11".to_string()))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn platform_computer_info() -> Vec<String> {
+    if cfg!(target_os = "windows") {
+        return vec![
+            format!("windows_system={}", trim_command(run_command(
+                "powershell",
+                &[
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,TotalPhysicalMemory | ConvertTo-Json -Compress)",
+                ],
+                20,
+            ))),
+            format!("windows_os={}", trim_command(run_command(
+                "powershell",
+                &[
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,LastBootUpTime | ConvertTo-Json -Compress)",
+                ],
+                20,
+            ))),
+        ];
+    }
+    if cfg!(target_os = "linux") {
+        return vec![
+            format!("distro_id={}", os_release_value("ID").unwrap_or_default()),
+            format!(
+                "distro_version={}",
+                os_release_value("VERSION_ID").unwrap_or_default()
+            ),
+            format!(
+                "desktop={}",
+                std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()
+            ),
+            format!("display={}", std::env::var("DISPLAY").unwrap_or_default()),
+            format!(
+                "wayland_display={}",
+                std::env::var("WAYLAND_DISPLAY").unwrap_or_default()
+            ),
+            format!("cpu={}", first_cpu_model()),
+            format!("memory={}", memory_summary()),
+            format!(
+                "uptime={}",
+                trim_command(run_command("uptime", &["-p"], 10))
+            ),
+            format!(
+                "ip_addresses={}",
+                trim_command(run_command("hostname", &["-I"], 10))
+            ),
+        ];
+    }
+    if cfg!(target_os = "macos") {
+        return vec![
+            format!(
+                "product_name={}",
+                trim_command(run_command("sw_vers", &["-productName"], 10))
+            ),
+            format!(
+                "build_version={}",
+                trim_command(run_command("sw_vers", &["-buildVersion"], 10))
+            ),
+            format!(
+                "hardware={}",
+                trim_command(run_command("sysctl", &["-n", "hw.model"], 10))
+            ),
+            format!(
+                "cpu={}",
+                trim_command(run_command(
+                    "sysctl",
+                    &["-n", "machdep.cpu.brand_string"],
+                    10
+                ))
+            ),
+            format!(
+                "memory_bytes={}",
+                trim_command(run_command("sysctl", &["-n", "hw.memsize"], 10))
+            ),
+        ];
+    }
+    Vec::new()
+}
+
+fn os_release_value(key: &str) -> Option<String> {
+    let text = std::fs::read_to_string("/etc/os-release").ok()?;
+    let prefix = format!("{key}=");
+    text.lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.trim_matches('"').to_string())
+}
+
+fn first_cpu_model() -> String {
+    let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") else {
+        return String::new();
+    };
+    text.lines()
+        .find_map(|line| line.strip_prefix("model name\t: "))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn memory_summary() -> String {
+    let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
+        return String::new();
+    };
+    let total = text
+        .lines()
+        .find(|line| line.starts_with("MemTotal:"))
+        .unwrap_or_default();
+    let available = text
+        .lines()
+        .find(|line| line.starts_with("MemAvailable:"))
+        .unwrap_or_default();
+    format!("{total}; {available}")
+}
+
+fn trim_command(output: String) -> String {
+    output.trim().replace(['\r', '\n'], " ")
 }
 
 fn clipboard_command(payload: &str) -> String {

@@ -1496,7 +1496,7 @@ fn render_command_result(
             .font(egui::TextStyle::Monospace)
             .desired_width(f32::INFINITY)
             .desired_rows(18)
-            .interactive(false),
+            .interactive(true),
     );
 }
 
