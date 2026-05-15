@@ -1419,6 +1419,12 @@ const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 99, 188);
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
+const TABLE_BODY_TEXT_SIZE: f32 = 11.5;
+const TABLE_HEADER_TEXT_SIZE: f32 = 11.5;
+const TABLE_BODY_CELL_HEIGHT: f32 = 16.0;
+const TABLE_HEADER_CELL_HEIGHT: f32 = 17.0;
+const TABLE_SORT_MARKER_WIDTH: f32 = 12.0;
+const TABLE_WIDTH_SAMPLE_ROWS: usize = 200;
 
 fn apply_admin_theme(ctx: &egui::Context) {
     install_cjk_font(ctx);
@@ -1879,7 +1885,6 @@ fn render_result_table(
     table_selected_row: &Arc<Mutex<Option<String>>>,
     process_kill_requested: &Arc<Mutex<Option<String>>>,
 ) {
-    let widths = table_column_widths(command, &table.headers, ui.available_width());
     let filter = table_filter
         .lock()
         .map(|value| value.trim().to_ascii_lowercase())
@@ -1891,18 +1896,21 @@ fn render_result_table(
         .unwrap_or(None);
     let mut rows = filtered_table_rows(table, &filter);
     sort_table_rows(&mut rows, sort);
+    let widths = table_column_widths(command, &table.headers, &rows, ui.available_width());
+    let alignments = table_column_alignments(command, &table.headers);
 
     egui::Frame::default()
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            table_header_row(ui, &table.headers, &widths, &mut sort);
+            table_header_row(ui, &table.headers, &widths, &alignments, &mut sort);
             for (row_index, row) in rows.iter().enumerate() {
                 let row_key = table_row_key(row);
                 table_row(
                     ui,
                     row,
                     &widths,
+                    &alignments,
                     false,
                     row_index,
                     selected_row.as_deref() == Some(row_key.as_str()),
@@ -1974,6 +1982,7 @@ fn table_header_row(
     ui: &mut egui::Ui,
     cells: &[String],
     widths: &[f32],
+    alignments: &[egui::Align],
     sort: &mut Option<TableSort>,
 ) {
     let fill = egui::Color32::from_rgb(235, 240, 247);
@@ -1981,6 +1990,7 @@ fn table_header_row(
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         for (index, width) in widths.iter().enumerate() {
             let cell = cells.get(index).map(String::as_str).unwrap_or("");
+            let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
             let marker = match sort {
                 Some(current) if current.column == index && current.ascending => " ^",
                 Some(current) if current.column == index => " v",
@@ -1989,22 +1999,20 @@ fn table_header_row(
             egui::Frame::default()
                 .fill(fill)
                 .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                .inner_margin(egui::Margin::symmetric(4, 4))
+                .inner_margin(egui::Margin::symmetric(5, 2))
                 .show(ui, |ui| {
                     ui.set_width(*width);
                     let response = ui.add_sized(
-                        [*width, 18.0],
-                        egui::Button::new(
-                            egui::RichText::new(format!(
-                                "{}{}",
-                                truncate_table_cell(cell, *width - 14.0),
-                                marker
-                            ))
-                            .size(12.0)
-                            .color(COLOR_MUTED)
-                            .strong(),
+                        [*width, TABLE_HEADER_CELL_HEIGHT],
+                        egui::Label::new(
+                            egui::RichText::new(format!("{cell}{marker}"))
+                                .size(TABLE_HEADER_TEXT_SIZE)
+                                .color(COLOR_MUTED)
+                                .strong(),
                         )
-                        .frame(false),
+                        .truncate()
+                        .halign(align)
+                        .sense(egui::Sense::click()),
                     );
                     if response.clicked() {
                         *sort = match sort {
@@ -2027,6 +2035,7 @@ fn table_row(
     ui: &mut egui::Ui,
     cells: &[String],
     widths: &[f32],
+    alignments: &[egui::Align],
     header: bool,
     row_index: usize,
     selected: bool,
@@ -2050,20 +2059,22 @@ fn table_row(
         let row_text = cells.join("\t");
         for (index, width) in widths.iter().enumerate() {
             let cell = cells.get(index).map(String::as_str).unwrap_or("");
+            let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
             egui::Frame::default()
                 .fill(fill)
                 .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                .inner_margin(egui::Margin::symmetric(4, 4))
+                .inner_margin(egui::Margin::symmetric(5, 2))
                 .show(ui, |ui| {
                     ui.set_width(*width);
                     let response = ui.add_sized(
-                        [*width, 18.0],
+                        [*width, TABLE_BODY_CELL_HEIGHT],
                         egui::Label::new(
-                            egui::RichText::new(truncate_table_cell(cell, *width))
-                                .size(12.0)
-                                .color(if header { COLOR_MUTED } else { COLOR_TEXT })
-                                .strong(),
+                            egui::RichText::new(cell)
+                                .size(TABLE_BODY_TEXT_SIZE)
+                                .color(if header { COLOR_MUTED } else { COLOR_TEXT }),
                         )
+                        .truncate()
+                        .halign(align)
                         .sense(egui::Sense::click()),
                     );
                     if response.clicked() && !header {
@@ -2116,68 +2127,220 @@ fn process_row_pid(command: &CommandKind, headers: &[String], row: &[String]) ->
 fn table_column_widths(
     command: &CommandKind,
     headers: &[String],
+    rows: &[Vec<String>],
     available_width: f32,
 ) -> Vec<f32> {
-    let available_width = available_width.max(1.0);
     let specs = headers
         .iter()
-        .map(|header| match command {
-            CommandKind::ProcessManager => process_column_spec(header),
-            CommandKind::EventLog => event_log_column_spec(header),
-            CommandKind::ActiveConnections => connection_column_spec(header),
-            _ => (1.0, 0.0),
+        .map(|header| table_column_spec(command, header))
+        .collect::<Vec<_>>();
+    let mut widths = headers
+        .iter()
+        .enumerate()
+        .map(|(index, header)| {
+            let spec = specs[index];
+            let header_width = estimated_table_text_width(header) + TABLE_SORT_MARKER_WIDTH;
+            let content_width = rows
+                .iter()
+                .take(TABLE_WIDTH_SAMPLE_ROWS)
+                .filter_map(|row| row.get(index))
+                .map(|cell| estimated_table_text_width(cell))
+                .fold(0.0, f32::max);
+
+            header_width.max(content_width).clamp(spec.min, spec.max)
         })
         .collect::<Vec<_>>();
-    let total_weight = specs
-        .iter()
-        .map(|(weight, _)| *weight)
-        .sum::<f32>()
-        .max(1.0);
 
-    specs
+    if available_width.is_finite() {
+        distribute_extra_table_width(&mut widths, &specs, available_width);
+    }
+
+    widths
+}
+
+fn distribute_extra_table_width(
+    widths: &mut [f32],
+    specs: &[TableColumnSpec],
+    available_width: f32,
+) {
+    let mut extra = available_width - widths.iter().sum::<f32>();
+    while extra > 1.0 {
+        let total_stretch = specs
+            .iter()
+            .enumerate()
+            .filter(|(index, spec)| spec.stretch > 0.0 && widths[*index] < spec.max)
+            .map(|(_, spec)| spec.stretch)
+            .sum::<f32>();
+        if total_stretch <= 0.0 {
+            break;
+        }
+
+        let mut used = 0.0;
+        for (width, spec) in widths.iter_mut().zip(specs.iter()) {
+            if spec.stretch <= 0.0 || *width >= spec.max {
+                continue;
+            }
+
+            let room = spec.max - *width;
+            let grow = (extra * spec.stretch / total_stretch).min(room);
+            *width += grow;
+            used += grow;
+        }
+
+        if used <= 0.5 {
+            break;
+        }
+        extra -= used;
+    }
+}
+
+fn table_column_alignments(command: &CommandKind, headers: &[String]) -> Vec<egui::Align> {
+    headers
         .iter()
-        .map(|(weight, _)| (available_width * *weight) / total_weight)
+        .map(|header| table_column_spec(command, header).align)
         .collect()
 }
 
-fn process_column_spec(header: &str) -> (f32, f32) {
-    match header.to_ascii_lowercase().as_str() {
-        "pid" | "ppid" => (0.8, 0.0),
-        "cpu" | "pcpu" | "%cpu" | "memorymb" | "pmem" | "%mem" => (0.9, 0.0),
-        "name" | "processname" | "comm" | "command" => (3.8, 0.0),
-        _ => (1.2, 0.0),
+#[derive(Clone, Copy)]
+struct TableColumnSpec {
+    min: f32,
+    max: f32,
+    stretch: f32,
+    align: egui::Align,
+}
+
+fn table_column_spec(command: &CommandKind, header: &str) -> TableColumnSpec {
+    match command {
+        CommandKind::ProcessManager => process_column_spec(header),
+        CommandKind::EventLog => event_log_column_spec(header),
+        CommandKind::ActiveConnections => connection_column_spec(header),
+        _ => default_column_spec(header),
     }
 }
 
-fn event_log_column_spec(header: &str) -> (f32, f32) {
-    match header.to_ascii_lowercase().as_str() {
-        "time" | "timecreated" => (1.6, 0.0),
-        "level" | "leveldisplayname" => (0.9, 0.0),
-        "provider" | "providername" => (1.8, 0.0),
-        "id" => (0.6, 0.0),
-        "message" => (4.2, 0.0),
-        _ => (1.2, 0.0),
+fn column_spec(min: f32, max: f32, stretch: f32, align: egui::Align) -> TableColumnSpec {
+    TableColumnSpec {
+        min,
+        max,
+        stretch,
+        align,
     }
 }
 
-fn connection_column_spec(header: &str) -> (f32, f32) {
-    match header.to_ascii_lowercase().as_str() {
-        "proto" | "netid" | "protocol" => (0.7, 0.0),
-        "local" | "localaddress" | "local-address" | "local_address" => (2.2, 0.0),
-        "foreign" | "peer" | "peeraddress" | "foreignaddress" | "foreign-address" => (2.2, 0.0),
-        "state" => (1.0, 0.0),
-        "pid" | "pid/program" | "pid/program name" => (1.4, 0.0),
-        _ => (1.2, 0.0),
+fn process_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "pid" | "ppid" => column_spec(42.0, 64.0, 0.0, egui::Align::Max),
+        "cpu" | "pcpu" | "%cpu" | "mem" | "pmem" | "%mem" => {
+            column_spec(48.0, 76.0, 0.0, egui::Align::Max)
+        }
+        "memorymb" => column_spec(70.0, 96.0, 0.0, egui::Align::Max),
+        "name" | "processname" | "comm" => column_spec(110.0, 260.0, 1.0, egui::Align::Min),
+        "command" => column_spec(180.0, 560.0, 3.0, egui::Align::Min),
+        _ => default_column_spec(header),
     }
 }
 
-fn truncate_table_cell(value: &str, width: f32) -> String {
-    let max_chars = (width / 7.0).max(8.0) as usize;
-    if value.chars().count() <= max_chars {
-        return value.to_string();
+fn event_log_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "time" | "timecreated" => column_spec(130.0, 190.0, 0.8, egui::Align::Min),
+        "level" | "leveldisplayname" => column_spec(70.0, 115.0, 0.0, egui::Align::Min),
+        "provider" | "providername" => column_spec(110.0, 260.0, 1.0, egui::Align::Min),
+        "id" => column_spec(42.0, 70.0, 0.0, egui::Align::Max),
+        "message" => column_spec(220.0, 720.0, 3.0, egui::Align::Min),
+        _ => default_column_spec(header),
     }
-    let keep = max_chars.saturating_sub(3);
-    format!("{}...", value.chars().take(keep).collect::<String>())
+}
+
+fn connection_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "proto" | "netid" | "protocol" => column_spec(48.0, 72.0, 0.0, egui::Align::Min),
+        "local" | "localaddress" => column_spec(140.0, 320.0, 1.0, egui::Align::Min),
+        "foreign" | "peer" | "peeraddress" | "foreignaddress" => {
+            column_spec(140.0, 320.0, 1.0, egui::Align::Min)
+        }
+        "state" => column_spec(64.0, 120.0, 0.0, egui::Align::Min),
+        "pid" => column_spec(42.0, 70.0, 0.0, egui::Align::Max),
+        "pid/program" | "pid/programname" => column_spec(88.0, 180.0, 0.0, egui::Align::Min),
+        _ => default_column_spec(header),
+    }
+}
+
+fn default_column_spec(header: &str) -> TableColumnSpec {
+    let key = normalized_table_header(header);
+    if numeric_like_header(&key) {
+        column_spec(48.0, 96.0, 0.0, egui::Align::Max)
+    } else {
+        column_spec(72.0, 240.0, 0.3, egui::Align::Min)
+    }
+}
+
+fn normalized_table_header(header: &str) -> String {
+    header
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '_', '-'], "")
+}
+
+fn numeric_like_header(header: &str) -> bool {
+    matches!(
+        header,
+        "id" | "pid" | "ppid" | "cpu" | "pcpu" | "%cpu" | "mem" | "pmem" | "%mem" | "memorymb"
+    ) || header.ends_with("id")
+        || header.ends_with("count")
+        || header.ends_with("bytes")
+        || header.ends_with("mb")
+}
+
+fn estimated_table_text_width(value: &str) -> f32 {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_whitespace() {
+                3.5
+            } else if ch.is_ascii() {
+                6.7
+            } else {
+                11.0
+            }
+        })
+        .sum::<f32>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_table_keeps_numeric_columns_compact() {
+        let headers = strings(["PID", "Name", "CPU", "MemoryMB"]);
+        let rows = vec![
+            strings(["7", "launchd", "0.0", "13.5"]),
+            strings(["12345", "very-long-process-name", "12.3", "1024.0"]),
+        ];
+
+        let widths = table_column_widths(&CommandKind::ProcessManager, &headers, &rows, 760.0);
+
+        assert!(widths[0] <= 64.0);
+        assert!(widths[2] <= 76.0);
+        assert!(widths[3] <= 96.0);
+        assert!(widths[1] > widths[0]);
+    }
+
+    #[test]
+    fn process_table_ignores_infinite_scroll_width() {
+        let headers = strings(["PID", "Name", "CPU"]);
+        let rows = vec![strings(["1", "init", "0.0"])];
+
+        let widths =
+            table_column_widths(&CommandKind::ProcessManager, &headers, &rows, f32::INFINITY);
+
+        assert!(widths.iter().all(|width| width.is_finite()));
+        assert!(widths[0] <= 64.0);
+    }
+
+    fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
+        values.into_iter().map(str::to_string).collect()
+    }
 }
 
 fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
