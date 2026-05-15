@@ -320,7 +320,9 @@ fn client_connection_once(
                 thread::spawn(move || {
                     let should_reply = !desktop_payload_is_move(&payload);
                     let result = crate::live_control::handle(&CommandKind::RemoteDesktop, &payload);
-                    if should_reply || result.starts_with("remote_desktop_error\n") {
+                    let input_failed = result.starts_with("remote_desktop_error\n");
+                    if should_reply || input_failed {
+                        let result = desktop_input_reply_payload(result);
                         let _ = queue_message(
                             &worker_tx,
                             &worker_token,
@@ -729,6 +731,26 @@ fn desktop_payload_is_move(payload: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn desktop_input_reply_payload(result: String) -> String {
+    let Some(message) = remote_desktop_error_message(&result) else {
+        return result;
+    };
+    format!("remote_desktop_input\nmessage=input failed: {message}")
+}
+
+fn remote_desktop_error_message(detail: &str) -> Option<String> {
+    let mut lines = detail.lines();
+    if lines.next().unwrap_or_default().trim() != "remote_desktop_error" {
+        return None;
+    }
+    let message = detail
+        .lines()
+        .find_map(|line| line.strip_prefix("message="))
+        .unwrap_or("remote desktop input failed")
+        .replace(['\t', '\r', '\n'], " ");
+    Some(message)
+}
+
 fn remote_desktop_action(payload: &str) -> Option<String> {
     payload
         .lines()
@@ -929,4 +951,31 @@ fn send(
     );
     *next_message_id = next_message_id.saturating_add(1);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desktop_input_reply_payload;
+
+    #[test]
+    fn desktop_input_reply_payload_wraps_errors_as_input_status() {
+        let payload = desktop_input_reply_payload(
+            "remote_desktop_error\nmessage=macOS input requires Accessibility permission"
+                .to_string(),
+        );
+
+        assert_eq!(
+            payload,
+            "remote_desktop_input\nmessage=input failed: macOS input requires Accessibility permission"
+        );
+    }
+
+    #[test]
+    fn desktop_input_reply_payload_keeps_success_payloads() {
+        let payload = desktop_input_reply_payload(
+            "remote_desktop_input\nmessage=click left 10 20".to_string(),
+        );
+
+        assert_eq!(payload, "remote_desktop_input\nmessage=click left 10 20");
+    }
 }
