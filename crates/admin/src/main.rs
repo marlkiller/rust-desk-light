@@ -920,46 +920,64 @@ impl AdminApp {
                             header.col(|ui| table_header(ui, "Last Heartbeat"));
                         })
                         .body(|body| {
-                            body.rows(30.0, clients.len(), |mut row| {
+                            body.rows(28.0, clients.len(), |mut row| {
                                 let row_data = &clients[row.index()];
                                 let client = &row_data.info;
                                 let selected =
                                     self.selected_client_id.as_deref() == Some(client.id.as_str());
                                 row.set_selected(selected);
-                                row.col(|ui| client_status_text(ui, row_data.status));
                                 row.col(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(compact_id(&client.id)).size(12.0),
-                                    );
+                                    centered_cell(ui, |ui| client_status_text(ui, row_data.status))
                                 });
                                 row.col(|ui| {
-                                    ui.label(egui::RichText::new(&client.peer_addr).size(12.0));
+                                    centered_cell(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(compact_id(&client.id)).size(12.0),
+                                        );
+                                    });
                                 });
                                 row.col(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(compact_id(&client.fingerprint))
+                                    centered_cell(ui, |ui| {
+                                        ui.label(egui::RichText::new(&client.peer_addr).size(12.0));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(compact_id(&client.fingerprint))
+                                                .size(12.0),
+                                        );
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        ui.label(egui::RichText::new(&client.hostname).size(12.0));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        ui.label(egui::RichText::new(&client.username).size(12.0));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        ui.label(egui::RichText::new(&client.os).size(12.0));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        ui.label(if client.gui_available { "Yes" } else { "No" });
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(last_seen_label(
+                                                client.last_seen_epoch_ms,
+                                            ))
                                             .size(12.0),
-                                    );
-                                });
-                                row.col(|ui| {
-                                    ui.label(egui::RichText::new(&client.hostname).size(12.0));
-                                });
-                                row.col(|ui| {
-                                    ui.label(egui::RichText::new(&client.username).size(12.0));
-                                });
-                                row.col(|ui| {
-                                    ui.label(egui::RichText::new(&client.os).size(12.0));
-                                });
-                                row.col(|ui| {
-                                    ui.label(if client.gui_available { "Yes" } else { "No" });
-                                });
-                                row.col(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(last_seen_label(
-                                            client.last_seen_epoch_ms,
-                                        ))
-                                        .size(12.0),
-                                    );
+                                        );
+                                    });
                                 });
                                 let response = row.response();
                                 if response.clicked() {
@@ -1290,6 +1308,13 @@ fn table_header(ui: &mut egui::Ui, title: &str) {
             .size(12.0)
             .color(COLOR_MUTED)
             .strong(),
+    );
+}
+
+fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.with_layout(
+        egui::Layout::left_to_right(egui::Align::Center),
+        add_contents,
     );
 }
 
