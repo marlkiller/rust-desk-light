@@ -1,6 +1,17 @@
 use std::process::Command;
 use std::time::Duration;
 
+use base64::Engine;
+
+pub(crate) struct RemoteDesktopVideoFrame {
+    pub(crate) source_width: u32,
+    pub(crate) source_height: u32,
+    pub(crate) image_width: u32,
+    pub(crate) image_height: u32,
+    pub(crate) format: String,
+    pub(crate) bytes: Vec<u8>,
+}
+
 pub fn handle(payload: &str) -> String {
     let request = RemoteDesktopRequest::parse(payload);
     match request.action.as_str() {
@@ -87,29 +98,53 @@ impl RemoteDesktopRequest {
 }
 
 fn screenshot(screen_index: usize, quality: &str) -> String {
+    match capture_video_frame(screen_index, quality) {
+        Ok(frame) => format_frame_payload(screen_index, frame),
+        Err(error) => format!("remote_desktop_error\nmessage={error}"),
+    }
+}
+
+pub(crate) fn capture_video_frame(
+    screen_index: usize,
+    quality: &str,
+) -> Result<RemoteDesktopVideoFrame, String> {
     #[cfg(target_os = "windows")]
     {
-        return windows_capture::screenshot(screen_index, quality);
+        return windows_capture::capture_video_frame(screen_index, quality);
     }
-    #[cfg(not(target_os = "windows"))]
-    let _ = quality;
     #[cfg(target_os = "linux")]
     {
-        return linux_capture::screenshot(screen_index, quality);
+        return linux_capture::capture_video_frame(screen_index, quality);
     }
     #[cfg(target_os = "macos")]
     {
-        return macos_capture::screenshot(screen_index);
+        let _ = quality;
+        return macos_capture::capture_video_frame(screen_index);
     }
     #[allow(unreachable_code)]
     {
-        "remote_desktop_error\nmessage=screenshot is not implemented for this platform".to_string()
+        let _ = (screen_index, quality);
+        Err("screenshot is not implemented for this platform".to_string())
     }
+}
+
+fn format_frame_payload(screen_index: usize, frame: RemoteDesktopVideoFrame) -> String {
+    format!(
+        "remote_desktop_frame\nscreen_index={}\nscreen_width={}\nscreen_height={}\nimage_width={}\nimage_height={}\nformat={}\nbytes={}\npng_base64={}",
+        screen_index,
+        frame.source_width,
+        frame.source_height,
+        frame.image_width,
+        frame.image_height,
+        frame.format,
+        frame.bytes.len(),
+        base64::engine::general_purpose::STANDARD.encode(frame.bytes)
+    )
 }
 
 #[cfg(target_os = "windows")]
 mod windows_capture {
-    use base64::Engine;
+    use super::RemoteDesktopVideoFrame;
     use image::codecs::jpeg::JpegEncoder;
     use image::{imageops::FilterType, DynamicImage, RgbaImage};
     use std::ffi::c_void;
@@ -156,8 +191,11 @@ mod windows_capture {
         }
     }
 
-    pub(super) fn screenshot(screen_index: usize, quality: &str) -> String {
-        match enum_screens()
+    pub(super) fn capture_video_frame(
+        screen_index: usize,
+        quality: &str,
+    ) -> Result<RemoteDesktopVideoFrame, String> {
+        enum_screens()
             .and_then(|screens| {
                 screens
                     .into_iter()
@@ -165,10 +203,6 @@ mod windows_capture {
                     .ok_or_else(|| format!("screen index {screen_index} is not available"))
             })
             .and_then(|screen| capture_screen(screen, quality_profile(quality)))
-        {
-            Ok(frame) => frame,
-            Err(error) => format!("remote_desktop_error\nmessage={error}"),
-        }
     }
 
     #[derive(Clone, Copy)]
@@ -241,7 +275,10 @@ mod windows_capture {
         1
     }
 
-    fn capture_screen(screen: Screen, quality: QualityProfile) -> Result<String, String> {
+    fn capture_screen(
+        screen: Screen,
+        quality: QualityProfile,
+    ) -> Result<RemoteDesktopVideoFrame, String> {
         if screen.width == 0 || screen.height == 0 {
             return Err("selected screen has invalid size".to_string());
         }
@@ -261,16 +298,14 @@ mod windows_capture {
         JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
             .encode_image(&image)
             .map_err(|error| format!("jpeg encode failed: {error}"))?;
-        Ok(format!(
-            "remote_desktop_frame\nscreen_index={}\nscreen_width={}\nscreen_height={}\nimage_width={}\nimage_height={}\nformat=jpeg\nbytes={}\npng_base64={}",
-            screen.index,
-            screen.width,
-            screen.height,
+        Ok(RemoteDesktopVideoFrame {
+            source_width: screen.width,
+            source_height: screen.height,
             image_width,
             image_height,
-            encoded.len(),
-            base64::engine::general_purpose::STANDARD.encode(encoded)
-        ))
+            format: "jpeg".to_string(),
+            bytes: encoded,
+        })
     }
 
     fn capture_rgba(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -367,7 +402,7 @@ mod windows_capture {
 
 #[cfg(target_os = "linux")]
 mod linux_capture {
-    use base64::Engine;
+    use super::RemoteDesktopVideoFrame;
     use image::codecs::jpeg::JpegEncoder;
     use image::{imageops::FilterType, DynamicImage};
     use std::fs;
@@ -392,8 +427,11 @@ mod linux_capture {
         }
     }
 
-    pub(super) fn screenshot(screen_index: usize, quality: &str) -> String {
-        match enum_screens()
+    pub(super) fn capture_video_frame(
+        screen_index: usize,
+        quality: &str,
+    ) -> Result<RemoteDesktopVideoFrame, String> {
+        enum_screens()
             .and_then(|screens| {
                 screens
                     .into_iter()
@@ -401,10 +439,6 @@ mod linux_capture {
                     .ok_or_else(|| format!("screen index {screen_index} is not available"))
             })
             .and_then(|screen| capture_screen(screen, quality_profile(quality)))
-        {
-            Ok(frame) => frame,
-            Err(error) => format!("remote_desktop_error\nmessage={error}"),
-        }
     }
 
     #[derive(Clone, Copy)]
@@ -495,7 +529,10 @@ mod linux_capture {
         ))
     }
 
-    fn capture_screen(screen: Screen, quality: QualityProfile) -> Result<String, String> {
+    fn capture_screen(
+        screen: Screen,
+        quality: QualityProfile,
+    ) -> Result<RemoteDesktopVideoFrame, String> {
         let path = temp_path("rdl-linux-screen", "jpg");
         let geometry = format!(
             "{}x{}+{}+{}",
@@ -536,7 +573,7 @@ mod linux_capture {
         screen: Screen,
         bytes: Vec<u8>,
         quality: QualityProfile,
-    ) -> Result<String, String> {
+    ) -> Result<RemoteDesktopVideoFrame, String> {
         let image = image::load_from_memory(&bytes)
             .map_err(|error| format!("load captured image failed: {error}"))?;
         let scale = (quality.max_width as f32 / image.width() as f32).min(1.0);
@@ -552,17 +589,14 @@ mod linux_capture {
         JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
             .encode_image(&image)
             .map_err(|error| format!("jpeg encode failed: {error}"))?;
-        Ok(format!(
-            "remote_desktop_frame\nscreen_index={}\nscreen_width={}\nscreen_height={}\nimage_width={}\nimage_height={}\nformat={}\nbytes={}\npng_base64={}",
-            screen.index,
-            screen.width,
-            screen.height,
+        Ok(RemoteDesktopVideoFrame {
+            source_width: screen.width,
+            source_height: screen.height,
             image_width,
             image_height,
-            "jpeg",
-            encoded.len(),
-            base64::engine::general_purpose::STANDARD.encode(encoded)
-        ))
+            format: "jpeg".to_string(),
+            bytes: encoded,
+        })
     }
 
     fn format_screens(screens: &[Screen]) -> String {
@@ -598,7 +632,7 @@ mod linux_capture {
 
 #[cfg(target_os = "macos")]
 mod macos_capture {
-    use base64::Engine;
+    use super::RemoteDesktopVideoFrame;
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
@@ -621,8 +655,10 @@ mod macos_capture {
         }
     }
 
-    pub(super) fn screenshot(screen_index: usize) -> String {
-        match enum_screens()
+    pub(super) fn capture_video_frame(
+        screen_index: usize,
+    ) -> Result<RemoteDesktopVideoFrame, String> {
+        enum_screens()
             .and_then(|screens| {
                 screens
                     .into_iter()
@@ -630,10 +666,6 @@ mod macos_capture {
                     .ok_or_else(|| format!("screen index {screen_index} is not available"))
             })
             .and_then(capture_screen)
-        {
-            Ok(frame) => frame,
-            Err(error) => format!("remote_desktop_error\nmessage={error}"),
-        }
     }
 
     fn enum_screens() -> Result<Vec<Screen>, String> {
@@ -666,7 +698,7 @@ mod macos_capture {
         }])
     }
 
-    fn capture_screen(screen: Screen) -> Result<String, String> {
+    fn capture_screen(screen: Screen) -> Result<RemoteDesktopVideoFrame, String> {
         let path = temp_path("rdl-macos-screen", "jpg");
         let rect = format!(
             "{},{},{},{}",
@@ -688,16 +720,14 @@ mod macos_capture {
         let _ = fs::remove_file(&path);
         let image = image::load_from_memory(&bytes)
             .map_err(|error| format!("load captured image failed: {error}"))?;
-        Ok(format!(
-            "remote_desktop_frame\nscreen_index={}\nscreen_width={}\nscreen_height={}\nimage_width={}\nimage_height={}\nformat=jpeg\nbytes={}\npng_base64={}",
-            screen.index,
-            screen.width,
-            screen.height,
-            image.width(),
-            image.height(),
-            bytes.len(),
-            base64::engine::general_purpose::STANDARD.encode(bytes)
-        ))
+        Ok(RemoteDesktopVideoFrame {
+            source_width: screen.width,
+            source_height: screen.height,
+            image_width: image.width(),
+            image_height: image.height(),
+            format: "jpeg".to_string(),
+            bytes,
+        })
     }
 
     fn format_screens(screens: &[Screen]) -> String {

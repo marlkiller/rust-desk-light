@@ -812,11 +812,19 @@ fn video_stream_loop(
                 let screen = video_control_value(&start_payload, "screen")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or_default();
-                let payload = crate::live_control::handle(
-                    &CommandKind::RemoteDesktop,
-                    &format!("action=screenshot\nscreen={screen}\nquality={quality}"),
-                );
-                parse_remote_desktop_video_frame(&payload, &client_id, seq)
+                crate::live_control::capture_remote_desktop_video_frame(screen, &quality).map(
+                    |frame| Message::VideoFrame {
+                        client_id: client_id.clone(),
+                        source: VideoSource::RemoteDesktop,
+                        seq,
+                        source_width: frame.source_width,
+                        source_height: frame.source_height,
+                        image_width: frame.image_width,
+                        image_height: frame.image_height,
+                        format: frame.format,
+                        bytes: frame.bytes,
+                    },
+                )
             }
             VideoSource::Camera => {
                 let device = video_control_value(&start_payload, "device")
@@ -883,51 +891,6 @@ fn video_source_command(source: &VideoSource) -> CommandKind {
         VideoSource::RemoteDesktop => CommandKind::RemoteDesktop,
         VideoSource::Camera => CommandKind::Camera,
     }
-}
-
-fn parse_remote_desktop_video_frame(
-    payload: &str,
-    client_id: &str,
-    seq: u64,
-) -> Result<Message, String> {
-    let mut lines = payload.lines();
-    if lines.next().unwrap_or_default().trim() != "remote_desktop_frame" {
-        return Err(payload.to_string());
-    }
-    let mut source_width = 0;
-    let mut source_height = 0;
-    let mut image_width = 0;
-    let mut image_height = 0;
-    let mut format = "jpeg".to_string();
-    let mut encoded = "";
-    for line in lines {
-        if let Some(rest) = line.strip_prefix("screen_width=") {
-            source_width = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("screen_height=") {
-            source_height = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("image_width=") {
-            image_width = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("image_height=") {
-            image_height = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("format=") {
-            format = rest.to_string();
-        } else if let Some(rest) = line.strip_prefix("png_base64=") {
-            encoded = rest;
-        }
-    }
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-        .map_err(|error| format!("decode remote desktop frame failed: {error}"))?;
-    Ok(Message::VideoFrame {
-        client_id: client_id.to_string(),
-        source: VideoSource::RemoteDesktop,
-        seq,
-        source_width,
-        source_height,
-        image_width,
-        image_height,
-        format,
-        bytes,
-    })
 }
 
 fn parse_camera_video_frame(payload: &str, client_id: &str, seq: u64) -> Result<Message, String> {
