@@ -4,7 +4,6 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 IP="${RDL_IP:-0.0.0.0}"
 PORT="${RDL_PORT:-21115}"
-PROFILE="${RDL_PROFILE:-release}"
 LOG_DIR="${RDL_LOG_DIR:-$ROOT_DIR/target/rdl-server}"
 PID_FILE="$LOG_DIR/rdl-server.pid"
 LOG_FILE="$LOG_DIR/rdl-server.log"
@@ -20,14 +19,9 @@ else
   echo "Skipping git pull because RDL_SKIP_PULL=1"
 fi
 
-echo "Building rdl-server ($PROFILE)"
-if [ "$PROFILE" = "debug" ]; then
-  cargo build -p rust-desk-light-server
-  SERVER_BIN="$ROOT_DIR/target/debug/rdl-server"
-else
-  cargo build -p rust-desk-light-server --release
-  SERVER_BIN="$ROOT_DIR/target/release/rdl-server"
-fi
+echo "Building rdl-server (release)"
+cargo build -p rust-desk-light-server --release
+SERVER_BIN="$ROOT_DIR/target/release/rdl-server"
 
 stop_existing() {
   if [ ! -f "$PID_FILE" ]; then
