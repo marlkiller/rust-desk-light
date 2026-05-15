@@ -8,6 +8,9 @@ use std::sync::{
 const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
 const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
 const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const CHAT_FRAME_VERTICAL_MARGIN: f32 = 20.0;
+const BOTTOM_SAFE_SPACE: f32 = 6.0;
 
 pub(crate) struct ChatWindow {
     messages: Arc<Mutex<Vec<ChatLine>>>,
@@ -71,8 +74,12 @@ pub(crate) fn render_window(ctx: &egui::Context, window: &mut Option<ChatWindow>
             .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
             .show_inside(ui, |ui| {
                 windowing::render_child_window_controls(ui);
-                let input_height = 42.0;
-                let history_height = (ui.available_height() - input_height - 8.0).max(80.0);
+                let history_height = (ui.available_height()
+                    - TOOLBAR_CONTROL_HEIGHT
+                    - CHAT_FRAME_VERTICAL_MARGIN
+                    - 8.0
+                    - BOTTOM_SAFE_SPACE)
+                    .max(80.0);
                 egui::Frame::default()
                     .fill(COLOR_PANEL)
                     .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
@@ -88,6 +95,7 @@ pub(crate) fn render_window(ctx: &egui::Context, window: &mut Option<ChatWindow>
                     });
                 ui.add_space(8.0);
                 render_input(ui, &draft, &outbound_queue);
+                ui.add_space(BOTTOM_SAFE_SPACE);
             });
     });
 
@@ -125,13 +133,16 @@ fn render_messages(ui: &mut egui::Ui, messages: &Arc<Mutex<Vec<ChatLine>>>) {
 
 fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mutex<Vec<String>>>) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         let mut text = draft.lock().map(|value| value.clone()).unwrap_or_default();
         let button_width = 72.0;
         let input_width =
             (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(80.0);
         let response = ui.add_sized(
-            [input_width, 28.0],
-            egui::TextEdit::singleline(&mut text).hint_text("Reply"),
+            [input_width, TOOLBAR_CONTROL_HEIGHT],
+            egui::TextEdit::singleline(&mut text)
+                .hint_text("Reply")
+                .vertical_align(egui::Align::Center),
         );
         response.context_menu(|ui| {
             if ui.button("Copy").clicked() {
@@ -150,7 +161,10 @@ fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mu
             }
         }
         let send_clicked = ui
-            .add_sized([button_width, 28.0], egui::Button::new("Send"))
+            .add_sized(
+                [button_width, TOOLBAR_CONTROL_HEIGHT],
+                egui::Button::new("Send"),
+            )
             .clicked()
             || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
         if send_clicked && !text.trim().is_empty() {
