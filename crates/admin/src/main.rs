@@ -8,7 +8,7 @@ use rdl_protocol::{
     read_envelope, write_envelope_with_token, ClientInfo, CommandKind, EnvelopeDecoder, Message,
     Role, DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead};
 use std::net::{Shutdown, TcpStream};
@@ -42,6 +42,7 @@ fn run_gui(config: Config) -> eframe::Result {
 
     let (input_tx, input_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
+    let ui_event_tx = event_tx.clone();
     let network_config = config.clone();
     let repaint_handle = Arc::new(Mutex::new(None));
     let network_repaint_handle = repaint_handle.clone();
@@ -69,6 +70,7 @@ fn run_gui(config: Config) -> eframe::Result {
                 config,
                 input_tx,
                 event_rx,
+                ui_event_tx,
                 repaint_handle,
             )))
         }),
@@ -132,6 +134,10 @@ fn run_terminal(config: Config) -> io::Result<()> {
             AdminEvent::DesktopFrame { client_id, payload } => {
                 println!("desktop_frame client={} bytes={}", client_id, payload.len());
             }
+            AdminEvent::DecodedDesktopFrame { client_id, result } => match result {
+                Ok(_) => println!("decoded_desktop_frame client={client_id}"),
+                Err(error) => println!("decoded_desktop_frame client={client_id} error={error}"),
+            },
             AdminEvent::Log(line) => println!("{line}"),
             AdminEvent::Connected => println!("connected"),
             AdminEvent::Disconnected => println!("disconnected"),
@@ -322,6 +328,8 @@ struct AdminApp {
     config: Config,
     input_tx: Sender<AdminInput>,
     event_rx: Receiver<AdminEvent>,
+    event_tx: Sender<AdminEvent>,
+    repaint_handle: Arc<Mutex<Option<egui::Context>>>,
     connected: bool,
     clients: Vec<ClientRow>,
     client_filter: String,
@@ -383,6 +391,7 @@ impl AdminApp {
         config: Config,
         input_tx: Sender<AdminInput>,
         event_rx: Receiver<AdminEvent>,
+        event_tx: Sender<AdminEvent>,
         repaint_handle: Arc<Mutex<Option<egui::Context>>>,
     ) -> Self {
         apply_admin_theme(&cc.egui_ctx);
@@ -393,6 +402,8 @@ impl AdminApp {
             config,
             input_tx,
             event_rx,
+            event_tx,
+            repaint_handle,
             connected: false,
             clients: Vec::new(),
             client_filter: String::new(),
@@ -408,6 +419,7 @@ impl AdminApp {
 
     fn drain_events(&mut self) -> bool {
         let mut changed = false;
+        let mut latest_desktop_frames = HashMap::<String, String>::new();
         while let Ok(event) = self.event_rx.try_recv() {
             changed = true;
             match event {
@@ -436,15 +448,42 @@ impl AdminApp {
                     detail,
                 } => self.handle_command_ack(client_id, command, accepted, detail),
                 AdminEvent::DesktopFrame { client_id, payload } => {
-                    self.handle_desktop_ack(&client_id, true, payload);
+                    latest_desktop_frames.insert(client_id, payload);
                 }
+                AdminEvent::DecodedDesktopFrame { client_id, result } => match result {
+                    Ok(frame) => live_control::remote_desktop::handle_decoded_frame(
+                        &mut self.desktop_windows,
+                        &client_id,
+                        frame,
+                    ),
+                    Err(message) => self.handle_desktop_ack(
+                        &client_id,
+                        true,
+                        format!("remote_desktop_error\nmessage={message}"),
+                    ),
+                },
                 AdminEvent::Log(line) => self.push_log(line),
             }
             if self.log_lines.len() > 300 {
                 self.log_lines.remove(0);
             }
         }
+        for (client_id, payload) in latest_desktop_frames {
+            if payload.starts_with("remote_desktop_frame\n") {
+                self.spawn_desktop_frame_decode(client_id, payload);
+            } else {
+                self.handle_desktop_ack(&client_id, true, payload);
+            }
+        }
         changed
+    }
+
+    fn spawn_desktop_frame_decode(&self, client_id: String, payload: String) {
+        let sink = AdminEventSink::new(self.event_tx.clone(), Some(self.repaint_handle.clone()));
+        thread::spawn(move || {
+            let result = live_control::remote_desktop::decode_frame_payload(&payload);
+            sink.send(AdminEvent::DecodedDesktopFrame { client_id, result });
+        });
     }
 
     fn push_log(&mut self, line: impl Into<String>) {
@@ -1995,6 +2034,10 @@ enum AdminEvent {
     DesktopFrame {
         client_id: String,
         payload: String,
+    },
+    DecodedDesktopFrame {
+        client_id: String,
+        result: Result<live_control::remote_desktop::DesktopFrame, String>,
     },
     Log(String),
 }

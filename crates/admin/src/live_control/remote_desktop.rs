@@ -40,7 +40,7 @@ pub(crate) struct RemoteDesktopWindow {
     close_requested: Arc<AtomicBool>,
 }
 
-struct DesktopFrame {
+pub(crate) struct DesktopFrame {
     seq: u64,
     screen_width: u32,
     screen_height: u32,
@@ -49,6 +49,64 @@ struct DesktopFrame {
     encoded_bytes: usize,
     format: String,
     image: egui::ColorImage,
+}
+
+pub(crate) fn decode_frame_payload(detail: &str) -> Result<DesktopFrame, String> {
+    let mut lines = detail.lines();
+    if lines.next().unwrap_or_default().trim() != "remote_desktop_frame" {
+        return Err("not a remote desktop frame payload".to_string());
+    }
+    match parse_frame(lines.collect::<Vec<_>>().as_slice()) {
+        DesktopResponse::Frame(frame) => Ok(frame),
+        DesktopResponse::Error(message) => Err(message),
+        _ => Err("remote desktop payload did not contain a frame".to_string()),
+    }
+}
+
+pub(crate) fn handle_decoded_frame(
+    windows: &mut Vec<RemoteDesktopWindow>,
+    client_id: &str,
+    frame: DesktopFrame,
+) {
+    let Some(window) = windows
+        .iter_mut()
+        .find(|window| window.client_id == client_id)
+    else {
+        return;
+    };
+    handle_frame(window, frame, None);
+}
+
+fn handle_frame(window: &mut RemoteDesktopWindow, frame: DesktopFrame, latency_ms: Option<u128>) {
+    let is_running = window.running.load(Ordering::Relaxed);
+    let now = Instant::now();
+    window.stats.fps = window
+        .stats
+        .last_frame_at
+        .map(|last_frame_at| {
+            let elapsed = now.duration_since(last_frame_at).as_secs_f32();
+            if elapsed > 0.0 {
+                1.0 / elapsed
+            } else {
+                window.stats.fps
+            }
+        })
+        .unwrap_or(0.0);
+    window.stats.frame_count = window.stats.frame_count.saturating_add(1);
+    window.stats.encoded_bytes = frame.encoded_bytes;
+    window.stats.format = frame.format.clone();
+    window.stats.latency_ms = latency_ms;
+    window.stats.last_frame_at = Some(now);
+    window.stats.screen_width = frame.screen_width;
+    window.stats.screen_height = frame.screen_height;
+    window.frame = Some(frame);
+    if is_running {
+        window.status = DesktopStatus::Live;
+        window.notice = "Frame received".to_string();
+    } else {
+        window.status = DesktopStatus::Ready;
+        window.notice = "Stopped".to_string();
+    }
 }
 
 #[derive(Clone, Default)]
@@ -168,35 +226,7 @@ pub(crate) fn handle_ack(
             };
         }
         DesktopResponse::Frame(frame) => {
-            let is_running = window.running.load(Ordering::Relaxed);
-            let now = Instant::now();
-            window.stats.fps = window
-                .stats
-                .last_frame_at
-                .map(|last_frame_at| {
-                    let elapsed = now.duration_since(last_frame_at).as_secs_f32();
-                    if elapsed > 0.0 {
-                        1.0 / elapsed
-                    } else {
-                        window.stats.fps
-                    }
-                })
-                .unwrap_or(0.0);
-            window.stats.frame_count = window.stats.frame_count.saturating_add(1);
-            window.stats.encoded_bytes = frame.encoded_bytes;
-            window.stats.format = frame.format.clone();
-            window.stats.latency_ms = latency_ms;
-            window.stats.last_frame_at = Some(now);
-            window.stats.screen_width = frame.screen_width;
-            window.stats.screen_height = frame.screen_height;
-            window.frame = Some(frame);
-            if is_running {
-                window.status = DesktopStatus::Live;
-                window.notice = "Frame received".to_string();
-            } else {
-                window.status = DesktopStatus::Ready;
-                window.notice = "Stopped".to_string();
-            }
+            handle_frame(window, frame, latency_ms);
         }
         DesktopResponse::Input(message) => {
             window.status = DesktopStatus::Live;
@@ -249,11 +279,15 @@ pub(crate) fn render_windows(
         }
         if let Some(frame) = &window.frame {
             if window.texture_seq != frame.seq {
-                window.texture = Some(ctx.load_texture(
-                    format!("remote_desktop:{}:{}", window.client_id, frame.seq),
-                    frame.image.clone(),
-                    egui::TextureOptions::LINEAR,
-                ));
+                if let Some(texture) = &mut window.texture {
+                    texture.set(frame.image.clone(), egui::TextureOptions::LINEAR);
+                } else {
+                    window.texture = Some(ctx.load_texture(
+                        format!("remote_desktop:{}", window.client_id),
+                        frame.image.clone(),
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
                 window.texture_seq = frame.seq;
             }
         }

@@ -115,8 +115,8 @@ mod windows_capture {
         HMONITOR, MONITORINFOEXW, SRCCOPY,
     };
 
-    const MAX_WIDTH: u32 = 960;
-    const JPEG_QUALITY: u8 = 55;
+    const MAX_WIDTH: u32 = 1280;
+    const JPEG_QUALITY: u8 = 72;
 
     #[derive(Clone)]
     struct Screen {
