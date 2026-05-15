@@ -118,8 +118,7 @@ pub(crate) fn capture_video_frame(
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = quality;
-        return macos_capture::capture_video_frame(screen_index);
+        return macos_capture::capture_video_frame(screen_index, quality);
     }
     #[allow(unreachable_code)]
     {
@@ -633,6 +632,8 @@ mod linux_capture {
 #[cfg(target_os = "macos")]
 mod macos_capture {
     use super::RemoteDesktopVideoFrame;
+    use image::codecs::jpeg::JpegEncoder;
+    use image::{imageops::FilterType, DynamicImage};
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
@@ -657,6 +658,7 @@ mod macos_capture {
 
     pub(super) fn capture_video_frame(
         screen_index: usize,
+        quality: &str,
     ) -> Result<RemoteDesktopVideoFrame, String> {
         enum_screens()
             .and_then(|screens| {
@@ -665,7 +667,30 @@ mod macos_capture {
                     .find(|screen| screen.index == screen_index)
                     .ok_or_else(|| format!("screen index {screen_index} is not available"))
             })
-            .and_then(capture_screen)
+            .and_then(|screen| capture_screen(screen, quality_profile(quality)))
+    }
+
+    #[derive(Clone, Copy)]
+    struct QualityProfile {
+        max_width: u32,
+        jpeg_quality: u8,
+    }
+
+    fn quality_profile(value: &str) -> QualityProfile {
+        match value {
+            "low" => QualityProfile {
+                max_width: 640,
+                jpeg_quality: 42,
+            },
+            "high" => QualityProfile {
+                max_width: 1920,
+                jpeg_quality: 88,
+            },
+            _ => QualityProfile {
+                max_width: 1280,
+                jpeg_quality: 72,
+            },
+        }
     }
 
     fn enum_screens() -> Result<Vec<Screen>, String> {
@@ -698,7 +723,10 @@ mod macos_capture {
         }])
     }
 
-    fn capture_screen(screen: Screen) -> Result<RemoteDesktopVideoFrame, String> {
+    fn capture_screen(
+        screen: Screen,
+        quality: QualityProfile,
+    ) -> Result<RemoteDesktopVideoFrame, String> {
         let path = temp_path("rdl-macos-screen", "jpg");
         let rect = format!(
             "{},{},{},{}",
@@ -720,13 +748,26 @@ mod macos_capture {
         let _ = fs::remove_file(&path);
         let image = image::load_from_memory(&bytes)
             .map_err(|error| format!("load captured image failed: {error}"))?;
+        let scale = (quality.max_width as f32 / image.width() as f32).min(1.0);
+        let (image_width, image_height, image) = if scale < 1.0 {
+            let width = ((image.width() as f32 * scale).round() as u32).max(1);
+            let height = ((image.height() as f32 * scale).round() as u32).max(1);
+            let resized = image::imageops::resize(&image, width, height, FilterType::Triangle);
+            (width, height, DynamicImage::ImageRgba8(resized))
+        } else {
+            (image.width(), image.height(), image)
+        };
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
+            .encode_image(&image)
+            .map_err(|error| format!("jpeg encode failed: {error}"))?;
         Ok(RemoteDesktopVideoFrame {
             source_width: screen.width,
             source_height: screen.height,
-            image_width: image.width(),
-            image_height: image.height(),
+            image_width,
+            image_height,
             format: "jpeg".to_string(),
-            bytes,
+            bytes: encoded,
         })
     }
 
