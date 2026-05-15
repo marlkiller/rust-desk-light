@@ -991,21 +991,24 @@ fn render_pending_dialogs(
                         *value = name.clone();
                     }
                 }
-                let create = ui.button("Create").clicked()
-                    || (response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                if create {
-                    create_folder(current_path, new_folder_name, outbound, status, notice);
-                    if let Ok(mut value) = pending_new_folder.lock() {
-                        *value = false;
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let create = ui.button("Create").clicked()
+                        || (response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                    if create {
+                        create_folder(current_path, new_folder_name, outbound, status, notice);
+                        if let Ok(mut value) = pending_new_folder.lock() {
+                            *value = false;
+                        }
+                        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                     }
-                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                }
-                if ui.button("Cancel").clicked() {
-                    if let Ok(mut value) = pending_new_folder.lock() {
-                        *value = false;
+                    if ui.button("Cancel").clicked() {
+                        if let Ok(mut value) = pending_new_folder.lock() {
+                            *value = false;
+                        }
                     }
-                }
+                });
             });
     }
 
@@ -1138,27 +1141,30 @@ fn render_pending_dialogs(
                         *value = name.clone();
                     }
                 }
-                let create = ui.button("Create").clicked()
-                    || (response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                if create {
-                    create_local_folder(
-                        local_path,
-                        local_entries,
-                        selected_local_name,
-                        local_new_folder_name,
-                        status,
-                        notice,
-                    );
-                    if let Ok(mut value) = pending_local_new_folder.lock() {
-                        *value = false;
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let create = ui.button("Create").clicked()
+                        || (response.lost_focus()
+                            && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                    if create {
+                        create_local_folder(
+                            local_path,
+                            local_entries,
+                            selected_local_name,
+                            local_new_folder_name,
+                            status,
+                            notice,
+                        );
+                        if let Ok(mut value) = pending_local_new_folder.lock() {
+                            *value = false;
+                        }
                     }
-                }
-                if ui.button("Cancel").clicked() {
-                    if let Ok(mut value) = pending_local_new_folder.lock() {
-                        *value = false;
+                    if ui.button("Cancel").clicked() {
+                        if let Ok(mut value) = pending_local_new_folder.lock() {
+                            *value = false;
+                        }
                     }
-                }
+                });
             });
     }
 }
