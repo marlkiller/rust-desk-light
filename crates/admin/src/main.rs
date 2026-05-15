@@ -892,6 +892,7 @@ impl AdminApp {
                 return;
             }
 
+            let ctx = ui.ctx().clone();
             egui::ScrollArea::horizontal()
                 .id_salt("admin_clients_horizontal_scroll")
                 .show(ui, |ui| {
@@ -931,55 +932,51 @@ impl AdminApp {
                                 });
                                 row.col(|ui| {
                                     centered_cell(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(compact_id(&client.id)).size(12.0),
+                                        cell_label(ui, compact_id(&client.id));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        cell_label(ui, &client.peer_addr);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        cell_label(ui, compact_id(&client.fingerprint));
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        cell_label(ui, &client.hostname);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        cell_label(ui, &client.username);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        cell_label(ui, &client.os);
+                                    });
+                                });
+                                row.col(|ui| {
+                                    centered_cell(ui, |ui| {
+                                        cell_label(
+                                            ui,
+                                            if client.gui_available { "Yes" } else { "No" },
                                         );
                                     });
                                 });
                                 row.col(|ui| {
                                     centered_cell(ui, |ui| {
-                                        ui.label(egui::RichText::new(&client.peer_addr).size(12.0));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(compact_id(&client.fingerprint))
-                                                .size(12.0),
-                                        );
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        ui.label(egui::RichText::new(&client.hostname).size(12.0));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        ui.label(egui::RichText::new(&client.username).size(12.0));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        ui.label(egui::RichText::new(&client.os).size(12.0));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        ui.label(if client.gui_available { "Yes" } else { "No" });
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(last_seen_label(
-                                                client.last_seen_epoch_ms,
-                                            ))
-                                            .size(12.0),
-                                        );
+                                        cell_label(ui, last_seen_label(client.last_seen_epoch_ms));
                                     });
                                 });
                                 let response = row.response();
+                                if response.hovered() {
+                                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
                                 if response.clicked() {
                                     self.selected_client_id = Some(client.id.clone());
                                 }
@@ -1318,6 +1315,14 @@ fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     );
 }
 
+fn cell_label(ui: &mut egui::Ui, text: impl Into<String>) {
+    ui.add(
+        egui::Label::new(egui::RichText::new(text).size(12.0))
+            .selectable(false)
+            .sense(egui::Sense::hover()),
+    );
+}
+
 fn connection_status_pill(ui: &mut egui::Ui, connected: bool) {
     let (text, color) = if connected {
         ("Online", COLOR_GOOD)
@@ -1333,7 +1338,11 @@ fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
         ClientStatus::Stale => ("Stale", COLOR_WARN),
         ClientStatus::Offline => ("Offline", COLOR_BAD),
     };
-    ui.label(egui::RichText::new(text).size(12.0).color(color).strong());
+    ui.add(
+        egui::Label::new(egui::RichText::new(text).size(12.0).color(color).strong())
+            .selectable(false)
+            .sense(egui::Sense::hover()),
+    );
 }
 
 fn timestamped_log(line: impl Into<String>) -> String {
