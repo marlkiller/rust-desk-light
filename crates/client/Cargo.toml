@@ -23,5 +23,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graph
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nokhwa = { version = "0.10.10", default-features = true, features = ["input-avfoundation"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow"] }
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
