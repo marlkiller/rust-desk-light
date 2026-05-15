@@ -3,7 +3,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 IP="${RDL_IP:-0.0.0.0}"
-PORT="${RDL_PORT:-21115}"
+PORT="${RDL_PORT:-5169}"
 LOG_DIR="${RDL_LOG_DIR:-$ROOT_DIR/target/rdl-server}"
 PID_FILE="$LOG_DIR/rdl-server.pid"
 LOG_FILE="$LOG_DIR/rdl-server.log"

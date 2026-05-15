@@ -3,7 +3,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_SERVER_IP: &str = "127.0.0.1";
-pub const DEFAULT_SERVER_PORT: u16 = 21115;
+pub const DEFAULT_SERVER_PORT: u16 = 5169;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const FRAME_MAGIC: [u8; 4] = *b"RDL1";
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;

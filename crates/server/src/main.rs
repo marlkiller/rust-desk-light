@@ -672,7 +672,7 @@ impl Config {
                     }
                 }
                 "--help" | "-h" => {
-                    println!("Usage: rdl-server [--ip 0.0.0.0] [--port 21115]");
+                    println!("Usage: rdl-server [--ip 0.0.0.0] [--port 5169]");
                     std::process::exit(0);
                 }
                 _ => {}

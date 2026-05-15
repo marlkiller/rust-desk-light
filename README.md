@@ -116,26 +116,26 @@ On Windows:
 Run the server manually:
 
 ```sh
-cargo run -p rust-desk-light-server -- --ip 0.0.0.0 --port 21115
+cargo run -p rust-desk-light-server -- --ip 0.0.0.0 --port 5169
 ```
 
 Run a client:
 
 ```sh
-cargo run -p rust-desk-light-client -- --ip 127.0.0.1 --port 21115
+cargo run -p rust-desk-light-client -- --ip 127.0.0.1 --port 5169
 ```
 
 Run the admin GUI:
 
 ```sh
-cargo run -p rust-desk-light-admin -- --ip 127.0.0.1 --port 21115
+cargo run -p rust-desk-light-admin -- --ip 127.0.0.1 --port 5169
 ```
 
 Useful environment variables:
 
 ```sh
 RDL_IP=127.0.0.1
-RDL_PORT=21115
+RDL_PORT=5169
 RDL_FORCE_TERMINAL=1
 ```
 

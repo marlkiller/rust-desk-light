@@ -6,8 +6,7 @@ use crate::{
 use base64::Engine;
 use eframe::egui;
 use rdl_protocol::{
-    read_envelope, write_envelope_with_token, ClientInfo, CommandKind, EnvelopeDecoder, Message,
-    Role, VideoSource,
+    write_envelope_with_token, ClientInfo, CommandKind, EnvelopeDecoder, Message, Role, VideoSource,
 };
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -355,15 +354,12 @@ fn admin_connection_once(
 }
 
 fn wait_for_session(stream: &mut TcpStream, event_sink: &AdminEventSink) -> io::Result<String> {
+    let mut decoder = EnvelopeDecoder::new();
     loop {
-        let message = match read_envelope(stream) {
-            Ok(envelope) => envelope.message,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
+        let message = match decoder.read_next(stream) {
+            Ok(Some(envelope)) => envelope.message,
+            Ok(None) => {
+                thread::sleep(Duration::from_millis(NETWORK_IDLE_SLEEP_MS));
                 continue;
             }
             Err(error) => return Err(error),

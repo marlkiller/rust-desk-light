@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT="${RDL_PORT:-21116}"
+PORT="${RDL_PORT:-5169}"
 IP="${RDL_IP:-127.0.0.1}"
 LOG_DIR="$ROOT_DIR/target/rdl-smoke"
 

@@ -7,7 +7,7 @@ set "ROOT_DIR=%CD%"
 popd
 
 if "%RDL_IP%"=="" (set "IP=127.0.0.1") else (set "IP=%RDL_IP%")
-if "%RDL_PORT%"=="" (set "PORT=21115") else (set "PORT=%RDL_PORT%")
+if "%RDL_PORT%"=="" (set "PORT=5169") else (set "PORT=%RDL_PORT%")
 set "LOG_DIR=%ROOT_DIR%\target\rdl-dev"
 
 echo Starting rust-desk-light dev stack
