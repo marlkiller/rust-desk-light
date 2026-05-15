@@ -14,7 +14,8 @@ const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
-const FRAME_INTERVAL: Duration = Duration::from_millis(900);
+const DEFAULT_TARGET_FPS: u32 = 4;
+const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
 pub(crate) struct RemoteDesktopWindow {
     pub(crate) client_id: String,
@@ -28,6 +29,9 @@ pub(crate) struct RemoteDesktopWindow {
     stats: DesktopStats,
     screens: Vec<RemoteScreen>,
     selected_screen: Arc<Mutex<usize>>,
+    target_fps: Arc<Mutex<u32>>,
+    mouse_follow: Arc<AtomicBool>,
+    last_mouse_move: Arc<Mutex<Instant>>,
     running: Arc<AtomicBool>,
     outbound: Vec<String>,
     last_request: Instant,
@@ -81,6 +85,7 @@ enum DesktopStatus {
 pub(crate) struct OutboundCommand {
     pub(crate) client_id: String,
     pub(crate) payload: String,
+    pub(crate) input: bool,
 }
 
 pub(crate) fn open_window(
@@ -113,9 +118,12 @@ pub(crate) fn open_window(
         stats: DesktopStats::default(),
         screens: Vec::new(),
         selected_screen: Arc::new(Mutex::new(0)),
+        target_fps: Arc::new(Mutex::new(DEFAULT_TARGET_FPS)),
+        mouse_follow: Arc::new(AtomicBool::new(false)),
+        last_mouse_move: Arc::new(Mutex::new(Instant::now())),
         running: Arc::new(AtomicBool::new(false)),
         outbound: Vec::new(),
-        last_request: Instant::now() - FRAME_INTERVAL,
+        last_request: Instant::now() - frame_interval(DEFAULT_TARGET_FPS),
         pending_since: None,
         open: true,
         close_requested: Arc::new(AtomicBool::new(false)),
@@ -161,6 +169,7 @@ pub(crate) fn handle_ack(
             };
         }
         DesktopResponse::Frame(frame) => {
+            let is_running = window.running.load(Ordering::Relaxed);
             let now = Instant::now();
             window.stats.fps = window
                 .stats
@@ -182,13 +191,20 @@ pub(crate) fn handle_ack(
             window.stats.screen_width = frame.screen_width;
             window.stats.screen_height = frame.screen_height;
             window.frame = Some(frame);
-            window.status = DesktopStatus::Live;
-            window.notice = "Frame received".to_string();
+            if is_running {
+                window.status = DesktopStatus::Live;
+                window.notice = "Frame received".to_string();
+            } else {
+                window.status = DesktopStatus::Ready;
+                window.notice = "Stopped".to_string();
+            }
         }
         DesktopResponse::Input(message) => {
             window.status = DesktopStatus::Live;
             window.notice = message;
-            window.queue_screenshot();
+            if !window.running.load(Ordering::Relaxed) {
+                window.queue_screenshot();
+            }
         }
         DesktopResponse::Error(message) => {
             window.status = DesktopStatus::Failed;
@@ -215,12 +231,6 @@ pub(crate) fn render_windows(
         }
         if !window.open {
             continue;
-        }
-        if window.running.load(Ordering::Relaxed)
-            && !matches!(window.status, DesktopStatus::Pending)
-            && window.last_request.elapsed() >= FRAME_INTERVAL
-        {
-            window.queue_screenshot();
         }
         if matches!(window.status, DesktopStatus::Pending)
             && window
@@ -281,6 +291,9 @@ pub(crate) fn render_windows(
         let stats = window.stats.clone();
         let screens = window.screens.clone();
         let selected_screen = window.selected_screen.clone();
+        let target_fps = window.target_fps.clone();
+        let mouse_follow = window.mouse_follow.clone();
+        let last_mouse_move = window.last_mouse_move.clone();
         let running = window.running.clone();
         let queued = Arc::new(Mutex::new(Vec::new()));
         let queued_for_ui = queued.clone();
@@ -292,13 +305,23 @@ pub(crate) fn render_windows(
             egui::CentralPanel::default()
                 .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
                 .show_inside(ui, |ui| {
-                    render_toolbar(ui, &screens, &selected_screen, &running, &queued_for_ui);
+                    render_toolbar(
+                        ui,
+                        &screens,
+                        &selected_screen,
+                        &target_fps,
+                        &mouse_follow,
+                        &running,
+                        &queued_for_ui,
+                    );
                     ui.add_space(8.0);
                     render_frame(
                         ui,
                         texture.as_ref(),
                         frame_info,
                         screen_origin,
+                        &mouse_follow,
+                        &last_mouse_move,
                         &notice,
                         &queued_for_ui,
                     );
@@ -320,16 +343,20 @@ pub(crate) fn render_windows(
             }
         }
         while let Some(payload) = window.outbound.pop() {
-            window.status = DesktopStatus::Pending;
-            window.notice = if payload.trim() == "action=stop" {
-                "Stopping remote desktop".to_string()
-            } else {
-                "Waiting for client result".to_string()
-            };
-            window.pending_since = Some(Instant::now());
+            let input = remote_desktop_payload_is_input(&payload);
+            if !input {
+                window.status = DesktopStatus::Pending;
+                window.notice = if payload.trim() == "action=stop" {
+                    "Stopping remote desktop".to_string()
+                } else {
+                    "Waiting for client result".to_string()
+                };
+                window.pending_since = Some(Instant::now());
+            }
             outbound.push(OutboundCommand {
                 client_id: client_id.clone(),
                 payload,
+                input,
             });
         }
     }
@@ -373,6 +400,8 @@ fn render_toolbar(
     ui: &mut egui::Ui,
     screens: &[RemoteScreen],
     selected_screen: &Arc<Mutex<usize>>,
+    target_fps: &Arc<Mutex<u32>>,
+    mouse_follow: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
     queued: &Arc<Mutex<Vec<String>>>,
 ) {
@@ -394,6 +423,24 @@ fn render_toolbar(
         if ui.button("Reload Screens").clicked() {
             queue_ui_payload(queued, "action=screens".to_string());
         }
+        let mut fps = target_fps
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(DEFAULT_TARGET_FPS);
+        egui::ComboBox::from_id_salt("remote_desktop_target_fps")
+            .selected_text(format!("{} FPS", fps))
+            .show_ui(ui, |ui| {
+                for option in [2, 4, 6, 8, 12] {
+                    ui.selectable_value(&mut fps, option, format!("{option} FPS"));
+                }
+            });
+        if let Ok(mut value) = target_fps.lock() {
+            *value = fps;
+        }
+        let mut follow = mouse_follow.load(Ordering::Relaxed);
+        if ui.checkbox(&mut follow, "Mouse Follow").changed() {
+            mouse_follow.store(follow, Ordering::Relaxed);
+        }
         let is_running = running.load(Ordering::Relaxed);
         if ui
             .add_enabled(
@@ -407,7 +454,10 @@ fn render_toolbar(
                 queue_ui_payload(queued, "action=stop".to_string());
             } else {
                 running.store(true, Ordering::Relaxed);
-                queue_ui_payload(queued, format!("action=screenshot\nscreen={selected}"));
+                queue_ui_payload(
+                    queued,
+                    format!("action=start\nscreen={selected}\nfps={fps}"),
+                );
             }
         }
     });
@@ -439,6 +489,8 @@ fn render_frame(
     texture: Option<&egui::TextureHandle>,
     frame_info: Option<(u32, u32, usize, usize)>,
     screen_origin: (i32, i32),
+    mouse_follow: &Arc<AtomicBool>,
+    last_mouse_move: &Arc<Mutex<Instant>>,
     placeholder: &str,
     queued: &Arc<Mutex<Vec<String>>>,
 ) {
@@ -463,8 +515,32 @@ fn render_frame(
             let size = egui::vec2(image_w as f32 * scale, image_h as f32 * scale);
             let image = egui::Image::new(texture)
                 .fit_to_exact_size(size)
-                .sense(egui::Sense::click());
+                .sense(egui::Sense::click_and_drag());
             let response = ui.add(image);
+            if mouse_follow.load(Ordering::Relaxed) && response.hovered() {
+                let should_send = last_mouse_move
+                    .lock()
+                    .map(|mut last| {
+                        if last.elapsed() >= MOUSE_MOVE_INTERVAL {
+                            *last = Instant::now();
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(true);
+                if should_send {
+                    if let Some(pos) = response.hover_pos() {
+                        let rel_x = ((pos.x - response.rect.left()) / response.rect.width())
+                            .clamp(0.0, 1.0);
+                        let rel_y = ((pos.y - response.rect.top()) / response.rect.height())
+                            .clamp(0.0, 1.0);
+                        let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
+                        let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+                        queue_ui_payload(queued, format!("action=move\nx={x}\ny={y}"));
+                    }
+                }
+            }
             if response.clicked_by(egui::PointerButton::Primary) {
                 if let Some(pos) = response.interact_pointer_pos() {
                     let rel_x =
@@ -564,6 +640,19 @@ fn human_bytes(bytes: usize) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+fn frame_interval(target_fps: u32) -> Duration {
+    let fps = target_fps.clamp(1, 12);
+    Duration::from_millis((1000 / fps as u64).max(1))
+}
+
+fn remote_desktop_payload_is_input(payload: &str) -> bool {
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix("action="))
+        .map(|action| matches!(action.trim(), "click" | "move" | "text"))
+        .unwrap_or(false)
 }
 
 fn queue_ui_payload(queue: &Arc<Mutex<Vec<String>>>, payload: String) {

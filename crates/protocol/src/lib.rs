@@ -298,6 +298,18 @@ pub enum Message {
         accepted: bool,
         detail: String,
     },
+    DesktopControl {
+        target_id: String,
+        payload: String,
+    },
+    DesktopInput {
+        target_id: String,
+        payload: String,
+    },
+    DesktopFrame {
+        client_id: String,
+        payload: String,
+    },
     Error {
         detail: String,
     },
@@ -320,6 +332,9 @@ impl Message {
             Self::Session { .. } => 7,
             Self::Ping => 8,
             Self::Pong => 9,
+            Self::DesktopControl { .. } => 10,
+            Self::DesktopInput { .. } => 11,
+            Self::DesktopFrame { .. } => 12,
         }
     }
 
@@ -376,6 +391,15 @@ impl Message {
                 writer.bool(*accepted);
                 writer.string(detail);
             }
+            Self::DesktopControl { target_id, payload }
+            | Self::DesktopInput { target_id, payload } => {
+                writer.string(target_id);
+                writer.string(payload);
+            }
+            Self::DesktopFrame { client_id, payload } => {
+                writer.string(client_id);
+                writer.string(payload);
+            }
             Self::Error { detail } => writer.string(detail),
             Self::Session { token } => writer.string(token),
         }
@@ -430,6 +454,18 @@ impl Message {
             },
             8 => Self::Ping,
             9 => Self::Pong,
+            10 => Self::DesktopControl {
+                target_id: reader.string()?,
+                payload: reader.string()?,
+            },
+            11 => Self::DesktopInput {
+                target_id: reader.string()?,
+                payload: reader.string()?,
+            },
+            12 => Self::DesktopFrame {
+                client_id: reader.string()?,
+                payload: reader.string()?,
+            },
             _ => return Err(ProtocolError::InvalidMessageKind(kind)),
         };
         reader.finish()?;

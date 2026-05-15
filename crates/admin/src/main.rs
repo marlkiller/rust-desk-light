@@ -128,6 +128,9 @@ fn run_terminal(config: Config) -> io::Result<()> {
                 accepted,
                 detail
             ),
+            AdminEvent::DesktopFrame { client_id, payload } => {
+                println!("desktop_frame client={} bytes={}", client_id, payload.len());
+            }
             AdminEvent::Log(line) => println!("{line}"),
             AdminEvent::Connected => println!("connected"),
             AdminEvent::Disconnected => println!("disconnected"),
@@ -220,6 +223,18 @@ fn admin_connection_once(
                         payload,
                     },
                 ),
+                AdminInput::DesktopControl { target_id, payload } => send(
+                    &mut stream,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::DesktopControl { target_id, payload },
+                ),
+                AdminInput::DesktopInput { target_id, payload } => send(
+                    &mut stream,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::DesktopInput { target_id, payload },
+                ),
                 AdminInput::Quit => {
                     let _ = stream.shutdown(Shutdown::Both);
                     return Ok(AdminConnectionExit::Quit);
@@ -262,6 +277,9 @@ fn admin_connection_once(
                     accepted,
                     detail,
                 });
+            }
+            Message::DesktopFrame { client_id, payload } => {
+                event_sink.send(AdminEvent::DesktopFrame { client_id, payload });
             }
             Message::Ping => send(
                 &mut stream,
@@ -417,6 +435,9 @@ impl AdminApp {
                     accepted,
                     detail,
                 } => self.handle_command_ack(client_id, command, accepted, detail),
+                AdminEvent::DesktopFrame { client_id, payload } => {
+                    self.handle_desktop_ack(&client_id, true, payload);
+                }
                 AdminEvent::Log(line) => self.push_log(line),
             }
             if self.log_lines.len() > 300 {
@@ -1040,12 +1061,18 @@ impl AdminApp {
     fn render_desktop_windows(&mut self, ctx: &egui::Context) {
         for outbound in live_control::remote_desktop::render_windows(ctx, &mut self.desktop_windows)
         {
-            let _ = self.input_tx.send(AdminInput::Command {
-                target_id: outbound.client_id.clone(),
-                command: CommandKind::RemoteDesktop,
-                payload: outbound.payload,
-            });
-            self.push_log(format!("sent remote_desktop to {}", outbound.client_id));
+            let message = if outbound.input {
+                AdminInput::DesktopInput {
+                    target_id: outbound.client_id.clone(),
+                    payload: outbound.payload,
+                }
+            } else {
+                AdminInput::DesktopControl {
+                    target_id: outbound.client_id.clone(),
+                    payload: outbound.payload,
+                }
+            };
+            let _ = self.input_tx.send(message);
         }
     }
 
@@ -1944,6 +1971,14 @@ enum AdminInput {
         command: CommandKind,
         payload: String,
     },
+    DesktopControl {
+        target_id: String,
+        payload: String,
+    },
+    DesktopInput {
+        target_id: String,
+        payload: String,
+    },
     Quit,
 }
 
@@ -1956,6 +1991,10 @@ enum AdminEvent {
         command: CommandKind,
         accepted: bool,
         detail: String,
+    },
+    DesktopFrame {
+        client_id: String,
+        payload: String,
     },
     Log(String),
 }

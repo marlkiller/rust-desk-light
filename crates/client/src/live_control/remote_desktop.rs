@@ -7,6 +7,7 @@ pub fn handle(payload: &str) -> String {
         "screens" => screens(),
         "screenshot" | "" => screenshot(request.screen.unwrap_or_default()),
         "stop" => stop(),
+        "move" => move_mouse(request.x, request.y),
         "click" => click(
             request.x,
             request.y,
@@ -340,6 +341,18 @@ fn click(x: Option<i32>, y: Option<i32>, button: &str) -> String {
     let Some(y) = y else {
         return "remote_desktop_error\nmessage=missing y".to_string();
     };
+    #[cfg(target_os = "windows")]
+    {
+        return windows_input::click(x, y, button);
+    }
+    #[allow(unreachable_code)]
+    {
+        "remote_desktop_error\nmessage=click is currently implemented for windows only".to_string()
+    }
+}
+
+#[allow(dead_code)]
+fn click_powershell(x: i32, y: i32, button: &str) -> String {
     let (down, up) = match button {
         "right" => (0x0008, 0x0010),
         _ => (0x0002, 0x0004),
@@ -362,6 +375,80 @@ Write-Output "message=click {button} {x} {y}"
 "#
     );
     run_powershell(&script, Duration::from_secs(2))
+}
+
+fn move_mouse(x: Option<i32>, y: Option<i32>) -> String {
+    if !cfg!(target_os = "windows") {
+        return "remote_desktop_error\nmessage=mouse move is currently implemented for windows only"
+            .to_string();
+    }
+    let Some(x) = x else {
+        return "remote_desktop_error\nmessage=missing x".to_string();
+    };
+    let Some(y) = y else {
+        return "remote_desktop_error\nmessage=missing y".to_string();
+    };
+    #[cfg(target_os = "windows")]
+    {
+        return windows_input::move_mouse(x, y);
+    }
+    #[allow(unreachable_code)]
+    {
+        "remote_desktop_error\nmessage=mouse move is currently implemented for windows only"
+            .to_string()
+    }
+}
+
+#[allow(dead_code)]
+fn move_mouse_powershell(x: i32, y: i32) -> String {
+    let script = format!(
+        r#"
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class RdlMouseMove {{
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+}}
+"@
+[RdlMouseMove]::SetCursorPos({x}, {y}) | Out-Null
+Write-Output "remote_desktop_input"
+Write-Output "message=mouse moved {x} {y}"
+"#
+    );
+    run_powershell(&script, Duration::from_secs(2))
+}
+
+#[cfg(target_os = "windows")]
+mod windows_input {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
+        MOUSEEVENTF_RIGHTUP,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
+
+    pub(super) fn move_mouse(x: i32, y: i32) -> String {
+        let ok = unsafe { SetCursorPos(x, y) };
+        if ok == 0 {
+            return "remote_desktop_error\nmessage=SetCursorPos failed".to_string();
+        }
+        format!("remote_desktop_input\nmessage=mouse moved {x} {y}")
+    }
+
+    pub(super) fn click(x: i32, y: i32, button: &str) -> String {
+        let ok = unsafe { SetCursorPos(x, y) };
+        if ok == 0 {
+            return "remote_desktop_error\nmessage=SetCursorPos failed".to_string();
+        }
+        let (down, up) = match button {
+            "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+            _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        };
+        unsafe {
+            mouse_event(down, 0, 0, 0, 0);
+            mouse_event(up, 0, 0, 0, 0);
+        }
+        format!("remote_desktop_input\nmessage=click {button} {x} {y}")
+    }
 }
 
 fn send_text(text: &str) -> String {

@@ -295,6 +295,36 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                             }
                         }
                     }
+                    Message::DesktopControl { target_id, payload } => {
+                        mark_seen(peer_id, &mut peers);
+                        println!(
+                            "audit event=desktop_control peer=#{peer_id} identity={} target={}",
+                            peer_identity(peer_id, &peers),
+                            target_id
+                        );
+                        if let Some(error) =
+                            route_desktop_to_client(&peers, &target_id, payload, false)
+                        {
+                            send_desktop_error(peer_id, &target_id, error, &peers);
+                        }
+                    }
+                    Message::DesktopInput { target_id, payload } => {
+                        mark_seen(peer_id, &mut peers);
+                        if let Some(error) =
+                            route_desktop_to_client(&peers, &target_id, payload, true)
+                        {
+                            send_desktop_error(peer_id, &target_id, error, &peers);
+                        }
+                    }
+                    Message::DesktopFrame { client_id, payload } => {
+                        mark_seen(peer_id, &mut peers);
+                        let message = Message::DesktopFrame { client_id, payload };
+                        for peer in peers.values() {
+                            if peer.role == Some(Role::Admin) {
+                                let _ = peer.sender.send(message.clone());
+                            }
+                        }
+                    }
                     Message::Ping => {
                         mark_seen(peer_id, &mut peers);
                         if let Some(peer) = peers.get(&peer_id) {
@@ -431,6 +461,55 @@ fn route_command(
             .err()
             .map(|error| error.to_string()),
         None => Some(format!("client '{target_id}' is offline")),
+    }
+}
+
+fn route_desktop_to_client(
+    peers: &HashMap<usize, Peer>,
+    target_id: &str,
+    payload: String,
+    input: bool,
+) -> Option<String> {
+    let target = peers.values().find(|peer| {
+        peer.role == Some(Role::Client)
+            && peer
+                .client_info
+                .as_ref()
+                .map(|info| info.id == target_id)
+                .unwrap_or(false)
+    });
+
+    let Some(peer) = target else {
+        return Some(format!("client '{target_id}' is offline"));
+    };
+    let message = if input {
+        Message::DesktopInput {
+            target_id: target_id.to_string(),
+            payload,
+        }
+    } else {
+        Message::DesktopControl {
+            target_id: target_id.to_string(),
+            payload,
+        }
+    };
+    peer.sender
+        .send(message)
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn send_desktop_error(
+    peer_id: usize,
+    client_id: &str,
+    error: String,
+    peers: &HashMap<usize, Peer>,
+) {
+    if let Some(peer) = peers.get(&peer_id) {
+        let _ = peer.sender.send(Message::DesktopFrame {
+            client_id: client_id.to_string(),
+            payload: format!("remote_desktop_error\nmessage={error}"),
+        });
     }
 }
 

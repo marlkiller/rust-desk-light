@@ -15,6 +15,7 @@ use std::io;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
     Arc, Mutex,
 };
@@ -187,6 +188,10 @@ fn client_connection_once(
 
     let mut reader = stream;
     let mut session_token = String::new();
+    let desktop_stream = Arc::new(DesktopStreamState {
+        running: AtomicBool::new(false),
+        generation: std::sync::atomic::AtomicU64::new(0),
+    });
     loop {
         while let Ok(input) = input_rx.try_recv() {
             match input {
@@ -252,6 +257,79 @@ fn client_connection_once(
                             detail,
                         },
                     );
+                });
+            }
+            Message::DesktopControl { target_id, payload } => {
+                match remote_desktop_action(&payload).as_deref() {
+                    Some("start") => {
+                        desktop_stream.running.store(false, Ordering::Relaxed);
+                        let generation = desktop_stream
+                            .generation
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1);
+                        thread::sleep(Duration::from_millis(5));
+                        desktop_stream.running.store(true, Ordering::Relaxed);
+                        let worker_tx = out_tx.clone();
+                        let worker_token = session_token.clone();
+                        let stream_state = desktop_stream.clone();
+                        thread::spawn(move || {
+                            remote_desktop_stream_loop(
+                                target_id,
+                                payload,
+                                worker_tx,
+                                worker_token,
+                                stream_state,
+                                generation,
+                            );
+                        });
+                    }
+                    Some("stop") => {
+                        desktop_stream.running.store(false, Ordering::Relaxed);
+                        desktop_stream.generation.fetch_add(1, Ordering::Relaxed);
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::DesktopFrame {
+                                client_id: target_id,
+                                payload: "remote_desktop_stopped\nmessage=stopped".to_string(),
+                            },
+                        );
+                    }
+                    _ => {
+                        let worker_tx = out_tx.clone();
+                        let worker_token = session_token.clone();
+                        thread::spawn(move || {
+                            let payload =
+                                crate::live_control::handle(&CommandKind::RemoteDesktop, &payload);
+                            let _ = queue_message(
+                                &worker_tx,
+                                &worker_token,
+                                Message::DesktopFrame {
+                                    client_id: target_id,
+                                    payload,
+                                },
+                            );
+                        });
+                    }
+                }
+            }
+            Message::DesktopInput { target_id, payload } => {
+                let worker_tx = out_tx.clone();
+                let worker_token = session_token.clone();
+                thread::spawn(move || {
+                    let should_reply = !desktop_payload_is_move(&payload);
+                    let payload =
+                        crate::live_control::handle(&CommandKind::RemoteDesktop, &payload);
+                    if should_reply {
+                        let _ = queue_message(
+                            &worker_tx,
+                            &worker_token,
+                            Message::DesktopFrame {
+                                client_id: target_id,
+                                payload,
+                            },
+                        );
+                    }
                 });
             }
             Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
@@ -542,6 +620,11 @@ struct ClientOutbound {
     message: Message,
 }
 
+struct DesktopStreamState {
+    running: AtomicBool,
+    generation: std::sync::atomic::AtomicU64,
+}
+
 fn client_writer_loop(mut writer: TcpStream, out_rx: Receiver<ClientOutbound>) {
     let mut next_message_id = 1u64;
     for outbound in out_rx {
@@ -591,6 +674,73 @@ fn command_ack_send_failure(
         accepted: false,
         detail: format!("client failed to send command result: {error}"),
     }))
+}
+
+fn desktop_payload_is_move(payload: &str) -> bool {
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix("action="))
+        .map(|action| action.trim() == "move")
+        .unwrap_or(false)
+}
+
+fn remote_desktop_action(payload: &str) -> Option<String> {
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix("action="))
+        .map(|action| action.trim().to_ascii_lowercase())
+}
+
+fn remote_desktop_value(payload: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.trim().to_string())
+}
+
+fn remote_desktop_stream_loop(
+    client_id: String,
+    start_payload: String,
+    out_tx: Sender<ClientOutbound>,
+    session_token: String,
+    stream_state: Arc<DesktopStreamState>,
+    generation: u64,
+) {
+    let screen = remote_desktop_value(&start_payload, "screen")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let fps = remote_desktop_value(&start_payload, "fps")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(4)
+        .clamp(1, 12);
+    let interval = Duration::from_millis((1000 / fps).max(1));
+    while stream_state.running.load(Ordering::Relaxed)
+        && stream_state.generation.load(Ordering::Relaxed) == generation
+    {
+        let started = std::time::Instant::now();
+        let payload = crate::live_control::handle(
+            &CommandKind::RemoteDesktop,
+            &format!("action=screenshot\nscreen={screen}"),
+        );
+        if queue_message(
+            &out_tx,
+            &session_token,
+            Message::DesktopFrame {
+                client_id: client_id.clone(),
+                payload,
+            },
+        )
+        .is_err()
+        {
+            stream_state.running.store(false, Ordering::Relaxed);
+            break;
+        }
+        let elapsed = started.elapsed();
+        if elapsed < interval {
+            thread::sleep(interval - elapsed);
+        }
+    }
 }
 
 fn queue_message(
