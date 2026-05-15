@@ -17,6 +17,7 @@ const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const DEFAULT_QUALITY: &str = "medium";
 const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
+const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
 pub(crate) struct RemoteDesktopWindow {
@@ -473,34 +474,36 @@ fn render_toolbar(
 ) {
     ui.vertical(|ui| {
         let is_running = running.load(Ordering::Relaxed);
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        toolbar_row(ui, |ui| {
             let mut selected = selected_screen
                 .lock()
                 .map(|value| *value)
                 .unwrap_or_default();
             ui.label(egui::RichText::new("Screen").size(12.0).color(COLOR_MUTED));
             let combo_width = (ui.available_width() - 12.0).max(180.0);
-            ui.add_enabled_ui(!is_running, |ui| {
-                egui::ComboBox::from_id_salt("remote_desktop_screen_select")
-                    .width(combo_width)
-                    .selected_text(screen_label(screens, selected))
-                    .show_ui(ui, |ui| {
-                        for screen in screens {
-                            ui.selectable_value(
-                                &mut selected,
-                                screen.index,
-                                screen_label_one(screen),
-                            );
+            toolbar_dropdown(
+                ui,
+                "remote_desktop_screen_select",
+                screen_label(screens, selected),
+                combo_width,
+                !is_running,
+                |ui| {
+                    ui.set_min_width(combo_width);
+                    for screen in screens {
+                        if ui
+                            .selectable_value(&mut selected, screen.index, screen_label_one(screen))
+                            .clicked()
+                        {
+                            ui.close();
                         }
-                    });
-            });
+                    }
+                },
+            );
             if let Ok(mut value) = selected_screen.lock() {
                 *value = selected;
             }
         });
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        toolbar_row(ui, |ui| {
             if ui.button("Reload Screens").clicked() {
                 queue_ui_payload(queued, "action=screens".to_string());
             }
@@ -509,19 +512,28 @@ fn render_toolbar(
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_else(|_| DEFAULT_QUALITY.to_string());
-            ui.add_enabled_ui(!is_running, |ui| {
-                egui::ComboBox::from_id_salt("remote_desktop_quality")
-                    .selected_text(quality_label(&selected_quality))
-                    .show_ui(ui, |ui| {
-                        for option in ["low", "medium", "high"] {
-                            ui.selectable_value(
+            toolbar_dropdown(
+                ui,
+                "remote_desktop_quality",
+                quality_label(&selected_quality),
+                QUALITY_DROPDOWN_WIDTH,
+                !is_running,
+                |ui| {
+                    ui.set_min_width(QUALITY_DROPDOWN_WIDTH);
+                    for option in ["low", "medium", "high"] {
+                        if ui
+                            .selectable_value(
                                 &mut selected_quality,
                                 option.to_string(),
                                 quality_label(option),
-                            );
+                            )
+                            .clicked()
+                        {
+                            ui.close();
                         }
-                    });
-            });
+                    }
+                },
+            );
             if let Ok(mut value) = quality.lock() {
                 *value = selected_quality.clone();
             }
@@ -569,6 +581,49 @@ fn render_toolbar(
             }
         });
     });
+}
+
+fn toolbar_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        ui.horizontal(add_contents);
+    });
+}
+
+fn toolbar_dropdown(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    label: impl Into<String>,
+    width: f32,
+    enabled: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.push_id(id_salt, |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            let button = egui::Button::new(label.into())
+                .right_text("  ")
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .min_size(egui::vec2(width, TOOLBAR_CONTROL_HEIGHT));
+            let (response, _) =
+                egui::containers::menu::MenuButton::from_button(button).ui(ui, add_contents);
+            paint_dropdown_icon(ui, &response);
+        });
+    });
+}
+
+fn paint_dropdown_icon(ui: &egui::Ui, response: &egui::Response) {
+    let visuals = ui.style().interact(response);
+    let center = egui::pos2(response.rect.right() - 12.0, response.rect.center().y + 1.0);
+    let points = vec![
+        egui::pos2(center.x - 4.0, center.y - 2.0),
+        egui::pos2(center.x + 4.0, center.y - 2.0),
+        egui::pos2(center.x, center.y + 3.0),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        visuals.fg_stroke.color,
+        egui::Stroke::NONE,
+    ));
 }
 
 fn screen_label(screens: &[RemoteScreen], selected: usize) -> String {

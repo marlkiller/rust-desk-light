@@ -1,4 +1,5 @@
 use crate::windowing;
+use chrono::{Local, TimeZone};
 use eframe::egui;
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
 use std::fs;
@@ -16,6 +17,9 @@ const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
+const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const TRANSFER_COLUMN_WIDTH: f32 = 100.0;
+const TRANSFER_BUTTON_WIDTH: f32 = 84.0;
 
 pub(crate) struct FileManagerWindow {
     pub(crate) client_id: String,
@@ -238,7 +242,7 @@ pub(crate) fn render_windows(
                         |ui| {
                             StripBuilder::new(ui)
                                 .size(Size::remainder())
-                                .size(Size::exact(104.0))
+                                .size(Size::exact(TRANSFER_COLUMN_WIDTH))
                                 .size(Size::remainder())
                                 .horizontal(|mut strip| {
                                     strip.cell(|ui| {
@@ -465,7 +469,12 @@ fn render_transfer_buttons(
         ui.set_min_size(ui.available_size());
         ui.add_space(150.0);
         if ui
-            .add_enabled(!is_pending(status), egui::Button::new("Download ->"))
+            .add_enabled(
+                !is_pending(status),
+                egui::Button::new("Down ->")
+                    .min_size(egui::vec2(TRANSFER_BUTTON_WIDTH, TOOLBAR_CONTROL_HEIGHT)),
+            )
+            .on_hover_text("Download selected remote file")
             .clicked()
         {
             if let Some(path) =
@@ -479,7 +488,12 @@ fn render_transfer_buttons(
         }
         ui.add_space(8.0);
         if ui
-            .add_enabled(!is_pending(status), egui::Button::new("<- Upload"))
+            .add_enabled(
+                !is_pending(status),
+                egui::Button::new("<- Up")
+                    .min_size(egui::vec2(TRANSFER_BUTTON_WIDTH, TOOLBAR_CONTROL_HEIGHT)),
+            )
+            .on_hover_text("Upload selected local file")
             .clicked()
         {
             upload_selected_local(
@@ -504,6 +518,7 @@ fn render_remote_toolbar(
     status: &Arc<Mutex<FileStatus>>,
 ) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         let busy = is_pending(status);
         if ui.add_enabled(!busy, egui::Button::new("Up")).clicked() {
             let path = current_path
@@ -529,8 +544,13 @@ fn render_remote_toolbar(
             .map(|value| value.clone())
             .unwrap_or_default();
         let response = ui.add_sized(
-            [(ui.available_width() - 230.0).max(90.0), 28.0],
-            egui::TextEdit::singleline(&mut path).hint_text("Remote path"),
+            [
+                (ui.available_width() - 230.0).max(90.0),
+                TOOLBAR_CONTROL_HEIGHT,
+            ],
+            egui::TextEdit::singleline(&mut path)
+                .hint_text("Remote path")
+                .vertical_align(egui::Align::Center),
         );
         if response.changed() {
             if let Ok(mut value) = path_input.lock() {
@@ -555,6 +575,7 @@ fn render_local_toolbar(
     selected_local_name: &Arc<Mutex<Option<String>>>,
 ) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         if ui.button("Up").clicked() {
             let path = local_path
                 .lock()
@@ -575,8 +596,13 @@ fn render_local_toolbar(
             .map(|value| value.clone())
             .unwrap_or_default();
         let response = ui.add_sized(
-            [(ui.available_width() - 42.0).max(90.0), 28.0],
-            egui::TextEdit::singleline(&mut path).hint_text("Local path"),
+            [
+                (ui.available_width() - 42.0).max(90.0),
+                TOOLBAR_CONTROL_HEIGHT,
+            ],
+            egui::TextEdit::singleline(&mut path)
+                .hint_text("Local path")
+                .vertical_align(egui::Align::Center),
         );
         if response.changed() {
             if let Ok(mut value) = local_path.lock() {
@@ -613,24 +639,20 @@ fn render_entries_table(
         .lock()
         .map(|value| value.clone())
         .unwrap_or(None);
+    let ctx = ui.ctx().clone();
     file_table(
         ui,
         ("remote_file_table_v2", entries_id),
         &entries,
         selected.as_deref(),
-        |ui, entry| {
-            let row_response = selectable_row_label(
-                ui,
-                selected.as_deref() == Some(entry.name.as_str()),
-                &entry.name,
-            );
-            if row_response.clicked() {
+        |row_response, entry| {
+            if row_response.clicked() || row_response.secondary_clicked() {
                 select_entry(selected_name, entry);
             }
             if row_response.double_clicked() && entry.kind == "dir" && !is_pending(status) {
                 let path = join_remote(current_path, &entry.name);
                 queue_payload(outbound, &request("list", &path, ""));
-                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                ctx.request_repaint_of(egui::ViewportId::ROOT);
             }
             row_response.context_menu(|ui| {
                 if ui.button("Open").clicked() && entry.kind == "dir" {
@@ -641,7 +663,7 @@ fn render_entries_table(
                 if ui.button("Download").clicked() && entry.kind == "file" {
                     let path = join_remote(current_path, &entry.name);
                     queue_payload(outbound, &request("download", &path, ""));
-                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                    ctx.request_repaint_of(egui::ViewportId::ROOT);
                     ui.close();
                 }
                 if ui.button("Delete").clicked() {
@@ -694,13 +716,8 @@ fn render_local_entries_table(
         ("local_file_table_v2", entries_id),
         &entries_snapshot,
         selected.as_deref(),
-        |ui, entry| {
-            let row_response = selectable_row_label(
-                ui,
-                selected.as_deref() == Some(entry.name.as_str()),
-                &entry.name,
-            );
-            if row_response.clicked() {
+        |row_response, entry| {
+            if row_response.clicked() || row_response.secondary_clicked() {
                 select_entry(selected_name, entry);
             }
             if row_response.double_clicked() && entry.kind == "dir" {
@@ -754,17 +771,18 @@ fn file_table<R>(
     id: impl std::hash::Hash,
     entries: &[FileEntry],
     selected: Option<&str>,
-    mut name_cell: impl FnMut(&mut egui::Ui, &FileEntry) -> R,
+    mut row_handler: impl FnMut(&egui::Response, &FileEntry) -> R,
 ) {
     let available_width = ui.available_width().max(360.0);
     let type_width = 44.0;
-    let size_width = 76.0;
-    let modified_width = 104.0;
+    let size_width = 88.0;
+    let modified_width = 132.0;
     let name_width = (available_width - type_width - size_width - modified_width - 24.0).max(140.0);
     let table = TableBuilder::new(ui)
         .id_salt(id)
         .striped(true)
         .resizable(false)
+        .sense(egui::Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .column(Column::exact(type_width))
         .column(Column::exact(name_width))
@@ -784,34 +802,81 @@ fn file_table<R>(
                 body.row(24.0, |mut row| {
                     row.set_selected(is_selected);
                     row.col(|ui| table_text(ui, &entry.kind));
-                    row.col(|ui| {
-                        name_cell(ui, entry);
-                    });
-                    row.col(|ui| table_text(ui, &entry.size));
-                    row.col(|ui| table_text(ui, &entry.modified));
+                    row.col(|ui| table_text(ui, &entry.name));
+                    row.col(|ui| table_text(ui, &format_file_size(&entry.size)));
+                    row.col(|ui| table_text(ui, &format_modified_time(&entry.modified)));
+                    let row_response = row.response();
+                    if row_response.hovered() {
+                        row_response
+                            .ctx
+                            .set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    row_handler(&row_response, entry);
                 });
             }
         });
 }
 
 fn table_header_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(12.0)
-            .color(COLOR_TEXT)
-            .strong(),
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .size(12.0)
+                .color(COLOR_TEXT)
+                .strong(),
+        )
+        .selectable(false)
+        .sense(egui::Sense::hover()),
     );
 }
 
 fn table_text(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(12.0).color(COLOR_TEXT));
+    ui.add(
+        egui::Label::new(egui::RichText::new(text).size(12.0).color(COLOR_TEXT))
+            .selectable(false)
+            .sense(egui::Sense::hover()),
+    );
 }
 
-fn selectable_row_label(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
-    ui.selectable_label(
-        selected,
-        egui::RichText::new(text).size(12.0).color(COLOR_TEXT),
-    )
+fn format_file_size(size: &str) -> String {
+    let size = size.trim();
+    if size.is_empty() {
+        return String::new();
+    }
+    let Ok(bytes) = size.parse::<u64>() else {
+        return size.to_string();
+    };
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+
+    let units = ["B", "KB", "MB", "GB", "TB", "PB"];
+    let mut value = bytes as f64;
+    let mut unit_index = 0usize;
+    while value >= 1024.0 && unit_index + 1 < units.len() {
+        value /= 1024.0;
+        unit_index += 1;
+    }
+
+    if value >= 100.0 || (value.fract()).abs() < 0.05 {
+        format!("{value:.0} {}", units[unit_index])
+    } else {
+        format!("{value:.1} {}", units[unit_index])
+    }
+}
+
+fn format_modified_time(modified: &str) -> String {
+    let modified = modified.trim();
+    if modified.is_empty() {
+        return String::new();
+    }
+    let Ok(seconds) = modified.parse::<i64>() else {
+        return modified.to_string();
+    };
+    let Some(datetime) = Local.timestamp_opt(seconds, 0).single() else {
+        return modified.to_string();
+    };
+    datetime.format("%Y-%m-%d %H:%M").to_string()
 }
 
 fn render_status_bar(
@@ -935,7 +1000,9 @@ fn render_pending_dialogs(
                     .unwrap_or_default();
                 let response = ui.add_sized(
                     [420.0, 28.0],
-                    egui::TextEdit::singleline(&mut name).hint_text("New name"),
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("New name")
+                        .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
                     if let Ok(mut value) = rename_to.lock() {
@@ -982,7 +1049,9 @@ fn render_pending_dialogs(
                     .unwrap_or_default();
                 let response = ui.add_sized(
                     [420.0, 28.0],
-                    egui::TextEdit::singleline(&mut name).hint_text("Folder name"),
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("Folder name")
+                        .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
                     if let Ok(mut value) = new_folder_name.lock() {
@@ -1078,7 +1147,9 @@ fn render_pending_dialogs(
                     .unwrap_or_default();
                 let response = ui.add_sized(
                     [420.0, 28.0],
-                    egui::TextEdit::singleline(&mut name).hint_text("New name"),
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("New name")
+                        .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
                     if let Ok(mut value) = local_rename_to.lock() {
@@ -1132,7 +1203,9 @@ fn render_pending_dialogs(
                     .unwrap_or_default();
                 let response = ui.add_sized(
                     [420.0, 28.0],
-                    egui::TextEdit::singleline(&mut name).hint_text("Folder name"),
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("Folder name")
+                        .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
                     if let Ok(mut value) = local_new_folder_name.lock() {

@@ -13,6 +13,7 @@ const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
+const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
 
 pub(crate) struct TerminalWindow {
     pub(crate) client_id: String,
@@ -319,6 +320,7 @@ fn render_input(
     current_dir: &Arc<Mutex<String>>,
 ) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         let mut text = draft.lock().map(|value| value.clone()).unwrap_or_default();
         let running = status
             .lock()
@@ -337,8 +339,10 @@ fn render_input(
         let input_width =
             (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(100.0);
         let response = ui.add_sized(
-            [input_width, 28.0],
-            egui::TextEdit::singleline(&mut text).hint_text("Command"),
+            [input_width, TOOLBAR_CONTROL_HEIGHT],
+            egui::TextEdit::singleline(&mut text)
+                .hint_text("Command")
+                .vertical_align(egui::Align::Center),
         );
         if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
             apply_history_delta(history, history_cursor, draft, -1);
@@ -357,8 +361,11 @@ fn render_input(
         }
         let run_clicked = ui
             .add_enabled_ui(!running, |ui| {
-                ui.add_sized([button_width, 28.0], egui::Button::new("Run"))
-                    .clicked()
+                ui.add_sized(
+                    [button_width, TOOLBAR_CONTROL_HEIGHT],
+                    egui::Button::new("Run"),
+                )
+                .clicked()
             })
             .inner
             || (!running

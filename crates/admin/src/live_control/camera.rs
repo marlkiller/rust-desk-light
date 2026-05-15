@@ -18,6 +18,7 @@ const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const DEFAULT_QUALITY: &str = "medium";
 const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
+const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 
 pub(crate) struct CameraWindow {
     pub(crate) client_id: String,
@@ -393,37 +394,42 @@ fn render_toolbar(
 ) {
     let is_running = running.load(Ordering::Relaxed);
     ui.vertical(|ui| {
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        toolbar_row(ui, |ui| {
             let mut selected = selected_device
                 .lock()
                 .map(|value| *value)
                 .unwrap_or_default();
             ui.label(egui::RichText::new("Device").size(12.0).color(COLOR_MUTED));
             let combo_width = (ui.available_width() - 12.0).max(180.0);
-            ui.add_enabled_ui(!is_running, |ui| {
-                egui::ComboBox::from_id_salt("camera_device_select")
-                    .width(combo_width)
-                    .selected_text(device_label(devices, selected))
-                    .show_ui(ui, |ui| {
-                        for device in devices {
-                            let response = ui.selectable_value(
-                                &mut selected,
-                                device.index,
-                                device_label_one(device),
-                            );
-                            if !device.description.trim().is_empty() {
-                                response.on_hover_text(device.description.trim());
-                            }
+            toolbar_dropdown(
+                ui,
+                "camera_device_select",
+                device_label(devices, selected),
+                combo_width,
+                !is_running,
+                |ui| {
+                    ui.set_min_width(combo_width);
+                    for device in devices {
+                        let response = ui.selectable_value(
+                            &mut selected,
+                            device.index,
+                            device_label_one(device),
+                        );
+                        let clicked = response.clicked();
+                        if !device.description.trim().is_empty() {
+                            response.on_hover_text(device.description.trim());
                         }
-                    });
-            });
+                        if clicked {
+                            ui.close();
+                        }
+                    }
+                },
+            );
             if let Ok(mut value) = selected_device.lock() {
                 *value = selected;
             }
         });
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        toolbar_row(ui, |ui| {
             if ui
                 .add_enabled(!is_running, egui::Button::new("Reload Devices"))
                 .clicked()
@@ -435,19 +441,28 @@ fn render_toolbar(
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_else(|_| DEFAULT_QUALITY.to_string());
-            ui.add_enabled_ui(!is_running, |ui| {
-                egui::ComboBox::from_id_salt("camera_quality")
-                    .selected_text(quality_label(&selected_quality))
-                    .show_ui(ui, |ui| {
-                        for option in ["low", "medium", "high"] {
-                            ui.selectable_value(
+            toolbar_dropdown(
+                ui,
+                "camera_quality",
+                quality_label(&selected_quality),
+                QUALITY_DROPDOWN_WIDTH,
+                !is_running,
+                |ui| {
+                    ui.set_min_width(QUALITY_DROPDOWN_WIDTH);
+                    for option in ["low", "medium", "high"] {
+                        if ui
+                            .selectable_value(
                                 &mut selected_quality,
                                 option.to_string(),
                                 quality_label(option),
-                            );
+                            )
+                            .clicked()
+                        {
+                            ui.close();
                         }
-                    });
-            });
+                    }
+                },
+            );
             if let Ok(mut value) = quality.lock() {
                 *value = selected_quality.clone();
             }
@@ -478,15 +493,16 @@ fn render_toolbar(
                 }
             }
         });
-        ui.horizontal_centered(|ui| {
-            ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        toolbar_row(ui, |ui| {
             let mut path = save_path
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default();
             ui.add_sized(
                 [260.0, TOOLBAR_CONTROL_HEIGHT],
-                egui::TextEdit::singleline(&mut path).hint_text("Save path"),
+                egui::TextEdit::singleline(&mut path)
+                    .hint_text("Save path")
+                    .vertical_align(egui::Align::Center),
             );
             if let Ok(mut value) = save_path.lock() {
                 *value = path;
@@ -499,6 +515,49 @@ fn render_toolbar(
             }
         });
     });
+}
+
+fn toolbar_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        ui.horizontal(add_contents);
+    });
+}
+
+fn toolbar_dropdown(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    label: impl Into<String>,
+    width: f32,
+    enabled: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.push_id(id_salt, |ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            let button = egui::Button::new(label.into())
+                .right_text("  ")
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .min_size(egui::vec2(width, TOOLBAR_CONTROL_HEIGHT));
+            let (response, _) =
+                egui::containers::menu::MenuButton::from_button(button).ui(ui, add_contents);
+            paint_dropdown_icon(ui, &response);
+        });
+    });
+}
+
+fn paint_dropdown_icon(ui: &egui::Ui, response: &egui::Response) {
+    let visuals = ui.style().interact(response);
+    let center = egui::pos2(response.rect.right() - 12.0, response.rect.center().y + 1.0);
+    let points = vec![
+        egui::pos2(center.x - 4.0, center.y - 2.0),
+        egui::pos2(center.x + 4.0, center.y - 2.0),
+        egui::pos2(center.x, center.y + 3.0),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        visuals.fg_stroke.color,
+        egui::Stroke::NONE,
+    ));
 }
 
 fn render_frame(

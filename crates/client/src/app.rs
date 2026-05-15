@@ -418,7 +418,7 @@ impl ClientApp {
             input_tx,
             event_rx,
             connected: false,
-            log_lines: vec!["client gui started".to_string()],
+            log_lines: vec![timestamped_log("client gui started")],
             chat_window: None,
         }
     }
@@ -430,14 +430,14 @@ impl ClientApp {
             match event {
                 ClientEvent::Connected => {
                     self.connected = true;
-                    self.log_lines.push("connected to server".to_string());
+                    self.push_log("connected to server");
                 }
                 ClientEvent::Disconnected => {
                     self.connected = false;
-                    self.log_lines.push("disconnected from server".to_string());
+                    self.push_log("disconnected from server");
                 }
                 ClientEvent::Command { command, payload } => {
-                    self.log_lines.push(format!(
+                    self.push_log(format!(
                         "received command={} payload={payload}",
                         command.as_str()
                     ));
@@ -445,13 +445,15 @@ impl ClientApp {
                 ClientEvent::ChatMessage { text } => {
                     user_interaction::text_chat::receive_admin_message(&mut self.chat_window, text);
                 }
-                ClientEvent::Log(line) => self.log_lines.push(line),
-            }
-            if self.log_lines.len() > 200 {
-                self.log_lines.remove(0);
+                ClientEvent::Log(line) => self.push_log(line),
             }
         }
         changed
+    }
+
+    fn push_log(&mut self, line: impl Into<String>) {
+        self.log_lines.push(timestamped_log(line));
+        prune_activity_logs(&mut self.log_lines);
     }
 
     fn render_header(&self, ui: &mut egui::Ui) {
@@ -511,19 +513,23 @@ impl ClientApp {
         });
     }
 
-    fn render_activity(&self, ui: &mut egui::Ui) {
+    fn render_activity(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
             section_title(ui, "Activity");
-            ui.add_space(10.0);
-            egui::ScrollArea::vertical()
+            ui.add_space(8.0);
+            let output = egui::ScrollArea::vertical()
                 .id_salt("client_activity_scroll_area")
                 .stick_to_bottom(true)
-                .max_height(220.0)
+                .max_height(180.0)
                 .show(ui, |ui| {
-                    for line in &self.log_lines {
-                        ui.monospace(egui::RichText::new(line).size(12.0).color(COLOR_MUTED));
-                    }
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                        ui.set_width(ui.available_width());
+                        for line in &self.log_lines {
+                            ui.label(egui::RichText::new(line).size(12.0).color(COLOR_MUTED));
+                        }
+                    });
                 });
+            activity_context_menu(ui, output.inner_rect, output.id, &mut self.log_lines);
         });
     }
 }
@@ -562,6 +568,7 @@ const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
 const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
+const ACTIVITY_LOG_LIMIT: usize = 300;
 
 fn apply_client_theme(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
@@ -600,6 +607,48 @@ fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.label(egui::RichText::new(label).color(COLOR_MUTED));
     ui.label(egui::RichText::new(value).color(COLOR_TEXT).strong());
     ui.end_row();
+}
+
+fn timestamped_log(line: impl Into<String>) -> String {
+    format!("[{}] {}", activity_time_label(), line.into())
+}
+
+fn prune_activity_logs(log_lines: &mut Vec<String>) {
+    if log_lines.len() > ACTIVITY_LOG_LIMIT {
+        log_lines.drain(0..log_lines.len() - ACTIVITY_LOG_LIMIT);
+    }
+}
+
+fn activity_context_menu(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    log_lines: &mut Vec<String>,
+) {
+    ui.interact(rect, id.with("activity_context_menu"), egui::Sense::click())
+        .context_menu(|ui| {
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(log_lines.join("\n"));
+                ui.close();
+            }
+            if ui.button("Clear").clicked() {
+                log_lines.clear();
+                ui.close();
+            }
+        });
+}
+
+fn activity_time_label() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let china_time = now + 8 * 60 * 60;
+    let seconds_today = china_time % (24 * 60 * 60);
+    let hour = seconds_today / 3600;
+    let minute = (seconds_today % 3600) / 60;
+    let second = seconds_today % 60;
+    format!("{hour:02}:{minute:02}:{second:02}")
 }
 
 fn status_pill(ui: &mut egui::Ui, connected: bool) {

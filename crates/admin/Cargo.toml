@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe = "0.34.2"
 egui_extras = "0.34.2"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }

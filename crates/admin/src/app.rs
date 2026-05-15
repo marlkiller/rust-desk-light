@@ -563,9 +563,6 @@ impl AdminApp {
                 ),
                 AdminEvent::Log(line) => self.push_log(line),
             }
-            if self.log_lines.len() > 300 {
-                self.log_lines.remove(0);
-            }
         }
         for (client_id, payload) in latest_desktop_frames {
             if payload.starts_with("remote_desktop_frame\n") {
@@ -637,6 +634,7 @@ impl AdminApp {
 
     fn push_log(&mut self, line: impl Into<String>) {
         self.log_lines.push(timestamped_log(line));
+        prune_activity_logs(&mut self.log_lines);
     }
 
     fn merge_clients(&mut self, clients: Vec<ClientInfo>) {
@@ -1053,11 +1051,15 @@ impl AdminApp {
                 });
             });
             ui.add_space(8.0);
-            ui.add(
-                egui::TextEdit::singleline(&mut self.client_filter)
-                    .hint_text("Search by id, fingerprint, host, user, or OS")
-                    .desired_width(f32::INFINITY),
-            );
+            ui.scope(|ui| {
+                ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+                ui.add_sized(
+                    [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
+                    egui::TextEdit::singleline(&mut self.client_filter)
+                        .hint_text("Search by id, fingerprint, host, user, or OS")
+                        .vertical_align(egui::Align::Center),
+                );
+            });
             ui.add_space(10.0);
 
             let clients = self.filtered_clients();
@@ -1173,7 +1175,7 @@ impl AdminApp {
         panel(ui, |ui| {
             section_title(ui, "Activity");
             ui.add_space(8.0);
-            egui::ScrollArea::vertical()
+            let output = egui::ScrollArea::vertical()
                 .id_salt("admin_activity_scroll_area")
                 .stick_to_bottom(true)
                 .max_height(180.0)
@@ -1185,6 +1187,7 @@ impl AdminApp {
                         }
                     });
                 });
+            activity_context_menu(ui, output.inner_rect, output.id, &mut self.log_lines);
         });
     }
 
@@ -1425,6 +1428,8 @@ const TABLE_BODY_CELL_HEIGHT: f32 = 16.0;
 const TABLE_HEADER_CELL_HEIGHT: f32 = 17.0;
 const TABLE_SORT_MARKER_WIDTH: f32 = 12.0;
 const TABLE_WIDTH_SAMPLE_ROWS: usize = 200;
+const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const ACTIVITY_LOG_LIMIT: usize = 300;
 
 fn apply_admin_theme(ctx: &egui::Context) {
     install_cjk_font(ctx);
@@ -1550,6 +1555,31 @@ fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
 
 fn timestamped_log(line: impl Into<String>) -> String {
     format!("[{}] {}", activity_time_label(), line.into())
+}
+
+fn prune_activity_logs(log_lines: &mut Vec<String>) {
+    if log_lines.len() > ACTIVITY_LOG_LIMIT {
+        log_lines.drain(0..log_lines.len() - ACTIVITY_LOG_LIMIT);
+    }
+}
+
+fn activity_context_menu(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    log_lines: &mut Vec<String>,
+) {
+    ui.interact(rect, id.with("activity_context_menu"), egui::Sense::click())
+        .context_menu(|ui| {
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(log_lines.join("\n"));
+                ui.close();
+            }
+            if ui.button("Clear").clicked() {
+                log_lines.clear();
+                ui.close();
+            }
+        });
 }
 
 fn activity_time_label() -> String {
@@ -1774,11 +1804,13 @@ fn render_table_toolbar(
         .unwrap_or_default();
 
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         ui.label(egui::RichText::new("Filter").size(12.0).color(COLOR_MUTED));
-        let response = ui.add(
+        let response = ui.add_sized(
+            [240.0, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(&mut filter)
                 .hint_text("Filter table content")
-                .desired_width(240.0),
+                .vertical_align(egui::Align::Center),
         );
         if response.changed() {
             if let Ok(mut value) = table_filter.lock() {
@@ -2010,6 +2042,7 @@ fn table_header_row(
                                 .color(COLOR_MUTED)
                                 .strong(),
                         )
+                        .selectable(false)
                         .truncate()
                         .halign(align)
                         .sense(egui::Sense::click()),
@@ -2054,57 +2087,72 @@ fn table_row(
         egui::Color32::from_rgb(248, 250, 253)
     };
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-        let row_text = cells.join("\t");
-        for (index, width) in widths.iter().enumerate() {
-            let cell = cells.get(index).map(String::as_str).unwrap_or("");
-            let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
-            egui::Frame::default()
-                .fill(fill)
-                .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                .inner_margin(egui::Margin::symmetric(5, 2))
-                .show(ui, |ui| {
-                    ui.set_width(*width);
-                    let response = ui.add_sized(
-                        [*width, TABLE_BODY_CELL_HEIGHT],
-                        egui::Label::new(
-                            egui::RichText::new(cell)
-                                .size(TABLE_BODY_TEXT_SIZE)
-                                .color(if header { COLOR_MUTED } else { COLOR_TEXT }),
-                        )
-                        .truncate()
-                        .halign(align)
-                        .sense(egui::Sense::click()),
-                    );
-                    if response.clicked() && !header {
-                        if let Ok(mut value) = table_selected_row.lock() {
-                            *value = Some(row_key.to_string());
-                        }
-                    }
-                    response.context_menu(|ui| {
-                        if ui.button("Copy Cell").clicked() {
-                            ui.ctx().copy_text(cell.to_string());
-                            ui.close();
-                        }
-                        if ui.button("Copy Row").clicked() {
-                            ui.ctx().copy_text(row_text.clone());
-                            ui.close();
-                        }
-                        if let Some(process_id) = process_id.clone() {
-                            ui.separator();
-                            if ui.button("Kill Process").clicked() {
-                                if let Ok(mut selected) = table_selected_row.lock() {
-                                    *selected = Some(row_key.to_string());
-                                }
-                                if let Ok(mut value) = process_kill_requested.lock() {
-                                    *value = Some(process_id.clone());
-                                }
-                                ui.close();
-                            }
-                        }
-                    });
-                });
+    let row_text = cells.join("\t");
+    let pointer_pos = ui.ctx().pointer_latest_pos();
+    let mut pointer_cell = None;
+    let response = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            for (index, width) in widths.iter().enumerate() {
+                let cell = cells.get(index).map(String::as_str).unwrap_or("");
+                let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
+                let frame_response = egui::Frame::default()
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+                    .inner_margin(egui::Margin::symmetric(5, 2))
+                    .show(ui, |ui| {
+                        ui.set_width(*width);
+                        ui.add_sized(
+                            [*width, TABLE_BODY_CELL_HEIGHT],
+                            egui::Label::new(
+                                egui::RichText::new(cell)
+                                    .size(TABLE_BODY_TEXT_SIZE)
+                                    .color(if header { COLOR_MUTED } else { COLOR_TEXT }),
+                            )
+                            .selectable(false)
+                            .truncate()
+                            .halign(align)
+                            .sense(egui::Sense::hover()),
+                        );
+                    })
+                    .response;
+                if pointer_pos.is_some_and(|pos| frame_response.rect.contains(pos)) {
+                    pointer_cell = Some(cell.to_string());
+                }
+            }
+        })
+        .response
+        .interact(egui::Sense::click());
+    if response.hovered() && !header {
+        response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if (response.clicked() || response.secondary_clicked()) && !header {
+        if let Ok(mut value) = table_selected_row.lock() {
+            *value = Some(row_key.to_string());
+        }
+    }
+    response.context_menu(|ui| {
+        if let Some(cell) = pointer_cell.as_deref() {
+            if ui.button("Copy Cell").clicked() {
+                ui.ctx().copy_text(cell.to_string());
+                ui.close();
+            }
+        }
+        if ui.button("Copy Row").clicked() {
+            ui.ctx().copy_text(row_text.clone());
+            ui.close();
+        }
+        if let Some(process_id) = process_id.clone() {
+            ui.separator();
+            if ui.button("Kill Process").clicked() {
+                if let Ok(mut selected) = table_selected_row.lock() {
+                    *selected = Some(row_key.to_string());
+                }
+                if let Ok(mut value) = process_kill_requested.lock() {
+                    *value = Some(process_id.clone());
+                }
+                ui.close();
+            }
         }
     });
 }

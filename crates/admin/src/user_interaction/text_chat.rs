@@ -8,6 +8,7 @@ use std::sync::{
 const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
 const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
 const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
 
 pub(crate) struct ChatWindow {
     pub(crate) client_id: String,
@@ -184,13 +185,16 @@ fn render_messages(ui: &mut egui::Ui, messages: &Arc<Mutex<Vec<ChatLine>>>) {
 
 fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mutex<Vec<String>>>) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         let mut text = draft.lock().map(|value| value.clone()).unwrap_or_default();
         let button_width = 72.0;
         let input_width =
             (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(80.0);
         let response = ui.add_sized(
-            [input_width, 28.0],
-            egui::TextEdit::singleline(&mut text).hint_text("Message"),
+            [input_width, TOOLBAR_CONTROL_HEIGHT],
+            egui::TextEdit::singleline(&mut text)
+                .hint_text("Message")
+                .vertical_align(egui::Align::Center),
         );
         response.context_menu(|ui| {
             if ui.button("Copy").clicked() {
@@ -209,7 +213,10 @@ fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mu
             }
         }
         let send_clicked = ui
-            .add_sized([button_width, 28.0], egui::Button::new("Send"))
+            .add_sized(
+                [button_width, TOOLBAR_CONTROL_HEIGHT],
+                egui::Button::new("Send"),
+            )
             .clicked()
             || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
         if send_clicked && !text.trim().is_empty() {
