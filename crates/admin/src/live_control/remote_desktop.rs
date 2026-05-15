@@ -14,7 +14,7 @@ const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
 const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
-const DEFAULT_TARGET_FPS: u32 = 4;
+const DEFAULT_QUALITY: &str = "medium";
 const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
 pub(crate) struct RemoteDesktopWindow {
@@ -29,7 +29,7 @@ pub(crate) struct RemoteDesktopWindow {
     stats: DesktopStats,
     screens: Vec<RemoteScreen>,
     selected_screen: Arc<Mutex<usize>>,
-    target_fps: Arc<Mutex<u32>>,
+    quality: Arc<Mutex<String>>,
     mouse_follow: Arc<AtomicBool>,
     mouse_click: Arc<AtomicBool>,
     last_mouse_move: Arc<Mutex<Instant>>,
@@ -176,7 +176,7 @@ pub(crate) fn open_window(
         stats: DesktopStats::default(),
         screens: Vec::new(),
         selected_screen: Arc::new(Mutex::new(0)),
-        target_fps: Arc::new(Mutex::new(DEFAULT_TARGET_FPS)),
+        quality: Arc::new(Mutex::new(DEFAULT_QUALITY.to_string())),
         mouse_follow: Arc::new(AtomicBool::new(false)),
         mouse_click: Arc::new(AtomicBool::new(false)),
         last_mouse_move: Arc::new(Mutex::new(Instant::now())),
@@ -330,7 +330,7 @@ pub(crate) fn render_windows(
         let stats = window.stats.clone();
         let screens = window.screens.clone();
         let selected_screen = window.selected_screen.clone();
-        let target_fps = window.target_fps.clone();
+        let quality = window.quality.clone();
         let mouse_follow = window.mouse_follow.clone();
         let mouse_click = window.mouse_click.clone();
         let last_mouse_move = window.last_mouse_move.clone();
@@ -349,7 +349,7 @@ pub(crate) fn render_windows(
                         ui,
                         &screens,
                         &selected_screen,
-                        &target_fps,
+                        &quality,
                         &mouse_follow,
                         &mouse_click,
                         &running,
@@ -379,10 +379,10 @@ pub(crate) fn render_windows(
                 });
             if running.load(Ordering::Relaxed) {
                 ui.ctx().request_repaint_after(frame_interval(
-                    target_fps
+                    quality
                         .lock()
-                        .map(|value| *value)
-                        .unwrap_or(DEFAULT_TARGET_FPS),
+                        .map(|value| quality_fps(&value))
+                        .unwrap_or_else(|_| quality_fps(DEFAULT_QUALITY)),
                 ));
             }
         });
@@ -437,7 +437,7 @@ fn render_toolbar(
     ui: &mut egui::Ui,
     screens: &[RemoteScreen],
     selected_screen: &Arc<Mutex<usize>>,
-    target_fps: &Arc<Mutex<u32>>,
+    quality: &Arc<Mutex<String>>,
     mouse_follow: &Arc<AtomicBool>,
     mouse_click: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
@@ -461,19 +461,23 @@ fn render_toolbar(
         if ui.button("Reload Screens").clicked() {
             queue_ui_payload(queued, "action=screens".to_string());
         }
-        let mut fps = target_fps
+        let mut selected_quality = quality
             .lock()
-            .map(|value| *value)
-            .unwrap_or(DEFAULT_TARGET_FPS);
-        egui::ComboBox::from_id_salt("remote_desktop_target_fps")
-            .selected_text(format!("{} FPS", fps))
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| DEFAULT_QUALITY.to_string());
+        egui::ComboBox::from_id_salt("remote_desktop_quality")
+            .selected_text(quality_label(&selected_quality))
             .show_ui(ui, |ui| {
-                for option in [2, 4, 6, 8, 12] {
-                    ui.selectable_value(&mut fps, option, format!("{option} FPS"));
+                for option in ["low", "medium", "high"] {
+                    ui.selectable_value(
+                        &mut selected_quality,
+                        option.to_string(),
+                        quality_label(option),
+                    );
                 }
             });
-        if let Ok(mut value) = target_fps.lock() {
-            *value = fps;
+        if let Ok(mut value) = quality.lock() {
+            *value = selected_quality.clone();
         }
         let is_running = running.load(Ordering::Relaxed);
         if ui
@@ -496,7 +500,7 @@ fn render_toolbar(
                 running.store(true, Ordering::Relaxed);
                 queue_ui_payload(
                     queued,
-                    format!("action=start\nscreen={selected}\nfps={fps}"),
+                    format!("action=start\nscreen={selected}\nquality={selected_quality}"),
                 );
             }
         }
@@ -704,6 +708,22 @@ fn human_bytes(bytes: usize) -> String {
 fn frame_interval(target_fps: u32) -> Duration {
     let fps = target_fps.clamp(1, 12);
     Duration::from_millis((1000 / fps as u64).max(1))
+}
+
+fn quality_label(value: &str) -> &'static str {
+    match value {
+        "low" => "Low",
+        "high" => "High",
+        _ => "Medium",
+    }
+}
+
+fn quality_fps(value: &str) -> u32 {
+    match value {
+        "low" => 8,
+        "high" => 3,
+        _ => 5,
+    }
 }
 
 fn remote_desktop_payload_is_input(payload: &str) -> bool {

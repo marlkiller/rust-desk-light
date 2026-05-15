@@ -710,10 +710,9 @@ fn remote_desktop_stream_loop(
     let screen = remote_desktop_value(&start_payload, "screen")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or_default();
-    let fps = remote_desktop_value(&start_payload, "fps")
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(4)
-        .clamp(1, 12);
+    let quality =
+        remote_desktop_value(&start_payload, "quality").unwrap_or_else(|| "medium".to_string());
+    let fps = quality_fps(&quality);
     let interval = Duration::from_millis((1000 / fps).max(1));
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
@@ -721,7 +720,7 @@ fn remote_desktop_stream_loop(
         let started = std::time::Instant::now();
         let payload = crate::live_control::handle(
             &CommandKind::RemoteDesktop,
-            &format!("action=screenshot\nscreen={screen}"),
+            &format!("action=screenshot\nscreen={screen}\nquality={quality}"),
         );
         if queue_message(
             &out_tx,
@@ -740,6 +739,14 @@ fn remote_desktop_stream_loop(
         if elapsed < interval {
             thread::sleep(interval - elapsed);
         }
+    }
+}
+
+fn quality_fps(value: &str) -> u64 {
+    match value {
+        "low" => 8,
+        "high" => 3,
+        _ => 5,
     }
 }
 

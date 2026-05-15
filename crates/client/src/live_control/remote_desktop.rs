@@ -5,7 +5,10 @@ pub fn handle(payload: &str) -> String {
     let request = RemoteDesktopRequest::parse(payload);
     match request.action.as_str() {
         "screens" => screens(),
-        "screenshot" | "" => screenshot(request.screen.unwrap_or_default()),
+        "screenshot" | "" => screenshot(
+            request.screen.unwrap_or_default(),
+            request.quality.as_deref().unwrap_or("medium"),
+        ),
         "stop" => stop(),
         "move" => move_mouse(request.x, request.y),
         "click" => click(
@@ -53,6 +56,7 @@ struct RemoteDesktopRequest {
     button: Option<String>,
     value: Option<String>,
     screen: Option<usize>,
+    quality: Option<String>,
 }
 
 impl RemoteDesktopRequest {
@@ -74,16 +78,18 @@ impl RemoteDesktopRequest {
                 request.value = Some(rest.to_string());
             } else if let Some(rest) = line.strip_prefix("screen=") {
                 request.screen = rest.trim().parse().ok();
+            } else if let Some(rest) = line.strip_prefix("quality=") {
+                request.quality = Some(rest.trim().to_ascii_lowercase());
             }
         }
         request
     }
 }
 
-fn screenshot(screen_index: usize) -> String {
+fn screenshot(screen_index: usize, quality: &str) -> String {
     #[cfg(target_os = "windows")]
     {
-        return windows_capture::screenshot(screen_index);
+        return windows_capture::screenshot(screen_index, quality);
     }
     #[cfg(target_os = "linux")]
     {
@@ -114,9 +120,6 @@ mod windows_capture {
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
         HMONITOR, MONITORINFOEXW, SRCCOPY,
     };
-
-    const MAX_WIDTH: u32 = 1280;
-    const JPEG_QUALITY: u8 = 72;
 
     #[derive(Clone)]
     struct Screen {
@@ -151,7 +154,7 @@ mod windows_capture {
         }
     }
 
-    pub(super) fn screenshot(screen_index: usize) -> String {
+    pub(super) fn screenshot(screen_index: usize, quality: &str) -> String {
         match enum_screens()
             .and_then(|screens| {
                 screens
@@ -159,10 +162,33 @@ mod windows_capture {
                     .find(|screen| screen.index == screen_index)
                     .ok_or_else(|| format!("screen index {screen_index} is not available"))
             })
-            .and_then(capture_screen)
+            .and_then(|screen| capture_screen(screen, quality_profile(quality)))
         {
             Ok(frame) => frame,
             Err(error) => format!("remote_desktop_error\nmessage={error}"),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct QualityProfile {
+        max_width: u32,
+        jpeg_quality: u8,
+    }
+
+    fn quality_profile(value: &str) -> QualityProfile {
+        match value {
+            "low" => QualityProfile {
+                max_width: 960,
+                jpeg_quality: 58,
+            },
+            "high" => QualityProfile {
+                max_width: 1600,
+                jpeg_quality: 82,
+            },
+            _ => QualityProfile {
+                max_width: 1280,
+                jpeg_quality: 72,
+            },
         }
     }
 
@@ -213,14 +239,14 @@ mod windows_capture {
         1
     }
 
-    fn capture_screen(screen: Screen) -> Result<String, String> {
+    fn capture_screen(screen: Screen, quality: QualityProfile) -> Result<String, String> {
         if screen.width == 0 || screen.height == 0 {
             return Err("selected screen has invalid size".to_string());
         }
         let rgba = capture_rgba(screen.x, screen.y, screen.width, screen.height)?;
         let image = RgbaImage::from_raw(screen.width, screen.height, rgba)
             .ok_or_else(|| "captured frame buffer has invalid size".to_string())?;
-        let scale = (MAX_WIDTH as f32 / screen.width as f32).min(1.0);
+        let scale = (quality.max_width as f32 / screen.width as f32).min(1.0);
         let (image_width, image_height, image) = if scale < 1.0 {
             let width = ((screen.width as f32 * scale).round() as u32).max(1);
             let height = ((screen.height as f32 * scale).round() as u32).max(1);
@@ -230,7 +256,7 @@ mod windows_capture {
             (screen.width, screen.height, DynamicImage::ImageRgba8(image))
         };
         let mut encoded = Vec::new();
-        JpegEncoder::new_with_quality(&mut encoded, JPEG_QUALITY)
+        JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
             .encode_image(&image)
             .map_err(|error| format!("jpeg encode failed: {error}"))?;
         Ok(format!(
