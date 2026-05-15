@@ -98,11 +98,13 @@ Reference direction:
 - [x] Admin GUI with command menu, overview, client list, and activity log.
 - [x] Client GUI with status and activity log.
 - [x] Add admin search/filter for clients.
+- [x] Improve command result tables with compact adaptive columns, sorting, filtering, copy actions, and process kill actions where supported.
 - [x] Add clearer status badges: online, offline, reconnecting, stale.
 - [x] Show client fingerprint, hostname, user, OS, and last heartbeat.
 - [x] Show client IP address, OS version, GUI availability, and full-row selection in the admin client list.
 - [x] Add a simple command result panel.
 - [x] Allow command result text selection/copy for plain text outputs.
+- [x] Disable problematic macOS child-window maximize controls and keep child windows out of automatic tabbing.
 - [x] Preserve terminal mode for smoke checks.
 
 ## Milestone 4: Basic Client Capabilities
@@ -113,9 +115,11 @@ Implement read-only and low-risk commands first.
 - [x] Expanded computer info with OS version, kernel/build, CPU, memory, session, and IP details where available.
 - [x] Clipboard read/write as explicit command stubs, then real implementation.
 - [x] Active connections.
+- [x] Fix macOS active connections through `lsof -nP -iTCP -iUDP` instead of Linux-only `netstat -tunap`.
 - [x] Process list.
 - [x] Performance snapshot.
 - [x] Event log summary where available.
+- [x] Parse macOS compact `log show` error/fault rows robustly.
 
 Reference direction:
 
@@ -147,13 +151,14 @@ Keep this simple first. Resume, hashing, cancellation, PTY, and permissions can 
 Build view-only remote desktop before input control.
 
 - [x] Capture screen frame on client. Windows lightweight MVP via native GDI capture.
-- [x] Send compressed image frames to admin. JPEG/base64 over existing binary command transport.
+- [x] Send compressed single-shot image frames to admin. Command result compatibility path still carries base64.
 - [x] Display remote screen in admin.
 - [x] Add frame rate limit. Polling MVP with a conservative refresh interval.
 - [x] Add screen selection before starting the remote desktop session.
 - [x] Add Ubuntu X11 testing documentation for Linux remote desktop.
 - [x] Improve admin remote desktop frame handling by coalescing frames and decoding off the UI thread.
 - [x] Move live video frames to binary `VideoFrame` transport instead of command/ack base64 payloads.
+- [x] Keep live remote desktop capture on direct binary bytes across Windows/Linux/macOS.
 
 Reference direction:
 
@@ -161,14 +166,21 @@ Reference direction:
 
 ## Milestone 8: Remote Control
 
-- [x] Mouse movement. Windows and X11 lightweight MVP.
-- [x] Mouse click. Windows and X11 lightweight MVP.
+- [x] Mouse movement. Windows, X11, and macOS lightweight MVP.
+- [x] Mouse click. Windows, X11, and macOS lightweight MVP.
 - [x] Keyboard input. Text send MVP; raw key events still pending.
 - [x] Separate desktop capture, mouse movement, and mouse click controls in the admin remote desktop window.
+- [x] Keep remote desktop capture running when an input action fails.
+- [x] Surface macOS Accessibility/TCC permission failures as input status instead of stopping capture.
 - [ ] Clipboard sync during remote session.
 - [ ] Local visible indicator while remote control is active.
+- [ ] Raw keyboard events for desktop control.
 
 This should only be implemented after screen view and protocol reliability are good enough.
+
+macOS note:
+
+- Remote mouse input requires Accessibility permission for the app that launches `rdl-client` (for example Terminal, iTerm, Warp, or the Codex host), not only the bare `rdl-client` file. Screen capture still requires Screen Recording permission for the running client process.
 
 ## Milestone 8.5: Camera Capture
 
@@ -179,13 +191,19 @@ This should only be implemented after screen view and protocol reliability are g
 - [x] Decode camera frames off the admin UI thread and coalesce latest frames.
 - [x] Linux/macOS lightweight snapshot fallback through local camera tools.
 - [x] Use shared binary `VideoFrame` transport for camera capture frames.
+- [x] Keep live camera capture on direct binary bytes instead of local base64 encode/decode.
 
 ## Milestone 9: Packaging And Runtime
 
-- [ ] Persistent config files.
+- [x] Persistent client/admin identity config files.
+- [x] Avoid repeated macOS hostname `scutil` calls by caching hostname and using `gethostname` first.
+- [x] Automatically ad-hoc sign macOS debug builds for `rdl-client`, `rdl-admin`, and `rdl-server`.
+- [ ] General persistent config files beyond identity.
 - [ ] Server config file.
 - [ ] Windows build artifact.
 - [ ] Linux build artifact.
+- [ ] macOS app bundle/release artifact.
+- [ ] macOS Developer ID signing and notarization for release builds.
 - [ ] Optional service/daemon mode.
 - [ ] Basic release script.
 
