@@ -115,10 +115,8 @@ fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
     window.mouse_click.store(false, Ordering::Relaxed);
     window.outbound.clear();
     window.pending_since = None;
-    window.frame = None;
-    window.texture = None;
-    window.texture_seq = 0;
-    window.stats = DesktopStats::default();
+    window.stats.fps = 0.0;
+    window.stats.latency_ms = None;
     window.status = DesktopStatus::Ready;
     window.notice = notice.to_string();
 }
