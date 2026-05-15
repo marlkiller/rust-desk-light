@@ -131,9 +131,10 @@ These are useful before full remote desktop because they validate bidirectional 
 
 - [x] Remote terminal command execution with timeout.
 - [ ] Command output streaming.
-- [ ] File list for a selected directory.
-- [ ] File download.
-- [ ] File upload.
+- [x] File list for a selected directory.
+- [x] File download.
+- [x] File upload.
+- [x] File delete, rename, new folder, path jump, and parent directory navigation.
 
 Keep this simple first. Resume, hashing, cancellation, PTY, and permissions can come later.
 
@@ -200,7 +201,7 @@ Session
   [ ] Delete Client: delete_client
 
 Remote Management
-  [ ] File Manager: file_manager
+  [x] File Manager: file_manager
   [x] Remote Terminal: remote_terminal
   [x] Process Manager: process_manager
   [ ] Window Manager: window_manager

@@ -308,6 +308,7 @@ struct AdminApp {
     client_filter: String,
     selected_client_id: Option<String>,
     command_windows: Vec<CommandResultWindow>,
+    file_manager_windows: Vec<remote_management::file_manager::FileManagerWindow>,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     log_lines: Vec<String>,
@@ -377,6 +378,7 @@ impl AdminApp {
             client_filter: String::new(),
             selected_client_id: None,
             command_windows: Vec::new(),
+            file_manager_windows: Vec::new(),
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
             log_lines: vec![timestamped_log("admin gui started")],
@@ -476,6 +478,10 @@ impl AdminApp {
             self.open_chat_window(client_id);
             return;
         }
+        if command == CommandKind::FileManager {
+            self.open_file_manager_window(client_id);
+            return;
+        }
         if command == CommandKind::RemoteTerminal {
             self.open_terminal_window(client_id);
             return;
@@ -497,6 +503,16 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         user_interaction::text_chat::open_window(
             &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+        );
+    }
+
+    fn open_file_manager_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        remote_management::file_manager::open_window(
+            &mut self.file_manager_windows,
             client_id,
             hostname,
             username,
@@ -572,6 +588,10 @@ impl AdminApp {
             self.handle_chat_ack(&client_id, accepted, detail);
             return;
         }
+        if command == CommandKind::FileManager {
+            self.handle_file_manager_ack(&client_id, accepted, detail);
+            return;
+        }
         if command == CommandKind::RemoteTerminal {
             self.handle_terminal_ack(&client_id, accepted, detail);
             return;
@@ -634,6 +654,18 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         user_interaction::text_chat::handle_ack(
             &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+            accepted,
+            detail,
+        );
+    }
+
+    fn handle_file_manager_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        remote_management::file_manager::handle_ack(
+            &mut self.file_manager_windows,
             client_id,
             hostname,
             username,
@@ -959,6 +991,19 @@ impl AdminApp {
         }
     }
 
+    fn render_file_manager_windows(&mut self, ctx: &egui::Context) {
+        for outbound in
+            remote_management::file_manager::render_windows(ctx, &mut self.file_manager_windows)
+        {
+            let _ = self.input_tx.send(AdminInput::Command {
+                target_id: outbound.client_id.clone(),
+                command: CommandKind::FileManager,
+                payload: outbound.payload,
+            });
+            self.push_log(format!("sent file_manager to {}", outbound.client_id));
+        }
+    }
+
     fn render_terminal_windows(&mut self, ctx: &egui::Context) {
         for outbound in
             remote_management::remote_terminal::render_windows(ctx, &mut self.terminal_windows)
@@ -990,6 +1035,7 @@ impl eframe::App for AdminApp {
             self.render_activity(ui);
         });
         self.render_command_windows(ui.ctx());
+        self.render_file_manager_windows(ui.ctx());
         self.render_terminal_windows(ui.ctx());
         self.render_chat_windows(ui.ctx());
 
