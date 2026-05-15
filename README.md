@@ -1,21 +1,61 @@
 # rust-desk-light
 
-A lightweight Rust remote assistance workspace inspired by the split between RustDesk clients and RustDesk Server.
+Lightweight Rust remote administration toolkit with GUI-based device management, remote desktop, file transfer, terminal access, camera viewing, and local-first control features.
 
-The repository is intentionally small at the start:
+`rust-desk-light` is organized as three small binaries plus a shared protocol crate:
 
-- `rdl-server`: terminal relay and presence server.
-- `rdl-client`: assisted endpoint GUI, with GUI environment detection and terminal fallback.
-- `rdl-admin`: operator GUI with online client table and full right-click command menu.
-- `rdl_protocol`: shared protocol primitives.
+- `rdl-server`: presence, session registration, routing, and relay.
+- `rdl-client`: endpoint agent with GUI status, terminal fallback, and local capability handlers.
+- `rdl-admin`: operator GUI for client discovery, commands, live control, and result viewing.
+- `rdl_protocol`: shared binary transport and command model.
 
-This project is still early. It has a stable binary transport, identity/session handshake, admin/client GUIs, command routing, file and terminal basics, remote desktop control, and camera capture. It does not yet implement microphone streaming, privileged system operations, or a production-grade release pipeline.
+The project is intentionally compact. It focuses on practical remote assistance workflows, simple deployment, and a readable Rust codebase rather than a large enterprise remote management stack.
+
+## Screenshots
+
+TODO: Screenshots will be added later.
+
+## Features
+
+- Native Rust workspace with `server`, `client`, `admin`, and shared protocol crates.
+- Versioned binary TCP protocol with session tokens and typed payloads.
+- Admin GUI with online client table, search/filter, activity log, and right-click command menu.
+- Client GUI with connection status, identity details, and timestamped activity log.
+- Persistent client/admin identity files.
+- Command result windows with compact tables, filtering, sorting, copy actions, and row-wide context menus.
+- System information, process list, process kill, performance snapshot, active connections, and event log summary.
+- Clipboard read/write commands.
+- File manager with directory listing, upload, download, delete, rename, new folder, path jump, and parent navigation.
+- Remote terminal with command history, cwd prompt, timeout handling, copy, and clear actions.
+- Remote desktop viewing with screen selection, quality options, frame coalescing, and binary video frame transport.
+- Remote mouse movement, mouse click, and text input where supported.
+- Camera live view with device selection, quality selection, save-current-frame, and binary video frame transport.
+- Text chat between admin and client.
+- Terminal fallback mode for smoke tests, headless recovery, and protocol checks.
+- GitHub Actions release workflow for Linux, macOS, and Windows artifacts.
+
+## Supported Platforms
+
+| Binary | Windows | Linux | macOS | Notes |
+| --- | --- | --- | --- | --- |
+| `rdl-server` | Supported | Supported | Supported | TCP relay and presence server. |
+| `rdl-client` | Supported | Supported | Supported | GUI when available; terminal fallback with `RDL_FORCE_TERMINAL=1`. |
+| `rdl-admin` | Supported | Supported | Supported | GUI operator console; terminal mode is mainly for smoke tests. |
+
+Platform-specific capability notes:
+
+- Windows: desktop capture uses native GDI; camera uses Media Foundation through `nokhwa`; input uses Windows APIs and PowerShell text input.
+- Linux: desktop capture currently targets X11 through `maim` or ImageMagick `import`; mouse input uses `xdotool`; Wayland needs a portal/ydotool backend later.
+- macOS: desktop capture uses `screencapture`; mouse input uses Core Graphics and requires Accessibility permission for the process that launches `rdl-client`; screen capture may require Screen Recording permission.
+- macOS debug/release binaries can be ad-hoc signed. Production Developer ID signing and notarization are still future work.
 
 ## Requirements
 
 - Rust stable toolchain, installed with `rustup`.
 - Git.
 - Windows, Linux, or macOS.
+
+Linux remote desktop testing may also require desktop tools such as `maim`, ImageMagick `import`, `xdotool`, and X11 utilities. See [Ubuntu X11 remote desktop testing](docs/ubuntu-x11-remote-desktop-testing.md).
 
 Install or update Rust:
 
@@ -31,24 +71,24 @@ rustc --version
 cargo --version
 ```
 
-## Dependencies And Build
+## Build
 
-Download Rust crate dependencies without building:
+Download crate dependencies:
 
 ```sh
 cargo fetch
 ```
 
-Compile every workspace crate:
-
-```sh
-cargo build --workspace
-```
-
-Fast compile/type check:
+Check the workspace:
 
 ```sh
 cargo check --workspace
+```
+
+Build debug binaries:
+
+```sh
+cargo build --workspace
 ```
 
 Build release binaries:
@@ -57,21 +97,11 @@ Build release binaries:
 cargo build --workspace --release
 ```
 
-The debug binaries are written to:
-
-```text
-target/debug/rdl-server
-target/debug/rdl-client
-target/debug/rdl-admin
-```
-
-On Windows they have `.exe` suffixes.
-
-Release binaries are written to `target/release`.
+Debug binaries are written to `target/debug`; release binaries are written to `target/release`. Windows builds use the `.exe` suffix.
 
 ## Quick Start
 
-Launch the dev stack for manual GUI testing. This opens `server` in a terminal, then starts `client` and `admin` as GUI windows:
+Launch the local dev stack. This starts the server, client, and admin GUI for manual testing:
 
 ```sh
 ./scripts/start-dev.sh
@@ -83,41 +113,10 @@ On Windows:
 .\scripts\start-dev.bat
 ```
 
-Optional environment variables:
-
-```sh
-RDL_IP=127.0.0.1 RDL_PORT=21116 ./scripts/start-dev.sh
-```
-
-Run an automated local smoke test. This intentionally forces terminal mode so CI can drive the protocol without opening GUI windows:
-
-```sh
-./scripts/smoke-test.sh
-```
-
-On Windows PowerShell:
-
-```powershell
-.\scripts\smoke-test.bat
-```
-
-Run the server:
+Run the server manually:
 
 ```sh
 cargo run -p rust-desk-light-server -- --ip 0.0.0.0 --port 21115
-```
-
-On a Linux server, pull latest code, rebuild, and restart `rdl-server` in the background:
-
-```sh
-sh scripts/start-server.sh
-```
-
-Optional environment variables:
-
-```sh
-RDL_IP=0.0.0.0 RDL_PORT=21115 RDL_PROFILE=release sh scripts/start-server.sh
-RDL_SKIP_PULL=1 sh scripts/start-server.sh
 ```
 
 Run a client:
@@ -132,61 +131,53 @@ Run the admin GUI:
 cargo run -p rust-desk-light-admin -- --ip 127.0.0.1 --port 21115
 ```
 
-Run client/admin in terminal mode:
+Useful environment variables:
 
 ```sh
-RDL_FORCE_TERMINAL=1 cargo run -p rust-desk-light-client -- --ip 127.0.0.1 --port 21115
-RDL_FORCE_TERMINAL=1 cargo run -p rust-desk-light-admin -- --ip 127.0.0.1 --port 21115
+RDL_IP=127.0.0.1
+RDL_PORT=21115
+RDL_FORCE_TERMINAL=1
+```
+
+In the admin GUI, select an online client, right-click the client row, and choose a command from the menu.
+
+## Smoke Test
+
+Run the automated local smoke flow. It uses terminal mode so CI and local shells can drive the protocol without opening GUI windows:
+
+```sh
+./scripts/smoke-test.sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
-$env:RDL_FORCE_TERMINAL = "1"
-cargo run -p rust-desk-light-client -- --ip 127.0.0.1 --port 21115
-```
-
-In the admin GUI:
-
-```text
-select an online client
-right-click the client row to open the command menu
-click a command
-admin opens a result window for the command output
-```
-
-## Design Notes
-
-The current transport is a custom versioned binary protocol over TCP. Frames use `RDL1` magic bytes, protocol version, length, role, message kind, session token, and typed UTF-8 payloads. Client/admin peers register first, then the server issues a session token required by follow-up messages.
-
-`client` starts as a GUI when the current system has GUI support. On headless Linux, or when `RDL_FORCE_TERMINAL=1` is set, it falls back to terminal mode. `admin` starts as a GUI by default; `RDL_FORCE_TERMINAL=1` is kept only for automated protocol smoke tests.
-
-## Useful Commands
-
-Format code:
-
-```sh
-cargo fmt
-```
-
-Run the local smoke flow:
-
-```sh
-scripts/smoke-test.sh
-```
-
-On Windows:
-
-```powershell
 .\scripts\smoke-test.bat
 ```
 
-Clean build artifacts:
+## Release Builds
 
-```sh
-cargo clean
-```
+Tagged releases are built by GitHub Actions from `.github/workflows/release.yml`.
 
-## Docs
+Pushing a tag like `v0.1.0` creates platform artifacts for:
 
-- [Ubuntu X11 remote desktop testing](docs/ubuntu-x11-remote-desktop-testing.md)
+- Linux x64
+- macOS x64
+- macOS ARM64
+- Windows x64
+
+Each release publishes separate packages for `server`, `client`, and `admin`. Rust release builds are native binaries, so there is no separate runtime/no-runtime split.
+
+## Design Notes
+
+The transport is a custom versioned binary protocol over TCP. Frames use `RDL1` magic bytes, protocol version, length, role, message kind, session token, and typed payloads. Client and admin peers register first, then the server issues a session token required by follow-up messages.
+
+Live desktop and camera frames use binary `VideoFrame` messages rather than local base64 encode/decode paths. Command result compatibility paths remain text-based where appropriate.
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for current milestones and planned work.
+
+## License
+
+This project is licensed under the AGPL-3.0-or-later license.
