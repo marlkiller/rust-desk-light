@@ -1,4 +1,5 @@
 mod command_menu;
+mod live_control;
 mod remote_management;
 mod user_interaction;
 
@@ -309,6 +310,7 @@ struct AdminApp {
     selected_client_id: Option<String>,
     command_windows: Vec<CommandResultWindow>,
     file_manager_windows: Vec<remote_management::file_manager::FileManagerWindow>,
+    desktop_windows: Vec<live_control::remote_desktop::RemoteDesktopWindow>,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     log_lines: Vec<String>,
@@ -379,6 +381,7 @@ impl AdminApp {
             selected_client_id: None,
             command_windows: Vec::new(),
             file_manager_windows: Vec::new(),
+            desktop_windows: Vec::new(),
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
             log_lines: vec![timestamped_log("admin gui started")],
@@ -486,6 +489,10 @@ impl AdminApp {
             self.open_terminal_window(client_id);
             return;
         }
+        if command == CommandKind::RemoteDesktop {
+            self.open_desktop_window(client_id);
+            return;
+        }
         let _ = self.input_tx.send(AdminInput::Command {
             target_id: client_id.to_string(),
             command: command.clone(),
@@ -523,6 +530,16 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         remote_management::remote_terminal::open_window(
             &mut self.terminal_windows,
+            client_id,
+            hostname,
+            username,
+        );
+    }
+
+    fn open_desktop_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        live_control::remote_desktop::open_window(
+            &mut self.desktop_windows,
             client_id,
             hostname,
             username,
@@ -594,6 +611,10 @@ impl AdminApp {
         }
         if command == CommandKind::RemoteTerminal {
             self.handle_terminal_ack(&client_id, accepted, detail);
+            return;
+        }
+        if command == CommandKind::RemoteDesktop {
+            self.handle_desktop_ack(&client_id, accepted, detail);
             return;
         }
 
@@ -678,6 +699,18 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         remote_management::remote_terminal::handle_ack(
             &mut self.terminal_windows,
+            client_id,
+            hostname,
+            username,
+            accepted,
+            detail,
+        );
+    }
+
+    fn handle_desktop_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        live_control::remote_desktop::handle_ack(
+            &mut self.desktop_windows,
             client_id,
             hostname,
             username,
@@ -1004,6 +1037,18 @@ impl AdminApp {
         }
     }
 
+    fn render_desktop_windows(&mut self, ctx: &egui::Context) {
+        for outbound in live_control::remote_desktop::render_windows(ctx, &mut self.desktop_windows)
+        {
+            let _ = self.input_tx.send(AdminInput::Command {
+                target_id: outbound.client_id.clone(),
+                command: CommandKind::RemoteDesktop,
+                payload: outbound.payload,
+            });
+            self.push_log(format!("sent remote_desktop to {}", outbound.client_id));
+        }
+    }
+
     fn render_terminal_windows(&mut self, ctx: &egui::Context) {
         for outbound in
             remote_management::remote_terminal::render_windows(ctx, &mut self.terminal_windows)
@@ -1036,6 +1081,7 @@ impl eframe::App for AdminApp {
         });
         self.render_command_windows(ui.ctx());
         self.render_file_manager_windows(ui.ctx());
+        self.render_desktop_windows(ui.ctx());
         self.render_terminal_windows(ui.ctx());
         self.render_chat_windows(ui.ctx());
 

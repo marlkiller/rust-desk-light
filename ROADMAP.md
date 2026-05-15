@@ -142,11 +142,11 @@ Keep this simple first. Resume, hashing, cancellation, PTY, and permissions can 
 
 Build view-only remote desktop before input control.
 
-- [ ] Capture screen frame on client.
-- [ ] Send compressed image frames to admin.
-- [ ] Display remote screen in admin.
-- [ ] Add frame rate limit.
-- [ ] Add single-monitor first.
+- [x] Capture screen frame on client. Windows lightweight MVP via native GDI capture.
+- [x] Send compressed image frames to admin. JPEG/base64 over existing binary command transport.
+- [x] Display remote screen in admin.
+- [x] Add frame rate limit. Polling MVP with a conservative refresh interval.
+- [x] Add screen selection before starting the remote desktop session.
 
 Reference direction:
 
@@ -155,8 +155,8 @@ Reference direction:
 ## Milestone 8: Remote Control
 
 - [ ] Mouse movement.
-- [ ] Mouse click.
-- [ ] Keyboard input.
+- [x] Mouse click. Windows lightweight MVP.
+- [x] Keyboard input. Text send MVP; raw key events still pending.
 - [ ] Clipboard sync during remote session.
 - [ ] Local visible indicator while remote control is active.
 
@@ -213,7 +213,7 @@ Remote Management
   [x] Performance Monitor: performance_monitor
 
 Live Control
-  [ ] Remote Desktop: remote_desktop
+  [x] Remote Desktop: remote_desktop
   [ ] Camera: camera
   [ ] Audio Listen: audio_listen
 

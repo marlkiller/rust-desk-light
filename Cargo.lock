@@ -414,6 +414,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bit-set"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1547,6 +1553,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2689,8 +2697,10 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "rust-desk-light-admin"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "eframe",
  "egui_extras",
+ "image",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "rust-desk-light-protocol",
@@ -2700,10 +2710,13 @@ dependencies = [
 name = "rust-desk-light-client"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "eframe",
+ "image",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "rust-desk-light-protocol",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

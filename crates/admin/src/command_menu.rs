@@ -340,6 +340,7 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::Clipboard
             | CommandKind::FileManager
             | CommandKind::ProcessManager
+            | CommandKind::RemoteDesktop
             | CommandKind::RemoteTerminal
             | CommandKind::EventLog
             | CommandKind::ActiveConnections

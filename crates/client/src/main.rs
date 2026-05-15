@@ -1,4 +1,5 @@
 mod commands;
+mod live_control;
 mod remote_management;
 mod support;
 mod system_info;
@@ -544,16 +545,52 @@ struct ClientOutbound {
 fn client_writer_loop(mut writer: TcpStream, out_rx: Receiver<ClientOutbound>) {
     let mut next_message_id = 1u64;
     for outbound in out_rx {
+        let fallback = command_ack_send_failure(&outbound.message);
         if let Err(error) = send(
             &mut writer,
             &mut next_message_id,
             &outbound.session_token,
             outbound.message,
         ) {
+            if let Some(message) = fallback {
+                eprintln!("client write failed, sending command error ack: {error}");
+                if let Err(fallback_error) = send(
+                    &mut writer,
+                    &mut next_message_id,
+                    &outbound.session_token,
+                    message(error),
+                ) {
+                    eprintln!("client fallback write failed: {fallback_error}");
+                    break;
+                }
+                continue;
+            }
             eprintln!("client write failed: {error}");
             break;
         }
     }
+}
+
+fn command_ack_send_failure(
+    message: &Message,
+) -> Option<Box<dyn FnOnce(io::Error) -> Message + Send + 'static>> {
+    let Message::CommandAck {
+        client_id,
+        command,
+        accepted: _,
+        detail: _,
+    } = message
+    else {
+        return None;
+    };
+    let client_id = client_id.clone();
+    let command = command.clone();
+    Some(Box::new(move |error| Message::CommandAck {
+        client_id,
+        command,
+        accepted: false,
+        detail: format!("client failed to send command result: {error}"),
+    }))
 }
 
 fn queue_message(

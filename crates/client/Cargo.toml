@@ -10,8 +10,13 @@ name = "rdl-client"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22.1"
 eframe = "0.34.2"
 rust-desk-light-protocol = { path = "../protocol" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow"] }
