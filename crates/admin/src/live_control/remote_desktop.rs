@@ -135,12 +135,11 @@ pub(crate) fn open_window(
 pub(crate) fn handle_ack(
     windows: &mut Vec<RemoteDesktopWindow>,
     client_id: &str,
-    hostname: String,
-    username: String,
+    _hostname: String,
+    _username: String,
     accepted: bool,
     detail: String,
 ) {
-    open_if_missing(windows, client_id, hostname, username);
     let Some(window) = windows
         .iter_mut()
         .find(|window| window.client_id == client_id)
@@ -227,6 +226,15 @@ pub(crate) fn render_windows(
     let mut outbound = Vec::new();
     for window in windows.iter_mut() {
         if window.close_requested.load(Ordering::Relaxed) {
+            if window.running.swap(false, Ordering::Relaxed) {
+                outbound.push(OutboundCommand {
+                    client_id: window.client_id.clone(),
+                    payload: "action=stop".to_string(),
+                    input: false,
+                });
+            }
+            window.outbound.clear();
+            window.pending_since = None;
             window.open = false;
         }
         if !window.open {
@@ -382,18 +390,6 @@ impl RemoteDesktopWindow {
     fn queue_payload(&mut self, payload: String) {
         self.outbound.insert(0, payload);
     }
-}
-
-fn open_if_missing(
-    windows: &mut Vec<RemoteDesktopWindow>,
-    client_id: &str,
-    hostname: String,
-    username: String,
-) {
-    if windows.iter().any(|window| window.client_id == client_id) {
-        return;
-    }
-    open_window(windows, client_id, hostname, username);
 }
 
 fn render_toolbar(
