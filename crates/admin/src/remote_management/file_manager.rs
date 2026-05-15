@@ -2,10 +2,13 @@ use crate::windowing;
 use chrono::{Local, TimeZone};
 use eframe::egui;
 use egui_extras::{Column, Size, StripBuilder, TableBuilder};
+use rdl_protocol::{FileTransferAction, FileTransferDirection, Message};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 
@@ -20,6 +23,10 @@ const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
 const TRANSFER_COLUMN_WIDTH: f32 = 100.0;
 const TRANSFER_BUTTON_WIDTH: f32 = 84.0;
+const TRANSFER_TABLE_HEIGHT: f32 = 150.0;
+const TRANSFER_REQUEST_MARKER: &str = "file_transfer_request";
+
+static NEXT_TRANSFER_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct FileManagerWindow {
     pub(crate) client_id: String,
@@ -45,7 +52,9 @@ pub(crate) struct FileManagerWindow {
     pending_local_rename: Arc<Mutex<Option<String>>>,
     pending_local_new_folder: Arc<Mutex<bool>>,
     outbound: Arc<Mutex<Vec<String>>>,
+    transfers: Arc<Mutex<Vec<FileTransferRow>>>,
     open: bool,
+    close_when_transfers_finish: bool,
     close_requested: Arc<AtomicBool>,
 }
 
@@ -65,9 +74,52 @@ enum FileStatus {
     Failed,
 }
 
+#[derive(Clone)]
+struct FileTransferRow {
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    name: String,
+    source: String,
+    destination: String,
+    remote_path: String,
+    local_root: String,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    status: FileTransferStatus,
+    message: String,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FileTransferStatus {
+    Scanning,
+    Running,
+    Cancelling,
+    Done,
+    Failed,
+    Cancelled,
+}
+
 pub(crate) struct OutboundCommand {
     pub(crate) client_id: String,
     pub(crate) payload: String,
+}
+
+pub(crate) enum FileTransferRequest {
+    Upload {
+        transfer_id: u64,
+        local_path: String,
+        remote_path: String,
+    },
+    Download {
+        transfer_id: u64,
+        remote_path: String,
+        local_dir: String,
+    },
+    Cancel {
+        transfer_id: u64,
+        direction: FileTransferDirection,
+        remote_path: String,
+    },
 }
 
 pub(crate) fn open_window(
@@ -81,6 +133,7 @@ pub(crate) fn open_window(
         .find(|window| window.client_id == client_id)
     {
         window.open = true;
+        window.close_when_transfers_finish = false;
         window.hostname = hostname;
         window.username = username;
         window.close_requested.store(false, Ordering::Relaxed);
@@ -116,7 +169,9 @@ pub(crate) fn open_window(
         pending_local_rename: Arc::new(Mutex::new(None)),
         pending_local_new_folder: Arc::new(Mutex::new(false)),
         outbound: Arc::new(Mutex::new(Vec::new())),
+        transfers: Arc::new(Mutex::new(Vec::new())),
         open: true,
+        close_when_transfers_finish: false,
         close_requested: Arc::new(AtomicBool::new(false)),
     };
     queue_action(&mut window, "list", "");
@@ -183,159 +238,344 @@ pub(crate) fn handle_ack(
     set_status(window, FileStatus::Done, "Directory loaded");
 }
 
+pub(crate) fn handle_transfer(
+    windows: &mut Vec<FileManagerWindow>,
+    client_id: &str,
+    _hostname: String,
+    _username: String,
+    message: Message,
+) {
+    let Some(window) = windows
+        .iter_mut()
+        .find(|window| window.client_id == client_id)
+    else {
+        return;
+    };
+
+    let Message::FileTransfer {
+        transfer_id,
+        direction,
+        action,
+        path,
+        relative_path,
+        total_bytes,
+        transferred_bytes,
+        file_size,
+        offset,
+        bytes,
+        message,
+        ..
+    } = message
+    else {
+        return;
+    };
+    if !transfer_row_exists(&window.transfers, transfer_id) {
+        return;
+    }
+
+    match (direction, action) {
+        (FileTransferDirection::Download, FileTransferAction::Directory) => {
+            if let Err(error) = create_download_directory(window, transfer_id, &relative_path) {
+                update_transfer_status(
+                    &window.transfers,
+                    transfer_id,
+                    FileTransferStatus::Failed,
+                    Some(total_bytes),
+                    Some(transferred_bytes),
+                    &error,
+                );
+                set_status(window, FileStatus::Failed, &error);
+            }
+        }
+        (FileTransferDirection::Download, FileTransferAction::Chunk) => {
+            if let Err(error) = write_download_chunk(
+                window,
+                transfer_id,
+                &relative_path,
+                file_size,
+                offset,
+                &bytes,
+            ) {
+                update_transfer_status(
+                    &window.transfers,
+                    transfer_id,
+                    FileTransferStatus::Failed,
+                    Some(total_bytes),
+                    Some(transferred_bytes),
+                    &error,
+                );
+                set_status(window, FileStatus::Failed, &error);
+                return;
+            }
+            update_transfer_status(
+                &window.transfers,
+                transfer_id,
+                FileTransferStatus::Running,
+                Some(total_bytes),
+                Some(transferred_bytes),
+                &message,
+            );
+        }
+        (_, FileTransferAction::Progress) => {
+            let message_lower = message.to_ascii_lowercase();
+            let status = if message_lower.contains("cancel") {
+                FileTransferStatus::Cancelling
+            } else if message_lower.contains("scanning") {
+                FileTransferStatus::Scanning
+            } else {
+                FileTransferStatus::Running
+            };
+            update_transfer_status(
+                &window.transfers,
+                transfer_id,
+                status,
+                Some(total_bytes),
+                Some(transferred_bytes),
+                &message,
+            );
+        }
+        (_, FileTransferAction::Complete) => {
+            let cancelled = message.to_ascii_lowercase().contains("cancel");
+            let status = if cancelled {
+                FileTransferStatus::Cancelled
+            } else {
+                FileTransferStatus::Done
+            };
+            update_transfer_status(
+                &window.transfers,
+                transfer_id,
+                status,
+                Some(total_bytes),
+                Some(transferred_bytes),
+                &message,
+            );
+            if direction == FileTransferDirection::Download {
+                if cancelled {
+                    if window.open {
+                        set_status(window, FileStatus::Done, "Transfer cancelled");
+                    }
+                } else {
+                    refresh_local_entries(window);
+                    if window.open {
+                        set_status(window, FileStatus::Done, "Download complete");
+                    }
+                }
+            } else if window.open {
+                if cancelled {
+                    set_status(window, FileStatus::Done, "Transfer cancelled");
+                } else {
+                    let current = window
+                        .current_path
+                        .lock()
+                        .map(|value| value.clone())
+                        .unwrap_or_default();
+                    queue_action(window, "list", &current);
+                    set_status(window, FileStatus::Done, "Upload complete");
+                }
+            }
+        }
+        (_, FileTransferAction::Error) => {
+            let detail = if message.trim().is_empty() {
+                format!("file transfer failed: {path}")
+            } else {
+                message
+            };
+            update_transfer_status(
+                &window.transfers,
+                transfer_id,
+                FileTransferStatus::Failed,
+                Some(total_bytes),
+                Some(transferred_bytes),
+                &detail,
+            );
+            if window.open {
+                set_status(window, FileStatus::Failed, &detail);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn render_windows(
     ctx: &egui::Context,
     windows: &mut Vec<FileManagerWindow>,
 ) -> Vec<OutboundCommand> {
     let mut outbound = Vec::new();
     for window in windows.iter_mut() {
-        if window.close_requested.load(Ordering::Relaxed) {
-            window.open = false;
-        }
-        if !window.open {
-            continue;
+        if window.close_requested.swap(false, Ordering::Relaxed) {
+            if has_active_transfers(&window.transfers) {
+                queue_cancel_active_transfers(&window.outbound, &window.transfers);
+                window.open = false;
+                window.close_when_transfers_finish = true;
+                set_status(
+                    window,
+                    FileStatus::Pending,
+                    "Closing: stopping active file transfers",
+                );
+            } else {
+                window.open = false;
+                window.close_when_transfers_finish = false;
+            }
         }
 
         let client_id = window.client_id.clone();
-        let title = format!(
-            "File Manager - {}",
-            identity_title(&window.hostname, &window.username)
-        );
-        let viewport_id = egui::ViewportId::from_hash_of(("admin_file_manager", &client_id));
-        let builder = windowing::child_viewport_builder(title, [1080.0, 620.0], [820.0, 460.0]);
+        if window.open {
+            let title = format!(
+                "File Manager - {}",
+                identity_title(&window.hostname, &window.username)
+            );
+            let viewport_id = egui::ViewportId::from_hash_of(("admin_file_manager", &client_id));
+            let builder = windowing::child_viewport_builder(title, [1080.0, 620.0], [820.0, 460.0]);
 
-        let current_path = window.current_path.clone();
-        let path_input = window.path_input.clone();
-        let entries = window.entries.clone();
-        let selected_name = window.selected_name.clone();
-        let local_entries = window.local_entries.clone();
-        let selected_local_name = window.selected_local_name.clone();
-        let status = window.status.clone();
-        let notice = window.notice.clone();
-        let local_path = window.local_path.clone();
-        let rename_to = window.rename_to.clone();
-        let new_folder_name = window.new_folder_name.clone();
-        let local_rename_to = window.local_rename_to.clone();
-        let local_new_folder_name = window.local_new_folder_name.clone();
-        let pending_delete = window.pending_delete.clone();
-        let pending_rename = window.pending_rename.clone();
-        let pending_new_folder = window.pending_new_folder.clone();
-        let pending_local_delete = window.pending_local_delete.clone();
-        let pending_local_rename = window.pending_local_rename.clone();
-        let pending_local_new_folder = window.pending_local_new_folder.clone();
-        let outbound_queue = window.outbound.clone();
-        let close_requested = window.close_requested.clone();
-        let entries_id = client_id.clone();
+            let current_path = window.current_path.clone();
+            let path_input = window.path_input.clone();
+            let entries = window.entries.clone();
+            let selected_name = window.selected_name.clone();
+            let local_entries = window.local_entries.clone();
+            let selected_local_name = window.selected_local_name.clone();
+            let status = window.status.clone();
+            let notice = window.notice.clone();
+            let local_path = window.local_path.clone();
+            let rename_to = window.rename_to.clone();
+            let new_folder_name = window.new_folder_name.clone();
+            let local_rename_to = window.local_rename_to.clone();
+            let local_new_folder_name = window.local_new_folder_name.clone();
+            let pending_delete = window.pending_delete.clone();
+            let pending_rename = window.pending_rename.clone();
+            let pending_new_folder = window.pending_new_folder.clone();
+            let pending_local_delete = window.pending_local_delete.clone();
+            let pending_local_rename = window.pending_local_rename.clone();
+            let pending_local_new_folder = window.pending_local_new_folder.clone();
+            let outbound_queue = window.outbound.clone();
+            let transfers = window.transfers.clone();
+            let close_requested = window.close_requested.clone();
+            let entries_id = client_id.clone();
 
-        ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
-            if ui.ctx().input(|input| input.viewport().close_requested()) {
-                close_requested.store(true, Ordering::Relaxed);
-            }
-            egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
-                .show_inside(ui, |ui| {
-                    windowing::render_child_window_controls(ui);
-                    let content_height = (ui.available_height() - 52.0).max(260.0);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width(), content_height),
-                        egui::Layout::left_to_right(egui::Align::Min),
-                        |ui| {
-                            StripBuilder::new(ui)
-                                .size(Size::remainder())
-                                .size(Size::exact(TRANSFER_COLUMN_WIDTH))
-                                .size(Size::remainder())
-                                .horizontal(|mut strip| {
-                                    strip.cell(|ui| {
-                                        render_remote_panel(
-                                            ui,
-                                            &entries_id,
-                                            &current_path,
-                                            &path_input,
-                                            &entries,
-                                            &selected_name,
-                                            &rename_to,
-                                            &new_folder_name,
-                                            &pending_delete,
-                                            &pending_rename,
-                                            &pending_new_folder,
-                                            &outbound_queue,
-                                            &status,
-                                        );
+            ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
+                if ui.ctx().input(|input| input.viewport().close_requested()) {
+                    close_requested.store(true, Ordering::Relaxed);
+                }
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                    .show_inside(ui, |ui| {
+                        windowing::render_child_window_controls(ui);
+                        let content_height =
+                            (ui.available_height() - TRANSFER_TABLE_HEIGHT - 64.0).max(260.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), content_height),
+                            egui::Layout::left_to_right(egui::Align::Min),
+                            |ui| {
+                                StripBuilder::new(ui)
+                                    .size(Size::remainder())
+                                    .size(Size::exact(TRANSFER_COLUMN_WIDTH))
+                                    .size(Size::remainder())
+                                    .horizontal(|mut strip| {
+                                        strip.cell(|ui| {
+                                            render_remote_panel(
+                                                ui,
+                                                &entries_id,
+                                                &current_path,
+                                                &path_input,
+                                                &entries,
+                                                &selected_name,
+                                                &rename_to,
+                                                &new_folder_name,
+                                                &pending_delete,
+                                                &pending_rename,
+                                                &pending_new_folder,
+                                                &outbound_queue,
+                                                &status,
+                                                &local_path,
+                                                &notice,
+                                                &transfers,
+                                            );
+                                        });
+                                        strip.cell(|ui| {
+                                            render_transfer_buttons(
+                                                ui,
+                                                &current_path,
+                                                &entries,
+                                                &selected_name,
+                                                &local_path,
+                                                &local_entries,
+                                                &selected_local_name,
+                                                &outbound_queue,
+                                                &status,
+                                                &notice,
+                                                &transfers,
+                                            );
+                                        });
+                                        strip.cell(|ui| {
+                                            render_local_panel(
+                                                ui,
+                                                &entries_id,
+                                                &local_path,
+                                                &local_entries,
+                                                &selected_local_name,
+                                                &local_rename_to,
+                                                &local_new_folder_name,
+                                                &pending_local_delete,
+                                                &pending_local_rename,
+                                                &pending_local_new_folder,
+                                                &current_path,
+                                                &outbound_queue,
+                                                &status,
+                                                &notice,
+                                                &transfers,
+                                            );
+                                        });
                                     });
-                                    strip.cell(|ui| {
-                                        render_transfer_buttons(
-                                            ui,
-                                            &current_path,
-                                            &entries,
-                                            &selected_name,
-                                            &local_path,
-                                            &local_entries,
-                                            &selected_local_name,
-                                            &outbound_queue,
-                                            &status,
-                                            &notice,
-                                        );
-                                    });
-                                    strip.cell(|ui| {
-                                        render_local_panel(
-                                            ui,
-                                            &entries_id,
-                                            &local_path,
-                                            &local_entries,
-                                            &selected_local_name,
-                                            &local_rename_to,
-                                            &local_new_folder_name,
-                                            &pending_local_delete,
-                                            &pending_local_rename,
-                                            &pending_local_new_folder,
-                                            &current_path,
-                                            &outbound_queue,
-                                            &status,
-                                            &notice,
-                                        );
-                                    });
-                                });
-                        },
-                    );
-                    ui.add_space(8.0);
-                    render_status_bar(ui, &status, &notice);
-                    render_pending_dialogs(
-                        ui,
-                        &pending_delete,
-                        &pending_rename,
-                        &pending_new_folder,
-                        &rename_to,
-                        &current_path,
-                        &new_folder_name,
-                        &local_path,
-                        &local_entries,
-                        &selected_local_name,
-                        &pending_local_delete,
-                        &pending_local_rename,
-                        &pending_local_new_folder,
-                        &local_rename_to,
-                        &local_new_folder_name,
-                        &status,
-                        &notice,
-                        &outbound_queue,
-                    );
-                });
-        });
+                            },
+                        );
+                        ui.add_space(8.0);
+                        render_transfer_table(ui, &transfers, &outbound_queue);
+                        ui.add_space(8.0);
+                        render_status_bar(ui, &status, &notice);
+                        render_pending_dialogs(
+                            ui,
+                            &pending_delete,
+                            &pending_rename,
+                            &pending_new_folder,
+                            &rename_to,
+                            &current_path,
+                            &new_folder_name,
+                            &local_path,
+                            &local_entries,
+                            &selected_local_name,
+                            &pending_local_delete,
+                            &pending_local_rename,
+                            &pending_local_new_folder,
+                            &local_rename_to,
+                            &local_new_folder_name,
+                            &status,
+                            &notice,
+                            &outbound_queue,
+                        );
+                    });
+            });
+        }
 
-        let payload = window
+        while let Some(payload) = window
             .outbound
             .lock()
             .ok()
-            .and_then(|mut queue| queue.pop());
-        if let Some(payload) = payload {
-            set_status(window, FileStatus::Pending, "Waiting for client result");
+            .and_then(|mut queue| queue.pop())
+        {
+            if parse_transfer_request(&payload).is_none() {
+                set_status(window, FileStatus::Pending, "Waiting for client result");
+            } else {
+                set_status(window, FileStatus::Done, "File transfer queued");
+            }
             outbound.push(OutboundCommand {
                 client_id: client_id.clone(),
                 payload,
             });
         }
     }
-    windows.retain(|window| window.open);
+    windows.retain(|window| {
+        window.open
+            || (window.close_when_transfers_finish && has_pending_outbound(&window.outbound))
+    });
     outbound
 }
 
@@ -366,6 +606,9 @@ fn render_remote_panel(
     pending_new_folder: &Arc<Mutex<bool>>,
     outbound: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<FileStatus>>,
+    local_path: &Arc<Mutex<String>>,
+    _notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
     egui::Frame::default()
         .fill(COLOR_PANEL)
@@ -395,6 +638,9 @@ fn render_remote_panel(
                     new_folder_name,
                     outbound,
                     status,
+                    local_path,
+                    _notice,
+                    transfers,
                 );
             });
         });
@@ -416,6 +662,7 @@ fn render_local_panel(
     outbound: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<FileStatus>>,
     notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
     egui::Frame::default()
         .fill(COLOR_PANEL)
@@ -447,6 +694,7 @@ fn render_local_panel(
                     outbound,
                     status,
                     notice,
+                    transfers,
                 );
             });
         });
@@ -464,6 +712,7 @@ fn render_transfer_buttons(
     outbound: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<FileStatus>>,
     notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
     ui.vertical_centered(|ui| {
         ui.set_min_size(ui.available_size());
@@ -474,16 +723,19 @@ fn render_transfer_buttons(
                 egui::Button::new("Down ->")
                     .min_size(egui::vec2(TRANSFER_BUTTON_WIDTH, TOOLBAR_CONTROL_HEIGHT)),
             )
-            .on_hover_text("Download selected remote file")
+            .on_hover_text("Download selected remote file or folder")
             .clicked()
         {
-            if let Some(path) =
-                selected_remote_file_path(current_path, remote_entries, selected_remote)
-            {
-                queue_payload(outbound, &request("download", &path, ""));
+            if let Some(entry) = selected_remote_entry(remote_entries, selected_remote) {
+                queue_download_remote(current_path, local_path, outbound, transfers, &entry);
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             } else {
-                set_status_arc(status, notice, FileStatus::Failed, "Select a remote file");
+                set_status_arc(
+                    status,
+                    notice,
+                    FileStatus::Failed,
+                    "Select a remote file or folder",
+                );
             }
         }
         ui.add_space(8.0);
@@ -493,7 +745,7 @@ fn render_transfer_buttons(
                 egui::Button::new("<- Up")
                     .min_size(egui::vec2(TRANSFER_BUTTON_WIDTH, TOOLBAR_CONTROL_HEIGHT)),
             )
-            .on_hover_text("Upload selected local file")
+            .on_hover_text("Upload selected local file or folder")
             .clicked()
         {
             upload_selected_local(
@@ -504,6 +756,7 @@ fn render_transfer_buttons(
                 outbound,
                 status,
                 notice,
+                transfers,
             );
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }
@@ -630,6 +883,9 @@ fn render_entries_table(
     new_folder_name: &Arc<Mutex<String>>,
     outbound: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<FileStatus>>,
+    local_path: &Arc<Mutex<String>>,
+    _notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
     let entries = entries
         .lock()
@@ -660,9 +916,8 @@ fn render_entries_table(
                     queue_payload(outbound, &request("list", &path, ""));
                     ui.close();
                 }
-                if ui.button("Download").clicked() && entry.kind == "file" {
-                    let path = join_remote(current_path, &entry.name);
-                    queue_payload(outbound, &request("download", &path, ""));
+                if ui.button("Download").clicked() {
+                    queue_download_remote(current_path, local_path, outbound, transfers, entry);
                     ctx.request_repaint_of(egui::ViewportId::ROOT);
                     ui.close();
                 }
@@ -702,6 +957,7 @@ fn render_local_entries_table(
     outbound: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<FileStatus>>,
     notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
     let entries_snapshot = entries
         .lock()
@@ -730,7 +986,7 @@ fn render_local_entries_table(
                     set_local_dir(local_path, entries, selected_name, &path);
                     ui.close();
                 }
-                if ui.button("Upload").clicked() && entry.kind == "file" {
+                if ui.button("Upload").clicked() {
                     select_entry(selected_name, entry);
                     upload_selected_local(
                         current_path,
@@ -740,6 +996,7 @@ fn render_local_entries_table(
                         outbound,
                         status,
                         notice,
+                        transfers,
                     );
                     ui.close();
                 }
@@ -817,6 +1074,194 @@ fn file_table<R>(
         });
 }
 
+fn render_transfer_table(
+    ui: &mut egui::Ui,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
+    outbound: &Arc<Mutex<Vec<String>>>,
+) {
+    let rows = transfers
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    egui::Frame::default()
+        .fill(COLOR_PANEL)
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.set_min_height(TRANSFER_TABLE_HEIGHT - 18.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Transfers")
+                        .size(13.0)
+                        .color(COLOR_TEXT)
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("Right click a row to delete")
+                            .size(12.0)
+                            .color(COLOR_MUTED),
+                    );
+                });
+            });
+            ui.add_space(6.0);
+            if rows.is_empty() {
+                ui.label(
+                    egui::RichText::new("No file transfers")
+                        .size(12.0)
+                        .color(COLOR_MUTED),
+                );
+                return;
+            }
+
+            let available_width = ui.available_width().max(720.0);
+            let id_width = 64.0;
+            let direction_width = 86.0;
+            let progress_width = 150.0;
+            let status_width = 112.0;
+            let message_width = 180.0;
+            let name_width = (available_width
+                - id_width
+                - direction_width
+                - progress_width
+                - status_width
+                - message_width
+                - 30.0)
+                .max(180.0);
+
+            TableBuilder::new(ui)
+                .id_salt("file_transfer_table")
+                .striped(true)
+                .resizable(false)
+                .sense(egui::Sense::click())
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::exact(id_width))
+                .column(Column::exact(direction_width))
+                .column(Column::exact(name_width))
+                .column(Column::exact(progress_width))
+                .column(Column::exact(status_width))
+                .column(Column::exact(message_width))
+                .header(24.0, |mut header| {
+                    header.col(|ui| table_header_label(ui, "ID"));
+                    header.col(|ui| table_header_label(ui, "Direction"));
+                    header.col(|ui| table_header_label(ui, "Item"));
+                    header.col(|ui| table_header_label(ui, "Progress"));
+                    header.col(|ui| table_header_label(ui, "Status"));
+                    header.col(|ui| table_header_label(ui, "Message"));
+                })
+                .body(|mut body| {
+                    for row_data in rows {
+                        body.row(24.0, |mut row| {
+                            row.col(|ui| table_text(ui, &row_data.transfer_id.to_string()));
+                            row.col(|ui| {
+                                table_text(ui, transfer_direction_label(row_data.direction))
+                            });
+                            row.col(|ui| {
+                                let response = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&row_data.name)
+                                            .size(12.0)
+                                            .color(COLOR_TEXT),
+                                    )
+                                    .selectable(false)
+                                    .sense(egui::Sense::hover()),
+                                );
+                                response.on_hover_text(format!(
+                                    "{}\n{}",
+                                    row_data.source, row_data.destination
+                                ));
+                            });
+                            row.col(|ui| table_text(ui, &transfer_progress_label(&row_data)));
+                            row.col(|ui| {
+                                let color = transfer_status_color(row_data.status);
+                                ui.label(
+                                    egui::RichText::new(transfer_status_label(row_data.status))
+                                        .size(12.0)
+                                        .color(color)
+                                        .strong(),
+                                );
+                            });
+                            row.col(|ui| table_text(ui, &row_data.message));
+                            let response = row.response();
+                            if response.hovered() {
+                                response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            response.context_menu(|ui| {
+                                if ui.button("Delete").clicked() {
+                                    if transfer_can_stop(row_data.status) {
+                                        queue_cancel_transfer(outbound, transfers, &row_data);
+                                    }
+                                    if let Ok(mut rows) = transfers.lock() {
+                                        rows.retain(|row| row.transfer_id != row_data.transfer_id);
+                                    }
+                                    ui.close();
+                                }
+                            });
+                        });
+                    }
+                });
+        });
+}
+
+fn queue_cancel_transfer(
+    outbound: &Arc<Mutex<Vec<String>>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
+    row: &FileTransferRow,
+) {
+    queue_payload(
+        outbound,
+        &transfer_request_payload(
+            "cancel",
+            row.transfer_id,
+            row.direction,
+            &row.remote_path,
+            None,
+        ),
+    );
+    update_transfer_status(
+        transfers,
+        row.transfer_id,
+        FileTransferStatus::Cancelling,
+        None,
+        None,
+        "cancel requested",
+    );
+}
+
+fn queue_cancel_active_transfers(
+    outbound: &Arc<Mutex<Vec<String>>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
+) {
+    let rows = transfers
+        .lock()
+        .map(|rows| rows.clone())
+        .unwrap_or_default();
+    for row in rows.iter().filter(|row| transfer_can_stop(row.status)) {
+        queue_cancel_transfer(outbound, transfers, row);
+    }
+}
+
+fn has_active_transfers(transfers: &Arc<Mutex<Vec<FileTransferRow>>>) -> bool {
+    transfers
+        .lock()
+        .map(|rows| rows.iter().any(|row| transfer_can_stop(row.status)))
+        .unwrap_or(false)
+}
+
+fn has_pending_outbound(outbound: &Arc<Mutex<Vec<String>>>) -> bool {
+    outbound
+        .lock()
+        .map(|queue| !queue.is_empty())
+        .unwrap_or(false)
+}
+
+fn transfer_row_exists(transfers: &Arc<Mutex<Vec<FileTransferRow>>>, transfer_id: u64) -> bool {
+    transfers
+        .lock()
+        .map(|rows| rows.iter().any(|row| row.transfer_id == transfer_id))
+        .unwrap_or(false)
+}
+
 fn table_header_label(ui: &mut egui::Ui, text: &str) {
     ui.add(
         egui::Label::new(
@@ -862,6 +1307,61 @@ fn format_file_size(size: &str) -> String {
         format!("{value:.0} {}", units[unit_index])
     } else {
         format!("{value:.1} {}", units[unit_index])
+    }
+}
+
+fn transfer_direction_label(direction: FileTransferDirection) -> &'static str {
+    match direction {
+        FileTransferDirection::Upload => "Upload",
+        FileTransferDirection::Download => "Download",
+    }
+}
+
+fn transfer_status_label(status: FileTransferStatus) -> &'static str {
+    match status {
+        FileTransferStatus::Scanning => "Scanning",
+        FileTransferStatus::Running => "Running",
+        FileTransferStatus::Cancelling => "Cancelling",
+        FileTransferStatus::Done => "Done",
+        FileTransferStatus::Failed => "Failed",
+        FileTransferStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn transfer_status_color(status: FileTransferStatus) -> egui::Color32 {
+    match status {
+        FileTransferStatus::Scanning => COLOR_WARN,
+        FileTransferStatus::Running => COLOR_WARN,
+        FileTransferStatus::Cancelling => COLOR_WARN,
+        FileTransferStatus::Done => COLOR_GOOD,
+        FileTransferStatus::Failed => COLOR_BAD,
+        FileTransferStatus::Cancelled => COLOR_MUTED,
+    }
+}
+
+fn transfer_can_stop(status: FileTransferStatus) -> bool {
+    matches!(
+        status,
+        FileTransferStatus::Scanning | FileTransferStatus::Running
+    )
+}
+
+fn transfer_progress_label(row: &FileTransferRow) -> String {
+    if row.status == FileTransferStatus::Scanning && row.total_bytes == 0 {
+        return "Scanning".to_string();
+    }
+    if row.total_bytes > 0 {
+        let percent =
+            ((row.transferred_bytes as f64 / row.total_bytes as f64) * 100.0).clamp(0.0, 100.0);
+        format!(
+            "{percent:.1}% ({}/{})",
+            format_file_size(&row.transferred_bytes.to_string()),
+            format_file_size(&row.total_bytes.to_string())
+        )
+    } else if row.transferred_bytes > 0 {
+        format_file_size(&row.transferred_bytes.to_string())
+    } else {
+        "-".to_string()
     }
 }
 
@@ -1250,6 +1750,173 @@ fn queue_payload(outbound: &Arc<Mutex<Vec<String>>>, payload: &str) {
     }
 }
 
+fn queue_download_remote(
+    current_path: &Arc<Mutex<String>>,
+    local_path: &Arc<Mutex<String>>,
+    outbound: &Arc<Mutex<Vec<String>>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
+    entry: &FileEntry,
+) {
+    let transfer_id = NEXT_TRANSFER_ID.fetch_add(1, Ordering::Relaxed);
+    let remote_path = join_remote(current_path, &entry.name);
+    let local_dir = local_path
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    let total_bytes = if entry.kind == "file" {
+        entry.size.trim().parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    };
+    let destination = PathBuf::from(local_dir.trim())
+        .join(&entry.name)
+        .display()
+        .to_string();
+    add_transfer_row(
+        transfers,
+        FileTransferRow {
+            transfer_id,
+            direction: FileTransferDirection::Download,
+            name: entry.name.clone(),
+            source: remote_path.clone(),
+            destination,
+            remote_path: remote_path.clone(),
+            local_root: local_dir.clone(),
+            total_bytes,
+            transferred_bytes: 0,
+            status: FileTransferStatus::Running,
+            message: "queued".to_string(),
+        },
+    );
+    queue_payload(
+        outbound,
+        &transfer_request_payload(
+            "download",
+            transfer_id,
+            FileTransferDirection::Download,
+            &remote_path,
+            Some(("local_dir", &local_dir)),
+        ),
+    );
+}
+
+fn add_transfer_row(transfers: &Arc<Mutex<Vec<FileTransferRow>>>, row: FileTransferRow) {
+    if let Ok(mut rows) = transfers.lock() {
+        rows.retain(|existing| existing.transfer_id != row.transfer_id);
+        rows.insert(0, row);
+    }
+}
+
+fn update_transfer_status(
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
+    transfer_id: u64,
+    status: FileTransferStatus,
+    total_bytes: Option<u64>,
+    transferred_bytes: Option<u64>,
+    message: &str,
+) {
+    let Ok(mut rows) = transfers.lock() else {
+        return;
+    };
+    let Some(row) = rows.iter_mut().find(|row| row.transfer_id == transfer_id) else {
+        return;
+    };
+    let keep_failed = row.status == FileTransferStatus::Failed
+        && matches!(
+            status,
+            FileTransferStatus::Done | FileTransferStatus::Cancelled
+        );
+    if !keep_failed {
+        row.status = status;
+    }
+    if let Some(total_bytes) = total_bytes {
+        if total_bytes > 0 {
+            row.total_bytes = total_bytes;
+        }
+    }
+    if let Some(transferred_bytes) = transferred_bytes {
+        row.transferred_bytes = transferred_bytes;
+    }
+    if !message.trim().is_empty() && !keep_failed {
+        row.message = message.to_string();
+    }
+}
+
+fn transfer_request_payload(
+    action: &str,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    remote_path: &str,
+    extra: Option<(&str, &str)>,
+) -> String {
+    let mut payload = format!(
+        "{TRANSFER_REQUEST_MARKER}\naction={action}\ntransfer_id={transfer_id}\ndirection={}\nremote_path={remote_path}",
+        direction.as_str()
+    );
+    if let Some((key, value)) = extra {
+        payload.push('\n');
+        payload.push_str(key);
+        payload.push('=');
+        payload.push_str(value);
+    }
+    payload
+}
+
+pub(crate) fn parse_transfer_request(payload: &str) -> Option<FileTransferRequest> {
+    let mut lines = payload.lines();
+    if lines.next()?.trim() != TRANSFER_REQUEST_MARKER {
+        return None;
+    }
+    let mut action = String::new();
+    let mut transfer_id = None;
+    let mut direction = None;
+    let mut remote_path = String::new();
+    let mut local_path = String::new();
+    let mut local_dir = String::new();
+    for line in lines {
+        if let Some(rest) = line.strip_prefix("action=") {
+            action = rest.trim().to_ascii_lowercase();
+        } else if let Some(rest) = line.strip_prefix("transfer_id=") {
+            transfer_id = rest.trim().parse::<u64>().ok();
+        } else if let Some(rest) = line.strip_prefix("direction=") {
+            direction = match rest.trim() {
+                "upload" => Some(FileTransferDirection::Upload),
+                "download" => Some(FileTransferDirection::Download),
+                _ => None,
+            };
+        } else if let Some(rest) = line.strip_prefix("remote_path=") {
+            remote_path = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("local_path=") {
+            local_path = rest.to_string();
+        } else if let Some(rest) = line.strip_prefix("local_dir=") {
+            local_dir = rest.to_string();
+        }
+    }
+    let transfer_id = transfer_id?;
+    match action.as_str() {
+        "upload" if !local_path.is_empty() && !remote_path.is_empty() => {
+            Some(FileTransferRequest::Upload {
+                transfer_id,
+                local_path,
+                remote_path,
+            })
+        }
+        "download" if !local_dir.is_empty() && !remote_path.is_empty() => {
+            Some(FileTransferRequest::Download {
+                transfer_id,
+                remote_path,
+                local_dir,
+            })
+        }
+        "cancel" if !remote_path.is_empty() => Some(FileTransferRequest::Cancel {
+            transfer_id,
+            direction: direction?,
+            remote_path,
+        }),
+        _ => None,
+    }
+}
+
 fn request(action: &str, path: &str, value: &str) -> String {
     format!("action={action}\npath={path}\nvalue={value}")
 }
@@ -1435,49 +2102,84 @@ fn upload_selected_local(
     outbound: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<FileStatus>>,
     notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
     let Some(name) = selected_local.lock().ok().and_then(|value| value.clone()) else {
-        set_status_arc(status, notice, FileStatus::Failed, "Select a local file");
+        set_status_arc(
+            status,
+            notice,
+            FileStatus::Failed,
+            "Select a local file or folder",
+        );
         return;
     };
-    let is_file = local_entries
+    let entry = local_entries
         .lock()
         .map(|entries| {
             entries
                 .iter()
-                .any(|entry| entry.name == name && entry.kind == "file")
+                .find(|entry| entry.name == name && matches!(entry.kind.as_str(), "file" | "dir"))
+                .cloned()
         })
-        .unwrap_or(false);
-    if !is_file {
-        set_status_arc(status, notice, FileStatus::Failed, "Select a local file");
+        .unwrap_or(None);
+    let Some(entry) = entry else {
+        set_status_arc(
+            status,
+            notice,
+            FileStatus::Failed,
+            "Select a local file or folder",
+        );
         return;
-    }
+    };
+
+    let transfer_id = NEXT_TRANSFER_ID.fetch_add(1, Ordering::Relaxed);
     let local_file = join_local(local_path, &name);
-    match build_upload_payload(current_path, &local_file, &name) {
-        Ok(payload) => queue_payload(outbound, &payload),
-        Err(error) => set_status_arc(status, notice, FileStatus::Failed, &error),
-    }
+    let remote_path = join_remote(current_path, &name);
+    let total_bytes = if entry.kind == "file" {
+        entry.size.trim().parse::<u64>().unwrap_or(0)
+    } else {
+        0
+    };
+    add_transfer_row(
+        transfers,
+        FileTransferRow {
+            transfer_id,
+            direction: FileTransferDirection::Upload,
+            name: name.clone(),
+            source: local_file.clone(),
+            destination: remote_path.clone(),
+            remote_path: remote_path.clone(),
+            local_root: String::new(),
+            total_bytes,
+            transferred_bytes: 0,
+            status: FileTransferStatus::Running,
+            message: "queued".to_string(),
+        },
+    );
+    queue_payload(
+        outbound,
+        &transfer_request_payload(
+            "upload",
+            transfer_id,
+            FileTransferDirection::Upload,
+            &remote_path,
+            Some(("local_path", &local_file)),
+        ),
+    );
+    set_status_arc(status, notice, FileStatus::Done, "Upload queued");
 }
 
-fn selected_remote_file_path(
-    current_path: &Arc<Mutex<String>>,
+fn selected_remote_entry(
     entries: &Arc<Mutex<Vec<FileEntry>>>,
     selected_name: &Arc<Mutex<Option<String>>>,
-) -> Option<String> {
+) -> Option<FileEntry> {
     let name = selected_name.lock().ok().and_then(|value| value.clone())?;
-    let is_file = entries
-        .lock()
-        .map(|entries| {
-            entries
-                .iter()
-                .any(|entry| entry.name == name && entry.kind == "file")
-        })
-        .unwrap_or(false);
-    if is_file {
-        Some(join_remote(current_path, &name))
-    } else {
-        None
-    }
+    entries.lock().ok().and_then(|entries| {
+        entries
+            .iter()
+            .find(|entry| entry.name == name && matches!(entry.kind.as_str(), "file" | "dir"))
+            .cloned()
+    })
 }
 
 fn is_pending(status: &Arc<Mutex<FileStatus>>) -> bool {
@@ -1517,6 +2219,88 @@ fn refresh_local_entries_arc(
     if let Ok(mut value) = selected_local_name.lock() {
         *value = None;
     }
+}
+
+fn create_download_directory(
+    window: &FileManagerWindow,
+    transfer_id: u64,
+    relative_path: &str,
+) -> Result<(), String> {
+    let root = transfer_local_root(window, transfer_id);
+    let target = safe_local_join(&root, relative_path)
+        .ok_or_else(|| "download directory failed: invalid path".to_string())?;
+    fs::create_dir_all(target).map_err(|error| format!("download directory failed: {error}"))
+}
+
+fn write_download_chunk(
+    window: &FileManagerWindow,
+    transfer_id: u64,
+    relative_path: &str,
+    file_size: u64,
+    offset: u64,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let root = transfer_local_root(window, transfer_id);
+    let target = safe_local_join(&root, relative_path)
+        .ok_or_else(|| "download chunk failed: invalid path".to_string())?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("download mkdir failed: {error}"))?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(offset == 0)
+        .open(&target)
+        .map_err(|error| format!("download open failed: {error}"))?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("download seek failed: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("download write failed: {error}"))?;
+    if file_size > 0 && offset.saturating_add(bytes.len() as u64) >= file_size {
+        let _ = file.set_len(file_size);
+    }
+    Ok(())
+}
+
+fn transfer_local_root(window: &FileManagerWindow, transfer_id: u64) -> PathBuf {
+    window
+        .transfers
+        .lock()
+        .ok()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row.transfer_id == transfer_id)
+                .map(|row| row.local_root.clone())
+        })
+        .filter(|path| !path.trim().is_empty())
+        .map(|path| PathBuf::from(path.trim()))
+        .unwrap_or_else(|| {
+            window
+                .local_path
+                .lock()
+                .map(|value| PathBuf::from(value.trim()))
+                .unwrap_or_else(|_| PathBuf::from("."))
+        })
+}
+
+fn safe_local_join(root: &Path, relative_path: &str) -> Option<PathBuf> {
+    let relative_path = relative_path.trim();
+    if relative_path.is_empty() {
+        return Some(root.to_path_buf());
+    }
+    let relative = Path::new(relative_path);
+    if relative.is_absolute() {
+        return None;
+    }
+    let mut path = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => path.push(part),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(path)
 }
 
 fn set_local_dir(
@@ -1679,40 +2463,6 @@ fn parent_path(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-fn build_upload_payload(
-    current_path: &Arc<Mutex<String>>,
-    local_path: &str,
-    remote_name: &str,
-) -> Result<String, String> {
-    let local = local_path.trim();
-    if local.is_empty() {
-        return Err("local path is empty".to_string());
-    }
-    let bytes = fs::read(local).map_err(|error| error.to_string())?;
-    let name = if remote_name.trim().is_empty() {
-        Path::new(local)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .ok_or_else(|| "remote name is empty".to_string())?
-    } else {
-        remote_name.trim().to_string()
-    };
-    let current = current_path
-        .lock()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let remote_path = if current.is_empty() {
-        name
-    } else if current.ends_with('\\') || current.ends_with('/') {
-        format!("{current}{name}")
-    } else if current.contains('\\') {
-        format!("{current}\\{name}")
-    } else {
-        format!("{current}/{name}")
-    };
-    Ok(request("upload", &remote_path, &encode_hex(&bytes)))
-}
-
 fn save_download(window: &FileManagerWindow, response: &FileResponse) -> Result<String, String> {
     let bytes = decode_hex(response.value.as_deref().unwrap_or(""))?;
     let local_dir = window
@@ -1797,16 +2547,6 @@ impl FileResponse {
     }
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
-
 fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
     if value.len() % 2 != 0 {
         return Err("invalid hex length".to_string());
@@ -1835,5 +2575,86 @@ fn identity_title(hostname: &str, username: &str) -> String {
         (host, "") => host.to_string(),
         ("", user) => user.to_string(),
         (host, user) => format!("{host} / {user}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_window_with_running_transfer_queues_cancel_and_drops_window() {
+        let mut windows = Vec::new();
+        open_window(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+        );
+        let window = windows.first_mut().expect("window exists");
+        window.outbound.lock().unwrap().clear();
+        add_transfer_row(
+            &window.transfers,
+            FileTransferRow {
+                transfer_id: 7,
+                direction: FileTransferDirection::Download,
+                name: "large.bin".to_string(),
+                source: "/remote/large.bin".to_string(),
+                destination: "/local/large.bin".to_string(),
+                remote_path: "/remote/large.bin".to_string(),
+                local_root: "/local".to_string(),
+                total_bytes: 100,
+                transferred_bytes: 10,
+                status: FileTransferStatus::Running,
+                message: "running".to_string(),
+            },
+        );
+        window.close_requested.store(true, Ordering::Relaxed);
+
+        let outbound = render_windows(&egui::Context::default(), &mut windows);
+
+        assert_eq!(outbound.len(), 1);
+        assert!(outbound[0].payload.contains("action=cancel"));
+        assert!(outbound[0].payload.contains("transfer_id=7"));
+        assert!(windows.is_empty());
+    }
+
+    #[test]
+    fn transfer_event_for_deleted_row_is_ignored() {
+        let mut windows = Vec::new();
+        open_window(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+        );
+        let window = windows.first_mut().expect("window exists");
+        window.outbound.lock().unwrap().clear();
+        *window.notice.lock().unwrap() = "Ready".to_string();
+
+        handle_transfer(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+            Message::FileTransfer {
+                target_id: "client-1".to_string(),
+                transfer_id: 99,
+                direction: FileTransferDirection::Download,
+                action: FileTransferAction::Progress,
+                path: "/remote/deleted.bin".to_string(),
+                relative_path: String::new(),
+                total_bytes: 100,
+                transferred_bytes: 50,
+                file_size: 0,
+                offset: 0,
+                bytes: Vec::new(),
+                message: "old progress".to_string(),
+            },
+        );
+
+        let notice = windows[0].notice.lock().unwrap().clone();
+        assert_eq!(notice, "Ready");
+        assert!(windows[0].transfers.lock().unwrap().is_empty());
     }
 }

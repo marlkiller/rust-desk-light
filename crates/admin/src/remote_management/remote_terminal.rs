@@ -1,5 +1,6 @@
 use crate::windowing;
 use eframe::egui;
+use rdl_protocol::{CommandOutputStream, REMOTE_TERMINAL_CANCEL};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -138,13 +139,66 @@ pub(crate) fn handle_ack(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_output(
+    windows: &mut Vec<TerminalWindow>,
+    client_id: &str,
+    hostname: String,
+    username: String,
+    _stream_id: u64,
+    _sequence: u64,
+    stream: CommandOutputStream,
+    chunk: String,
+    current_dir: String,
+    finished: bool,
+    success: bool,
+) {
+    let Some(window) = windows
+        .iter_mut()
+        .find(|window| window.client_id == client_id)
+    else {
+        return;
+    };
+    if !window.open {
+        return;
+    }
+    window.hostname = hostname;
+    window.username = username;
+
+    if !current_dir.trim().is_empty() {
+        if let Ok(mut value) = window.current_dir.lock() {
+            *value = current_dir;
+        }
+    }
+    if let Ok(mut status) = window.status.lock() {
+        *status = if finished {
+            if success {
+                TerminalStatus::Done
+            } else {
+                TerminalStatus::Failed
+            }
+        } else {
+            TerminalStatus::Running
+        };
+    }
+    if let Ok(mut lines) = window.lines.lock() {
+        append_terminal_output(&mut lines, stream, &chunk, finished);
+    }
+}
+
 pub(crate) fn render_windows(
     ctx: &egui::Context,
     windows: &mut Vec<TerminalWindow>,
 ) -> Vec<OutboundCommand> {
     let mut outbound = Vec::new();
     for window in windows.iter_mut() {
-        if window.close_requested.load(Ordering::Relaxed) {
+        if window.close_requested.swap(false, Ordering::Relaxed) {
+            if terminal_is_running(&window.status) {
+                outbound.push(OutboundCommand {
+                    client_id: window.client_id.clone(),
+                    command: REMOTE_TERMINAL_CANCEL.to_string(),
+                });
+            }
             window.open = false;
         }
         if !window.open {
@@ -179,7 +233,14 @@ pub(crate) fn render_windows(
                 .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
-                    render_toolbar(ui, &lines, &copy_requested, &clear_requested);
+                    render_toolbar(
+                        ui,
+                        &lines,
+                        &status,
+                        &outbound_queue,
+                        &copy_requested,
+                        &clear_requested,
+                    );
                     ui.add_space(8.0);
                     let input_height = 42.0;
                     let status_height = 44.0;
@@ -275,10 +336,16 @@ impl TerminalWindow {
 fn render_toolbar(
     ui: &mut egui::Ui,
     lines: &Arc<Mutex<Vec<String>>>,
+    status: &Arc<Mutex<TerminalStatus>>,
+    outbound: &Arc<Mutex<Vec<TerminalOutbound>>>,
     copy_requested: &Arc<AtomicBool>,
     clear_requested: &Arc<AtomicBool>,
 ) {
     ui.horizontal(|ui| {
+        let running = status
+            .lock()
+            .map(|status| matches!(*status, TerminalStatus::Running))
+            .unwrap_or(false);
         ui.label(
             egui::RichText::new("Terminal")
                 .size(13.0)
@@ -286,6 +353,17 @@ fn render_toolbar(
                 .strong(),
         );
         ui.separator();
+        if ui.add_enabled(running, egui::Button::new("Stop")).clicked() {
+            if let Ok(mut queue) = outbound.lock() {
+                queue.insert(
+                    0,
+                    TerminalOutbound {
+                        command: REMOTE_TERMINAL_CANCEL.to_string(),
+                        visible: false,
+                    },
+                );
+            }
+        }
         if ui.button("Copy All").clicked() {
             if let Ok(lines) = lines.lock() {
                 ui.ctx().copy_text(lines.join("\n"));
@@ -296,6 +374,13 @@ fn render_toolbar(
             clear_requested.store(true, Ordering::Relaxed);
         }
     });
+}
+
+fn terminal_is_running(status: &Arc<Mutex<TerminalStatus>>) -> bool {
+    status
+        .lock()
+        .map(|status| matches!(*status, TerminalStatus::Running))
+        .unwrap_or(false)
 }
 
 fn render_history(ui: &mut egui::Ui, lines: &Arc<Mutex<Vec<String>>>) {
@@ -514,4 +599,26 @@ fn parse_terminal_detail(detail: &str) -> (Option<String>, String) {
 fn terminal_output_failed(output: &str) -> bool {
     let output = output.trim().to_ascii_lowercase();
     output.starts_with("cd failed:") || output.contains(" exited with error")
+}
+
+fn append_terminal_output(
+    lines: &mut Vec<String>,
+    stream: CommandOutputStream,
+    chunk: &str,
+    finished: bool,
+) {
+    let chunk = chunk.trim_end_matches('\0');
+    if chunk.trim().is_empty() {
+        return;
+    }
+    let text = if stream == CommandOutputStream::Status && !finished {
+        format!("[status] {}", chunk.trim_end())
+    } else if stream == CommandOutputStream::Status {
+        chunk.trim_end().to_string()
+    } else {
+        chunk.replace('\r', "\n")
+    };
+    for line in text.lines() {
+        lines.push(line.to_string());
+    }
 }

@@ -7,6 +7,7 @@ pub const DEFAULT_SERVER_PORT: u16 = 5169;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const FRAME_MAGIC: [u8; 4] = *b"RDL1";
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
+pub const REMOTE_TERMINAL_CANCEL: &str = "__rdl_terminal_cancel";
 
 const HEADER_LEN: usize = 10;
 const ENVELOPE_FIXED_LEN: usize = 27;
@@ -98,6 +99,31 @@ pub enum CommandKind {
 pub enum VideoSource {
     RemoteDesktop,
     Camera,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandOutputStream {
+    Stdout,
+    Stderr,
+    Status,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileTransferDirection {
+    Upload,
+    Download,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileTransferAction {
+    Start,
+    Directory,
+    Chunk,
+    Finish,
+    Cancel,
+    Progress,
+    Complete,
+    Error,
 }
 
 impl VideoSource {
@@ -292,6 +318,99 @@ impl CommandKind {
     }
 }
 
+impl CommandOutputStream {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+            Self::Status => "status",
+        }
+    }
+
+    fn to_code(self) -> u8 {
+        match self {
+            Self::Stdout => 1,
+            Self::Stderr => 2,
+            Self::Status => 3,
+        }
+    }
+
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            1 => Ok(Self::Stdout),
+            2 => Ok(Self::Stderr),
+            3 => Ok(Self::Status),
+            _ => Err(ProtocolError::InvalidCommandOutputStream),
+        }
+    }
+}
+
+impl FileTransferDirection {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Upload => "upload",
+            Self::Download => "download",
+        }
+    }
+
+    fn to_code(self) -> u8 {
+        match self {
+            Self::Upload => 1,
+            Self::Download => 2,
+        }
+    }
+
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            1 => Ok(Self::Upload),
+            2 => Ok(Self::Download),
+            _ => Err(ProtocolError::InvalidFileTransferDirection),
+        }
+    }
+}
+
+impl FileTransferAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Directory => "directory",
+            Self::Chunk => "chunk",
+            Self::Finish => "finish",
+            Self::Cancel => "cancel",
+            Self::Progress => "progress",
+            Self::Complete => "complete",
+            Self::Error => "error",
+        }
+    }
+
+    fn to_code(self) -> u8 {
+        match self {
+            Self::Start => 1,
+            Self::Directory => 2,
+            Self::Chunk => 3,
+            Self::Finish => 4,
+            Self::Cancel => 5,
+            Self::Progress => 6,
+            Self::Complete => 7,
+            Self::Error => 8,
+        }
+    }
+
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            1 => Ok(Self::Start),
+            2 => Ok(Self::Directory),
+            3 => Ok(Self::Chunk),
+            4 => Ok(Self::Finish),
+            5 => Ok(Self::Cancel),
+            6 => Ok(Self::Progress),
+            7 => Ok(Self::Complete),
+            8 => Ok(Self::Error),
+            _ => Err(ProtocolError::InvalidFileTransferAction),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClientInfo {
     pub id: String,
@@ -328,6 +447,31 @@ pub enum Message {
         command: CommandKind,
         accepted: bool,
         detail: String,
+    },
+    CommandOutput {
+        client_id: String,
+        command: CommandKind,
+        stream_id: u64,
+        sequence: u64,
+        stream: CommandOutputStream,
+        chunk: String,
+        current_dir: String,
+        finished: bool,
+        success: bool,
+    },
+    FileTransfer {
+        target_id: String,
+        transfer_id: u64,
+        direction: FileTransferDirection,
+        action: FileTransferAction,
+        path: String,
+        relative_path: String,
+        total_bytes: u64,
+        transferred_bytes: u64,
+        file_size: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+        message: String,
     },
     DesktopControl {
         target_id: String,
@@ -384,6 +528,8 @@ impl Message {
             Self::DesktopFrame { .. } => 12,
             Self::VideoControl { .. } => 13,
             Self::VideoFrame { .. } => 14,
+            Self::CommandOutput { .. } => 15,
+            Self::FileTransfer { .. } => 16,
         }
     }
 
@@ -440,6 +586,54 @@ impl Message {
                 writer.u16(command.to_code());
                 writer.bool(*accepted);
                 writer.string(detail);
+            }
+            Self::CommandOutput {
+                client_id,
+                command,
+                stream_id,
+                sequence,
+                stream,
+                chunk,
+                current_dir,
+                finished,
+                success,
+            } => {
+                writer.string(client_id);
+                writer.u16(command.to_code());
+                writer.u64(*stream_id);
+                writer.u64(*sequence);
+                writer.u8(stream.to_code());
+                writer.string(chunk);
+                writer.string(current_dir);
+                writer.bool(*finished);
+                writer.bool(*success);
+            }
+            Self::FileTransfer {
+                target_id,
+                transfer_id,
+                direction,
+                action,
+                path,
+                relative_path,
+                total_bytes,
+                transferred_bytes,
+                file_size,
+                offset,
+                bytes,
+                message,
+            } => {
+                writer.string(target_id);
+                writer.u64(*transfer_id);
+                writer.u8(direction.to_code());
+                writer.u8(action.to_code());
+                writer.string(path);
+                writer.string(relative_path);
+                writer.u64(*total_bytes);
+                writer.u64(*transferred_bytes);
+                writer.u64(*file_size);
+                writer.u64(*offset);
+                writer.byte_vec(bytes);
+                writer.string(message);
             }
             Self::DesktopControl { target_id, payload }
             | Self::DesktopInput { target_id, payload } => {
@@ -562,6 +756,31 @@ impl Message {
                 image_height: reader.u32()?,
                 format: reader.string()?,
                 bytes: reader.byte_vec()?,
+            },
+            15 => Self::CommandOutput {
+                client_id: reader.string()?,
+                command: CommandKind::from_code(reader.u16()?)?,
+                stream_id: reader.u64()?,
+                sequence: reader.u64()?,
+                stream: CommandOutputStream::from_code(reader.u8()?)?,
+                chunk: reader.string()?,
+                current_dir: reader.string()?,
+                finished: reader.bool()?,
+                success: reader.bool()?,
+            },
+            16 => Self::FileTransfer {
+                target_id: reader.string()?,
+                transfer_id: reader.u64()?,
+                direction: FileTransferDirection::from_code(reader.u8()?)?,
+                action: FileTransferAction::from_code(reader.u8()?)?,
+                path: reader.string()?,
+                relative_path: reader.string()?,
+                total_bytes: reader.u64()?,
+                transferred_bytes: reader.u64()?,
+                file_size: reader.u64()?,
+                offset: reader.u64()?,
+                bytes: reader.byte_vec()?,
+                message: reader.string()?,
             },
             _ => return Err(ProtocolError::InvalidMessageKind(kind)),
         };
@@ -777,6 +996,9 @@ pub enum ProtocolError {
     InvalidRole,
     InvalidCommand,
     InvalidVideoSource,
+    InvalidCommandOutputStream,
+    InvalidFileTransferDirection,
+    InvalidFileTransferAction,
     InvalidMessageKind(u16),
     InvalidBool(u8),
     InvalidUtf8,
@@ -797,6 +1019,9 @@ impl fmt::Display for ProtocolError {
             Self::InvalidRole => write!(f, "invalid role"),
             Self::InvalidCommand => write!(f, "invalid command"),
             Self::InvalidVideoSource => write!(f, "invalid video source"),
+            Self::InvalidCommandOutputStream => write!(f, "invalid command output stream"),
+            Self::InvalidFileTransferDirection => write!(f, "invalid file transfer direction"),
+            Self::InvalidFileTransferAction => write!(f, "invalid file transfer action"),
             Self::InvalidMessageKind(kind) => write!(f, "invalid message kind: {kind}"),
             Self::InvalidBool(value) => write!(f, "invalid bool byte: {value}"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8 string"),

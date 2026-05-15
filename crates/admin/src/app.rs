@@ -6,15 +6,18 @@ use crate::{
 use base64::Engine;
 use eframe::egui;
 use rdl_protocol::{
-    write_envelope_with_token, ClientInfo, CommandKind, EnvelopeDecoder, Message, Role, VideoSource,
+    write_envelope_with_token, ClientInfo, CommandKind, CommandOutputStream, EnvelopeDecoder,
+    FileTransferAction, FileTransferDirection, Message, Role, VideoSource,
 };
 use std::collections::{HashMap, HashSet};
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read};
 use std::net::{Shutdown, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
     Arc, Mutex,
 };
 use std::thread;
@@ -25,6 +28,9 @@ const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
 const NETWORK_POLL_INTERVAL_MS: u64 = 16;
 const GUI_FRAME_INTERVAL_MS: u64 = 250;
 const NETWORK_IDLE_SLEEP_MS: u64 = 4;
+const FILE_TRANSFER_CHUNK_SIZE: usize = 512 * 1024;
+const ADMIN_INPUT_QUEUE_CAPACITY: usize = 8;
+const MAX_GUI_EVENTS_PER_FRAME: usize = 512;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -39,16 +45,23 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_gui(config: Config) -> eframe::Result {
     disable_macos_automatic_window_tabbing();
 
-    let (input_tx, input_rx) = mpsc::channel();
+    let (input_tx, input_rx) = mpsc::sync_channel(ADMIN_INPUT_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
     let ui_event_tx = event_tx.clone();
     let network_config = config.clone();
     let repaint_handle = Arc::new(Mutex::new(None));
     let network_repaint_handle = repaint_handle.clone();
+    let ignored_file_transfers = Arc::new(Mutex::new(HashSet::new()));
+    let network_ignored_file_transfers = ignored_file_transfers.clone();
 
     thread::spawn(move || {
         let event_sink = AdminEventSink::new(event_tx, Some(network_repaint_handle));
-        if let Err(error) = admin_network_loop(network_config, input_rx, event_sink.clone()) {
+        if let Err(error) = admin_network_loop(
+            network_config,
+            input_rx,
+            event_sink.clone(),
+            network_ignored_file_transfers,
+        ) {
             event_sink.send(AdminEvent::Log(format!("network stopped: {error}")));
         }
     });
@@ -72,6 +85,7 @@ fn run_gui(config: Config) -> eframe::Result {
                 event_rx,
                 ui_event_tx,
                 repaint_handle,
+                ignored_file_transfers,
             )))
         }),
     )
@@ -95,11 +109,14 @@ fn run_terminal(config: Config) -> io::Result<()> {
         config.port
     );
 
-    let (input_tx, input_rx) = mpsc::channel();
+    let (input_tx, input_rx) = mpsc::sync_channel(ADMIN_INPUT_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
+    let ignored_file_transfers = Arc::new(Mutex::new(HashSet::new()));
     thread::spawn(move || {
         let event_sink = AdminEventSink::new(event_tx, None);
-        if let Err(error) = admin_network_loop(config, input_rx, event_sink.clone()) {
+        if let Err(error) =
+            admin_network_loop(config, input_rx, event_sink.clone(), ignored_file_transfers)
+        {
             event_sink.send(AdminEvent::Log(format!("network stopped: {error}")));
         }
     });
@@ -133,6 +150,23 @@ fn run_terminal(config: Config) -> io::Result<()> {
                 accepted,
                 detail
             ),
+            AdminEvent::CommandOutput {
+                client_id,
+                command,
+                stream,
+                chunk,
+                finished,
+                success,
+                ..
+            } => println!(
+                "command_output client={} command={} stream={} finished={} success={} chunk={}",
+                client_id,
+                command.as_str(),
+                stream.as_str(),
+                finished,
+                success,
+                chunk
+            ),
             AdminEvent::DesktopFrame { client_id, payload } => {
                 println!("desktop_frame client={} bytes={}", client_id, payload.len());
             }
@@ -157,6 +191,30 @@ fn run_terminal(config: Config) -> io::Result<()> {
                     bytes.len()
                 );
             }
+            AdminEvent::FileTransfer(message) => {
+                if let Message::FileTransfer {
+                    target_id,
+                    transfer_id,
+                    direction,
+                    action,
+                    total_bytes,
+                    transferred_bytes,
+                    message,
+                    ..
+                } = message
+                {
+                    println!(
+                        "file_transfer client={} id={} direction={} action={} bytes={}/{} message={}",
+                        target_id,
+                        transfer_id,
+                        direction.as_str(),
+                        action.as_str(),
+                        transferred_bytes,
+                        total_bytes,
+                        message
+                    );
+                }
+            }
             AdminEvent::Log(line) => println!("{line}"),
             AdminEvent::Connected => println!("connected"),
             AdminEvent::Disconnected => println!("disconnected"),
@@ -170,10 +228,11 @@ fn admin_network_loop(
     config: Config,
     input_rx: Receiver<AdminInput>,
     event_sink: AdminEventSink,
+    ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
 ) -> io::Result<()> {
     let mut delay = INITIAL_RECONNECT_DELAY_MS;
     loop {
-        match admin_connection_once(&config, &input_rx, &event_sink) {
+        match admin_connection_once(&config, &input_rx, &event_sink, &ignored_file_transfers) {
             Ok(AdminConnectionExit::Quit) => return Ok(()),
             Ok(AdminConnectionExit::Disconnected) => delay = INITIAL_RECONNECT_DELAY_MS,
             Err(error) => {
@@ -197,6 +256,7 @@ fn admin_connection_once(
     config: &Config,
     input_rx: &Receiver<AdminInput>,
     event_sink: &AdminEventSink,
+    ignored_file_transfers: &Arc<Mutex<HashSet<(String, u64)>>>,
 ) -> io::Result<AdminConnectionExit> {
     let identity = load_admin_identity();
     let mut stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
@@ -276,6 +336,14 @@ fn admin_connection_once(
                         payload,
                     },
                 ),
+                AdminInput::FileTransfer(message) => {
+                    send(&mut stream, &mut next_message_id, &session_token, message)
+                }
+                AdminInput::Reconnect { reason } => {
+                    eprintln!("debug event=admin_reconnect_request reason={reason}");
+                    let _ = stream.shutdown(Shutdown::Both);
+                    return Ok(AdminConnectionExit::Disconnected);
+                }
                 AdminInput::Quit => {
                     let _ = stream.shutdown(Shutdown::Both);
                     return Ok(AdminConnectionExit::Quit);
@@ -317,6 +385,29 @@ fn admin_connection_once(
                     detail,
                 });
             }
+            Message::CommandOutput {
+                client_id,
+                command,
+                stream_id,
+                sequence,
+                stream,
+                chunk,
+                current_dir,
+                finished,
+                success,
+            } => {
+                event_sink.send(AdminEvent::CommandOutput {
+                    client_id,
+                    command,
+                    stream_id,
+                    sequence,
+                    stream,
+                    chunk,
+                    current_dir,
+                    finished,
+                    success,
+                });
+            }
             Message::DesktopFrame { client_id, payload } => {
                 event_sink.send(AdminEvent::DesktopFrame { client_id, payload });
             }
@@ -342,6 +433,25 @@ fn admin_connection_once(
                     format,
                     bytes,
                 });
+            }
+            message @ Message::FileTransfer { .. } => {
+                if let Message::FileTransfer {
+                    target_id,
+                    transfer_id,
+                    action,
+                    ..
+                } = &message
+                {
+                    if admin_network_should_ignore_file_transfer(
+                        ignored_file_transfers,
+                        target_id,
+                        *transfer_id,
+                        *action,
+                    ) {
+                        continue;
+                    }
+                }
+                event_sink.send(AdminEvent::FileTransfer(message));
             }
             Message::Ping => send(
                 &mut stream,
@@ -377,9 +487,65 @@ fn wait_for_session(stream: &mut TcpStream, event_sink: &AdminEventSink) -> io::
     }
 }
 
+fn admin_network_should_ignore_file_transfer(
+    ignored_file_transfers: &Arc<Mutex<HashSet<(String, u64)>>>,
+    client_id: &str,
+    transfer_id: u64,
+    action: FileTransferAction,
+) -> bool {
+    let key = (client_id.to_string(), transfer_id);
+    let Ok(mut ignored) = ignored_file_transfers.lock() else {
+        return false;
+    };
+    if !ignored.contains(&key) {
+        return false;
+    }
+    if !matches!(
+        action,
+        FileTransferAction::Directory | FileTransferAction::Chunk
+    ) {
+        eprintln!(
+            "debug event=admin_file_transfer_ignore client={} id={} action={}",
+            client_id,
+            transfer_id,
+            action.as_str()
+        );
+    }
+    if matches!(
+        action,
+        FileTransferAction::Complete | FileTransferAction::Error
+    ) {
+        ignored.remove(&key);
+    }
+    true
+}
+
+fn should_log_admin_file_transfer_event(action: FileTransferAction, message: &str) -> bool {
+    matches!(
+        action,
+        FileTransferAction::Start
+            | FileTransferAction::Cancel
+            | FileTransferAction::Complete
+            | FileTransferAction::Error
+    ) || !message.trim().is_empty()
+}
+
+fn sanitize_log_value(value: &str) -> String {
+    let mut value = value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    const MAX_LOG_VALUE_LEN: usize = 180;
+    if value.len() > MAX_LOG_VALUE_LEN {
+        value.truncate(MAX_LOG_VALUE_LEN);
+        value.push_str("...");
+    }
+    value
+}
+
 struct AdminApp {
     config: Config,
-    input_tx: Sender<AdminInput>,
+    input_tx: SyncSender<AdminInput>,
     event_rx: Receiver<AdminEvent>,
     event_tx: Sender<AdminEvent>,
     repaint_handle: Arc<Mutex<Option<egui::Context>>>,
@@ -393,6 +559,8 @@ struct AdminApp {
     camera_windows: Vec<live_control::camera::CameraWindow>,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
+    file_transfer_cancel_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+    ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
 }
 
@@ -443,10 +611,11 @@ impl AdminApp {
     fn new(
         cc: &eframe::CreationContext<'_>,
         config: Config,
-        input_tx: Sender<AdminInput>,
+        input_tx: SyncSender<AdminInput>,
         event_rx: Receiver<AdminEvent>,
         event_tx: Sender<AdminEvent>,
         repaint_handle: Arc<Mutex<Option<egui::Context>>>,
+        ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     ) -> Self {
         apply_admin_theme(&cc.egui_ctx);
         if let Ok(mut handle) = repaint_handle.lock() {
@@ -468,6 +637,8 @@ impl AdminApp {
             camera_windows: Vec::new(),
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
+            file_transfer_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            ignored_file_transfers,
             log_lines: vec![timestamped_log(format!(
                 "admin gui started version={}",
                 rdl_version::display_version()
@@ -479,7 +650,12 @@ impl AdminApp {
         let mut changed = false;
         let mut latest_desktop_frames = HashMap::<String, String>::new();
         let mut latest_camera_frames = HashMap::<String, String>::new();
-        while let Ok(event) = self.event_rx.try_recv() {
+        let mut processed_events = 0usize;
+        while processed_events < MAX_GUI_EVENTS_PER_FRAME {
+            let Ok(event) = self.event_rx.try_recv() else {
+                break;
+            };
+            processed_events += 1;
             changed = true;
             match event {
                 AdminEvent::Connected => {
@@ -563,6 +739,78 @@ impl AdminApp {
                     format,
                     bytes,
                 ),
+                AdminEvent::CommandOutput {
+                    client_id,
+                    command,
+                    stream_id,
+                    sequence,
+                    stream,
+                    chunk,
+                    current_dir,
+                    finished,
+                    success,
+                } => self.handle_command_output(
+                    client_id,
+                    command,
+                    stream_id,
+                    sequence,
+                    stream,
+                    chunk,
+                    current_dir,
+                    finished,
+                    success,
+                ),
+                AdminEvent::FileTransfer(message) => {
+                    if let Message::FileTransfer {
+                        target_id,
+                        transfer_id,
+                        direction,
+                        action,
+                        total_bytes,
+                        transferred_bytes,
+                        message: status_message,
+                        ..
+                    } = &message
+                    {
+                        if should_log_admin_file_transfer_event(*action, status_message) {
+                            eprintln!(
+                                "debug event=admin_file_transfer_recv client={} id={} direction={} action={} bytes={}/{} message={}",
+                                target_id,
+                                transfer_id,
+                                direction.as_str(),
+                                action.as_str(),
+                                transferred_bytes,
+                                total_bytes,
+                                sanitize_log_value(status_message)
+                            );
+                        }
+                        if *action == FileTransferAction::Error {
+                            if let Ok(flags) = self.file_transfer_cancel_flags.lock() {
+                                if let Some(flag) = flags.get(transfer_id) {
+                                    flag.store(true, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        if self.should_ignore_file_transfer(target_id, *transfer_id) {
+                            if matches!(
+                                *action,
+                                FileTransferAction::Complete | FileTransferAction::Error
+                            ) {
+                                self.unignore_file_transfer(target_id, *transfer_id);
+                            }
+                            continue;
+                        }
+                        let client_id = target_id.clone();
+                        let (hostname, username) = self.client_window_identity(&client_id);
+                        remote_management::file_manager::handle_transfer(
+                            &mut self.file_manager_windows,
+                            &client_id,
+                            hostname,
+                            username,
+                            message,
+                        );
+                    }
+                }
                 AdminEvent::Log(line) => self.push_log(line),
             }
         }
@@ -577,6 +825,29 @@ impl AdminApp {
             self.spawn_camera_frame_decode(client_id, payload);
         }
         changed
+    }
+
+    fn ignore_file_transfer(&self, client_id: &str, transfer_id: u64) {
+        if let Ok(mut ignored) = self.ignored_file_transfers.lock() {
+            ignored.insert((client_id.to_string(), transfer_id));
+        }
+        eprintln!("debug event=admin_file_transfer_ignore_add client={client_id} id={transfer_id}");
+    }
+
+    fn unignore_file_transfer(&self, client_id: &str, transfer_id: u64) {
+        if let Ok(mut ignored) = self.ignored_file_transfers.lock() {
+            ignored.remove(&(client_id.to_string(), transfer_id));
+        }
+        eprintln!(
+            "debug event=admin_file_transfer_ignore_remove client={client_id} id={transfer_id}"
+        );
+    }
+
+    fn should_ignore_file_transfer(&self, client_id: &str, transfer_id: u64) -> bool {
+        self.ignored_file_transfers
+            .lock()
+            .map(|ignored| ignored.contains(&(client_id.to_string(), transfer_id)))
+            .unwrap_or(false)
     }
 
     fn spawn_desktop_frame_decode(&self, client_id: String, payload: String) {
@@ -635,7 +906,9 @@ impl AdminApp {
     }
 
     fn push_log(&mut self, line: impl Into<String>) {
-        self.log_lines.push(timestamped_log(line));
+        let line = timestamped_log(line);
+        eprintln!("{line}");
+        self.log_lines.push(line);
         prune_activity_logs(&mut self.log_lines);
     }
 
@@ -926,6 +1199,43 @@ impl AdminApp {
             username,
             accepted,
             detail,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_command_output(
+        &mut self,
+        client_id: String,
+        command: CommandKind,
+        stream_id: u64,
+        sequence: u64,
+        stream: CommandOutputStream,
+        chunk: String,
+        current_dir: String,
+        finished: bool,
+        success: bool,
+    ) {
+        if command != CommandKind::RemoteTerminal {
+            self.push_log(format!(
+                "ignored command output client={} command={}",
+                client_id,
+                command.as_str()
+            ));
+            return;
+        }
+        let (hostname, username) = self.client_window_identity(&client_id);
+        remote_management::remote_terminal::handle_output(
+            &mut self.terminal_windows,
+            &client_id,
+            hostname,
+            username,
+            stream_id,
+            sequence,
+            stream,
+            chunk,
+            current_dir,
+            finished,
+            success,
         );
     }
 
@@ -1308,12 +1618,177 @@ impl AdminApp {
         for outbound in
             remote_management::file_manager::render_windows(ctx, &mut self.file_manager_windows)
         {
-            let _ = self.input_tx.send(AdminInput::Command {
-                target_id: outbound.client_id.clone(),
-                command: CommandKind::FileManager,
-                payload: outbound.payload,
-            });
-            self.push_log(format!("sent file_manager to {}", outbound.client_id));
+            if let Some(request) =
+                remote_management::file_manager::parse_transfer_request(&outbound.payload)
+            {
+                self.handle_file_transfer_request(outbound.client_id.clone(), request);
+            } else {
+                let input_tx = self.input_tx.clone();
+                let client_id = outbound.client_id.clone();
+                let action = payload_field(&outbound.payload, "action")
+                    .unwrap_or_else(|| "list".to_string());
+                let path = payload_field(&outbound.payload, "path").unwrap_or_default();
+                eprintln!(
+                    "debug event=admin_file_manager_send client={} action={} path={}",
+                    outbound.client_id, action, path
+                );
+                thread::spawn(move || {
+                    let _ = input_tx.send(AdminInput::Command {
+                        target_id: client_id,
+                        command: CommandKind::FileManager,
+                        payload: outbound.payload,
+                    });
+                });
+                self.push_log(format!("sent file_manager to {}", outbound.client_id));
+            }
+        }
+    }
+
+    fn handle_file_transfer_request(
+        &mut self,
+        client_id: String,
+        request: remote_management::file_manager::FileTransferRequest,
+    ) {
+        match request {
+            remote_management::file_manager::FileTransferRequest::Upload {
+                transfer_id,
+                local_path,
+                remote_path,
+            } => {
+                self.unignore_file_transfer(&client_id, transfer_id);
+                eprintln!(
+                    "debug event=admin_file_transfer_request client={} id={} direction=upload local_path={} remote_path={}",
+                    client_id, transfer_id, local_path, remote_path
+                );
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                if let Ok(mut flags) = self.file_transfer_cancel_flags.lock() {
+                    flags.insert(transfer_id, cancel_flag.clone());
+                }
+                let input_tx = self.input_tx.clone();
+                let flags = self.file_transfer_cancel_flags.clone();
+                let sink =
+                    AdminEventSink::new(self.event_tx.clone(), Some(self.repaint_handle.clone()));
+                let worker_client_id = client_id.clone();
+                thread::spawn(move || {
+                    let result = run_file_upload_transfer(
+                        &input_tx,
+                        &worker_client_id,
+                        transfer_id,
+                        &local_path,
+                        &remote_path,
+                        cancel_flag,
+                    );
+                    if let Ok(mut flags) = flags.lock() {
+                        flags.remove(&transfer_id);
+                    }
+                    if let Err(error) = result {
+                        let _ = send_upload_cancel(
+                            &input_tx,
+                            &worker_client_id,
+                            transfer_id,
+                            &remote_path,
+                        );
+                        if error.kind() == io::ErrorKind::Interrupted {
+                            return;
+                        }
+                        sink.send(AdminEvent::FileTransfer(file_transfer_message(
+                            worker_client_id,
+                            transfer_id,
+                            FileTransferDirection::Upload,
+                            FileTransferAction::Error,
+                            remote_path.clone(),
+                            String::new(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            Vec::new(),
+                            format!("upload failed: {error}"),
+                        )));
+                    }
+                });
+                self.push_log(format!(
+                    "queued file upload id={transfer_id} to {client_id}"
+                ));
+            }
+            remote_management::file_manager::FileTransferRequest::Download {
+                transfer_id,
+                remote_path,
+                local_dir,
+            } => {
+                self.unignore_file_transfer(&client_id, transfer_id);
+                eprintln!(
+                    "debug event=admin_file_transfer_request client={} id={} direction=download remote_path={} local_dir={}",
+                    client_id, transfer_id, remote_path, local_dir
+                );
+                let input_tx = self.input_tx.clone();
+                let download_message = file_transfer_message(
+                    client_id.clone(),
+                    transfer_id,
+                    FileTransferDirection::Download,
+                    FileTransferAction::Start,
+                    remote_path,
+                    String::new(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Vec::new(),
+                    local_dir,
+                );
+                thread::spawn(move || {
+                    let _ = send_file_transfer_input(&input_tx, download_message);
+                });
+                self.push_log(format!(
+                    "queued file download id={transfer_id} from {client_id}"
+                ));
+            }
+            remote_management::file_manager::FileTransferRequest::Cancel {
+                transfer_id,
+                direction,
+                remote_path,
+            } => {
+                let should_reconnect_after_cancel = direction == FileTransferDirection::Download;
+                self.ignore_file_transfer(&client_id, transfer_id);
+                eprintln!(
+                    "debug event=admin_file_transfer_request client={} id={} direction={} action=cancel remote_path={}",
+                    client_id,
+                    transfer_id,
+                    direction.as_str(),
+                    remote_path
+                );
+                if let Ok(flags) = self.file_transfer_cancel_flags.lock() {
+                    if let Some(flag) = flags.get(&transfer_id) {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                }
+                let input_tx = self.input_tx.clone();
+                let cancel_message = file_transfer_message(
+                    client_id.clone(),
+                    transfer_id,
+                    direction,
+                    FileTransferAction::Cancel,
+                    remote_path,
+                    String::new(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Vec::new(),
+                    "cancel requested".to_string(),
+                );
+                thread::spawn(move || {
+                    let _ = send_file_transfer_input(&input_tx, cancel_message);
+                    if should_reconnect_after_cancel {
+                        let _ = input_tx.send(AdminInput::Reconnect {
+                            reason: format!("cancelled download transfer id={transfer_id}"),
+                        });
+                    }
+                });
+                self.push_log(format!(
+                    "cancel file transfer id={transfer_id} on {client_id}"
+                ));
+            }
         }
     }
 
@@ -2477,7 +2952,7 @@ fn empty_state(ui: &mut egui::Ui) {
     ui.add_space(48.0);
 }
 
-fn terminal_input_loop(input_tx: Sender<AdminInput>) {
+fn terminal_input_loop(input_tx: SyncSender<AdminInput>) {
     println!("commands:");
     println!("  list");
     println!("  cmd <client-id> <command-kind> [payload]");
@@ -2525,6 +3000,267 @@ fn video_stream_payload(payload: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn payload_field(payload: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.trim().to_string())
+}
+
+fn run_file_upload_transfer(
+    input_tx: &SyncSender<AdminInput>,
+    client_id: &str,
+    transfer_id: u64,
+    local_path: &str,
+    remote_path: &str,
+    cancel_flag: Arc<AtomicBool>,
+) -> io::Result<()> {
+    let source = PathBuf::from(local_path);
+    let metadata = fs::metadata(&source)?;
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    collect_upload_entries(&source, Path::new(""), &metadata, &mut dirs, &mut files)?;
+    let total_bytes = files.iter().map(|file| file.size).sum::<u64>();
+    let mut transferred_bytes = 0u64;
+
+    send_file_transfer_input_cancelable(
+        input_tx,
+        file_transfer_message(
+            client_id.to_string(),
+            transfer_id,
+            FileTransferDirection::Upload,
+            FileTransferAction::Start,
+            remote_path.to_string(),
+            String::new(),
+            total_bytes,
+            0,
+            0,
+            0,
+            Vec::new(),
+            "upload started".to_string(),
+        ),
+        &cancel_flag,
+    )?;
+
+    for dir in dirs {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return send_upload_cancel(input_tx, client_id, transfer_id, remote_path);
+        }
+        send_file_transfer_input_cancelable(
+            input_tx,
+            file_transfer_message(
+                client_id.to_string(),
+                transfer_id,
+                FileTransferDirection::Upload,
+                FileTransferAction::Directory,
+                remote_path.to_string(),
+                protocol_relative_path(&dir),
+                total_bytes,
+                transferred_bytes,
+                0,
+                0,
+                Vec::new(),
+                String::new(),
+            ),
+            &cancel_flag,
+        )?;
+    }
+
+    let mut buffer = vec![0u8; FILE_TRANSFER_CHUNK_SIZE];
+    for file in files {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return send_upload_cancel(input_tx, client_id, transfer_id, remote_path);
+        }
+        let mut input = File::open(&file.path)?;
+        let mut offset = 0u64;
+        let relative_path = protocol_relative_path(&file.relative);
+        loop {
+            if cancel_flag.load(Ordering::Relaxed) {
+                return send_upload_cancel(input_tx, client_id, transfer_id, remote_path);
+            }
+            let count = input.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            transferred_bytes = transferred_bytes.saturating_add(count as u64);
+            send_file_transfer_input_cancelable(
+                input_tx,
+                file_transfer_message(
+                    client_id.to_string(),
+                    transfer_id,
+                    FileTransferDirection::Upload,
+                    FileTransferAction::Chunk,
+                    remote_path.to_string(),
+                    relative_path.clone(),
+                    total_bytes,
+                    transferred_bytes,
+                    file.size,
+                    offset,
+                    buffer[..count].to_vec(),
+                    String::new(),
+                ),
+                &cancel_flag,
+            )?;
+            offset = offset.saturating_add(count as u64);
+        }
+    }
+
+    send_file_transfer_input_cancelable(
+        input_tx,
+        file_transfer_message(
+            client_id.to_string(),
+            transfer_id,
+            FileTransferDirection::Upload,
+            FileTransferAction::Finish,
+            remote_path.to_string(),
+            String::new(),
+            total_bytes,
+            transferred_bytes,
+            0,
+            0,
+            Vec::new(),
+            "upload finished".to_string(),
+        ),
+        &cancel_flag,
+    )
+}
+
+fn send_upload_cancel(
+    input_tx: &SyncSender<AdminInput>,
+    client_id: &str,
+    transfer_id: u64,
+    remote_path: &str,
+) -> io::Result<()> {
+    send_file_transfer_input(
+        input_tx,
+        file_transfer_message(
+            client_id.to_string(),
+            transfer_id,
+            FileTransferDirection::Upload,
+            FileTransferAction::Cancel,
+            remote_path.to_string(),
+            String::new(),
+            0,
+            0,
+            0,
+            0,
+            Vec::new(),
+            "upload cancelled".to_string(),
+        ),
+    )
+}
+
+#[derive(Clone)]
+struct UploadFileEntry {
+    path: PathBuf,
+    relative: PathBuf,
+    size: u64,
+}
+
+fn collect_upload_entries(
+    path: &Path,
+    relative: &Path,
+    metadata: &fs::Metadata,
+    dirs: &mut Vec<PathBuf>,
+    files: &mut Vec<UploadFileEntry>,
+) -> io::Result<()> {
+    if metadata.is_dir() {
+        dirs.push(relative.to_path_buf());
+        let mut children = fs::read_dir(path)?.flatten().collect::<Vec<_>>();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let child_metadata = child.metadata()?;
+            let child_relative = relative.join(child.file_name());
+            collect_upload_entries(&child.path(), &child_relative, &child_metadata, dirs, files)?;
+        }
+    } else {
+        files.push(UploadFileEntry {
+            path: path.to_path_buf(),
+            relative: relative.to_path_buf(),
+            size: metadata.len(),
+        });
+    }
+    Ok(())
+}
+
+fn protocol_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn send_file_transfer_input(input_tx: &SyncSender<AdminInput>, message: Message) -> io::Result<()> {
+    input_tx
+        .send(AdminInput::FileTransfer(message))
+        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))
+}
+
+fn send_file_transfer_input_cancelable(
+    input_tx: &SyncSender<AdminInput>,
+    message: Message,
+    cancel_flag: &AtomicBool,
+) -> io::Result<()> {
+    let mut input = AdminInput::FileTransfer(message);
+    loop {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "file upload cancelled",
+            ));
+        }
+        match input_tx.try_send(input) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Full(returned)) => {
+                input = returned;
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(TrySendError::Disconnected(returned)) => {
+                drop(returned);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "admin input queue disconnected",
+                ));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn file_transfer_message(
+    target_id: String,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    action: FileTransferAction,
+    path: String,
+    relative_path: String,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    file_size: u64,
+    offset: u64,
+    bytes: Vec<u8>,
+    message: String,
+) -> Message {
+    Message::FileTransfer {
+        target_id,
+        transfer_id,
+        direction,
+        action,
+        path,
+        relative_path,
+        total_bytes,
+        transferred_bytes,
+        file_size,
+        offset,
+        bytes,
+        message,
+    }
+}
+
 fn send(
     writer: &mut TcpStream,
     next_message_id: &mut u64,
@@ -2563,6 +3299,10 @@ enum AdminInput {
         source: VideoSource,
         payload: String,
     },
+    FileTransfer(Message),
+    Reconnect {
+        reason: String,
+    },
     Quit,
 }
 
@@ -2575,6 +3315,17 @@ enum AdminEvent {
         command: CommandKind,
         accepted: bool,
         detail: String,
+    },
+    CommandOutput {
+        client_id: String,
+        command: CommandKind,
+        stream_id: u64,
+        sequence: u64,
+        stream: CommandOutputStream,
+        chunk: String,
+        current_dir: String,
+        finished: bool,
+        success: bool,
     },
     DesktopFrame {
         client_id: String,
@@ -2599,6 +3350,7 @@ enum AdminEvent {
         format: String,
         bytes: Vec<u8>,
     },
+    FileTransfer(Message),
     Log(String),
 }
 

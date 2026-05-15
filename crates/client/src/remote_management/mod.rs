@@ -4,6 +4,9 @@ use rdl_protocol::CommandKind;
 mod file_manager;
 mod remote_terminal;
 
+pub(crate) use file_manager::handle_transfer as handle_file_transfer;
+pub(crate) use remote_terminal::execute_streaming as execute_terminal_streaming;
+
 pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {
         CommandKind::ActiveConnections => active_connections(),

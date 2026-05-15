@@ -1,5 +1,8 @@
-use rdl_protocol::{now_epoch_ms, read_envelope, write_envelope, ClientInfo, Message, Role};
-use std::collections::HashMap;
+use rdl_protocol::{
+    now_epoch_ms, read_envelope, write_envelope, ClientInfo, FileTransferAction,
+    FileTransferDirection, Message, Role,
+};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -9,12 +12,13 @@ use std::time::Duration;
 const HEARTBEAT_INTERVAL_MS: u128 = 10_000;
 const STALE_PEER_MS: u128 = 45_000;
 const MAINTENANCE_TICK_MS: u64 = 100;
+const WRITER_BULK_POLL_MS: u64 = 2;
 
 #[derive(Debug)]
 enum ServerEvent {
     Connected {
         peer_id: usize,
-        sender: Sender<Message>,
+        sender: PeerSender,
         peer_addr: String,
     },
     Registered {
@@ -34,19 +38,37 @@ enum ServerEvent {
     },
 }
 
+#[derive(Clone, Debug)]
+struct PeerSender {
+    high: Sender<Message>,
+    bulk: Sender<Message>,
+}
+
+impl PeerSender {
+    fn send(&self, message: Message) -> Result<(), mpsc::SendError<Message>> {
+        if server_message_is_bulk(&message) {
+            self.bulk.send(message)
+        } else {
+            self.high.send(message)
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Peer {
     role: Option<Role>,
     identity: Option<String>,
     fingerprint: Option<String>,
     session_token: Option<String>,
-    sender: Sender<Message>,
+    sender: PeerSender,
     client_info: Option<ClientInfo>,
     peer_addr: String,
     last_seen_epoch_ms: u128,
     last_heartbeat_epoch_ms: u128,
     last_ping_epoch_ms: u128,
 }
+
+type FileTransferKey = (String, u64, &'static str);
 
 fn main() -> io::Result<()> {
     let config = Config::from_env();
@@ -86,11 +108,15 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
     if let Err(error) = stream.set_nodelay(true) {
         eprintln!("peer {peer_id} set TCP_NODELAY failed: {error}");
     }
-    let (out_tx, out_rx) = mpsc::channel::<Message>();
+    let (high_tx, high_rx) = mpsc::channel::<Message>();
+    let (bulk_tx, bulk_rx) = mpsc::channel::<Message>();
     if events_tx
         .send(ServerEvent::Connected {
             peer_id,
-            sender: out_tx,
+            sender: PeerSender {
+                high: high_tx,
+                bulk: bulk_tx,
+            },
             peer_addr,
         })
         .is_err()
@@ -106,7 +132,7 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
         }
     };
 
-    thread::spawn(move || writer_loop(peer_id, writer, out_rx));
+    thread::spawn(move || writer_loop(peer_id, writer, high_rx, bulk_rx));
 
     let mut reader = stream;
     loop {
@@ -164,20 +190,91 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
     let _ = events_tx.send(ServerEvent::Disconnected { peer_id });
 }
 
-fn writer_loop(peer_id: usize, mut writer: TcpStream, out_rx: Receiver<Message>) {
+fn writer_loop(
+    peer_id: usize,
+    mut writer: TcpStream,
+    high_rx: Receiver<Message>,
+    bulk_rx: Receiver<Message>,
+) {
     let mut next_message_id = 1u64;
-    for message in out_rx {
-        let result = write_envelope(&mut writer, Role::Server, next_message_id, None, message);
-        next_message_id = next_message_id.saturating_add(1);
-        if let Err(error) = result {
-            eprintln!("peer {peer_id} write failed: {error}");
-            break;
+    let mut high_open = true;
+    let mut bulk_open = true;
+    while high_open || bulk_open {
+        loop {
+            match high_rx.try_recv() {
+                Ok(message) => {
+                    if !write_server_message(peer_id, &mut writer, &mut next_message_id, message) {
+                        return;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    high_open = false;
+                    break;
+                }
+            }
+        }
+
+        if !bulk_open {
+            match high_rx.recv_timeout(Duration::from_millis(WRITER_BULK_POLL_MS)) {
+                Ok(message) => {
+                    high_open = true;
+                    if !write_server_message(peer_id, &mut writer, &mut next_message_id, message) {
+                        return;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => high_open = false,
+            }
+            continue;
+        }
+
+        match bulk_rx.recv_timeout(Duration::from_millis(WRITER_BULK_POLL_MS)) {
+            Ok(message) => {
+                if !write_server_message(peer_id, &mut writer, &mut next_message_id, message) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if !high_open && !bulk_open {
+                    break;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => bulk_open = false,
         }
     }
 }
 
+fn write_server_message(
+    peer_id: usize,
+    writer: &mut TcpStream,
+    next_message_id: &mut u64,
+    message: Message,
+) -> bool {
+    let result = write_envelope(writer, Role::Server, *next_message_id, None, message);
+    *next_message_id = next_message_id.saturating_add(1);
+    if let Err(error) = result {
+        eprintln!("peer {peer_id} write failed: {error}");
+        return false;
+    }
+    true
+}
+
+fn server_message_is_bulk(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::FileTransfer {
+            action: FileTransferAction::Directory
+                | FileTransferAction::Chunk
+                | FileTransferAction::Progress,
+            ..
+        }
+    )
+}
+
 fn event_loop(events_rx: Receiver<ServerEvent>) {
     let mut peers: HashMap<usize, Peer> = HashMap::new();
+    let mut cancelled_file_transfers = HashSet::<FileTransferKey>::new();
 
     loop {
         let event = match events_rx.recv_timeout(Duration::from_millis(MAINTENANCE_TICK_MS)) {
@@ -274,12 +371,24 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                         payload,
                     } => {
                         mark_seen(peer_id, &mut peers);
-                        println!(
-                            "audit event=command peer=#{peer_id} identity={} target={} command={}",
-                            peer_identity(peer_id, &peers),
-                            target_id,
-                            command.as_str()
-                        );
+                        if command.as_str() == "file_manager" {
+                            println!(
+                                "audit event=command peer=#{peer_id} identity={} target={} command={} action={} path={}",
+                                peer_identity(peer_id, &peers),
+                                target_id,
+                                command.as_str(),
+                                payload_field(&payload, "action")
+                                    .unwrap_or_else(|| "list".to_string()),
+                                payload_field(&payload, "path").unwrap_or_default()
+                            );
+                        } else {
+                            println!(
+                                "audit event=command peer=#{peer_id} identity={} target={} command={}",
+                                peer_identity(peer_id, &peers),
+                                target_id,
+                                command.as_str()
+                            );
+                        }
                         let detail = route_command(&peers, &target_id, command.clone(), payload);
                         if let Some(peer) = peers.get(&peer_id) {
                             let _ = peer.sender.send(Message::CommandAck {
@@ -311,6 +420,143 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                         for peer in peers.values() {
                             if peer.role == Some(Role::Admin) {
                                 let _ = peer.sender.send(message.clone());
+                            }
+                        }
+                    }
+                    Message::CommandOutput {
+                        client_id,
+                        command,
+                        stream_id,
+                        sequence,
+                        stream,
+                        chunk,
+                        current_dir,
+                        finished,
+                        success,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        if finished {
+                            let identity = peer_identity(peer_id, &peers);
+                            println!(
+                                "audit event=command_output_finished peer=#{peer_id} identity={identity} client={client_id} command={} success={success}",
+                                command.as_str()
+                            );
+                        }
+                        let message = Message::CommandOutput {
+                            client_id,
+                            command,
+                            stream_id,
+                            sequence,
+                            stream,
+                            chunk,
+                            current_dir,
+                            finished,
+                            success,
+                        };
+                        for peer in peers.values() {
+                            if peer.role == Some(Role::Admin) {
+                                let _ = peer.sender.send(message.clone());
+                            }
+                        }
+                    }
+                    Message::FileTransfer {
+                        target_id,
+                        transfer_id,
+                        direction,
+                        action,
+                        path,
+                        relative_path,
+                        total_bytes,
+                        transferred_bytes,
+                        file_size,
+                        offset,
+                        bytes,
+                        message: status_message,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        let source_role = peers.get(&peer_id).and_then(|peer| peer.role.as_ref());
+                        let key = file_transfer_key(&target_id, transfer_id, direction);
+                        if source_role == Some(&Role::Admin) {
+                            match action {
+                                FileTransferAction::Start => {
+                                    cancelled_file_transfers.remove(&key);
+                                }
+                                FileTransferAction::Cancel => {
+                                    cancelled_file_transfers.insert(key.clone());
+                                }
+                                _ if cancelled_file_transfers.contains(&key) => {
+                                    log_file_transfer_drop(
+                                        peer_id,
+                                        &peers,
+                                        &target_id,
+                                        transfer_id,
+                                        direction,
+                                        action,
+                                        "cancelled_admin_send",
+                                    );
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        } else if cancelled_file_transfers.contains(&key) {
+                            log_file_transfer_drop(
+                                peer_id,
+                                &peers,
+                                &target_id,
+                                transfer_id,
+                                direction,
+                                action,
+                                "cancelled",
+                            );
+                            if matches!(
+                                action,
+                                FileTransferAction::Complete | FileTransferAction::Error
+                            ) {
+                                cancelled_file_transfers.remove(&key);
+                            }
+                            continue;
+                        } else if matches!(
+                            action,
+                            FileTransferAction::Complete | FileTransferAction::Error
+                        ) {
+                            cancelled_file_transfers.remove(&key);
+                        }
+                        log_file_transfer(
+                            peer_id,
+                            &peers,
+                            &target_id,
+                            transfer_id,
+                            direction,
+                            action,
+                            total_bytes,
+                            transferred_bytes,
+                            &status_message,
+                        );
+                        let message = Message::FileTransfer {
+                            target_id,
+                            transfer_id,
+                            direction,
+                            action,
+                            path,
+                            relative_path,
+                            total_bytes,
+                            transferred_bytes,
+                            file_size,
+                            offset,
+                            bytes,
+                            message: status_message,
+                        };
+                        if peers.get(&peer_id).and_then(|peer| peer.role.as_ref())
+                            == Some(&Role::Admin)
+                        {
+                            if let Some(error) = route_file_transfer_to_client(&peers, &message) {
+                                send_file_transfer_error(peer_id, &message, error, &peers);
+                            }
+                        } else {
+                            for peer in peers.values() {
+                                if peer.role == Some(Role::Admin) {
+                                    let _ = peer.sender.send(message.clone());
+                                }
                             }
                         }
                     }
@@ -593,6 +839,141 @@ fn route_video_control_to_client(
         .map(|error| error.to_string())
 }
 
+fn route_file_transfer_to_client(
+    peers: &HashMap<usize, Peer>,
+    message: &Message,
+) -> Option<String> {
+    let Message::FileTransfer { target_id, .. } = message else {
+        return Some("invalid file transfer message".to_string());
+    };
+    let target = peers.values().find(|peer| {
+        peer.role == Some(Role::Client)
+            && peer
+                .client_info
+                .as_ref()
+                .map(|info| info.id == *target_id)
+                .unwrap_or(false)
+    });
+
+    let Some(peer) = target else {
+        return Some(format!("client '{target_id}' is offline"));
+    };
+    peer.sender
+        .send(message.clone())
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn file_transfer_key(
+    client_id: &str,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+) -> FileTransferKey {
+    (client_id.to_string(), transfer_id, direction.as_str())
+}
+
+fn log_file_transfer(
+    peer_id: usize,
+    peers: &HashMap<usize, Peer>,
+    client_id: &str,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    action: FileTransferAction,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    status_message: &str,
+) {
+    if matches!(
+        action,
+        FileTransferAction::Directory | FileTransferAction::Chunk
+    ) {
+        return;
+    }
+    let message = log_message_suffix(status_message);
+    println!(
+        "audit event=file_transfer peer=#{peer_id} identity={} client={} id={} direction={} action={} bytes={}/{}{}",
+        peer_identity(peer_id, peers),
+        client_id,
+        transfer_id,
+        direction.as_str(),
+        action.as_str(),
+        transferred_bytes,
+        total_bytes,
+        message,
+    );
+}
+
+fn log_file_transfer_drop(
+    peer_id: usize,
+    peers: &HashMap<usize, Peer>,
+    client_id: &str,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    action: FileTransferAction,
+    reason: &str,
+) {
+    if !should_log_file_transfer_action(action) {
+        return;
+    }
+    println!(
+        "audit event=file_transfer_drop peer=#{peer_id} identity={} client={} id={} direction={} action={} reason={}",
+        peer_identity(peer_id, peers),
+        client_id,
+        transfer_id,
+        direction.as_str(),
+        action.as_str(),
+        reason,
+    );
+}
+
+fn should_log_file_transfer_action(action: FileTransferAction) -> bool {
+    matches!(
+        action,
+        FileTransferAction::Start
+            | FileTransferAction::Finish
+            | FileTransferAction::Cancel
+            | FileTransferAction::Complete
+            | FileTransferAction::Error
+    )
+}
+
+fn log_message_suffix(message: &str) -> String {
+    let message = message.trim();
+    if message.is_empty() {
+        return String::new();
+    }
+    let mut sanitized = message
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    const MAX_LOG_MESSAGE_LEN: usize = 160;
+    if sanitized.len() > MAX_LOG_MESSAGE_LEN {
+        sanitized.truncate(MAX_LOG_MESSAGE_LEN);
+        sanitized.push_str("...");
+    }
+    format!(" message={sanitized}")
+}
+
+fn payload_field(payload: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| {
+            let mut value = value
+                .trim()
+                .chars()
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect::<String>();
+            const MAX_PAYLOAD_FIELD_LEN: usize = 160;
+            if value.len() > MAX_PAYLOAD_FIELD_LEN {
+                value.truncate(MAX_PAYLOAD_FIELD_LEN);
+                value.push_str("...");
+            }
+            value
+        })
+}
+
 fn send_desktop_error(
     peer_id: usize,
     client_id: &str,
@@ -619,6 +1000,41 @@ fn send_video_error(peer_id: usize, client_id: &str, error: String, peers: &Hash
             image_height: 0,
             format: format!("error:{error}"),
             bytes: Vec::new(),
+        });
+    }
+}
+
+fn send_file_transfer_error(
+    peer_id: usize,
+    message: &Message,
+    error: String,
+    peers: &HashMap<usize, Peer>,
+) {
+    if let (
+        Some(peer),
+        Message::FileTransfer {
+            target_id,
+            transfer_id,
+            direction,
+            path,
+            relative_path,
+            ..
+        },
+    ) = (peers.get(&peer_id), message)
+    {
+        let _ = peer.sender.send(Message::FileTransfer {
+            target_id: target_id.clone(),
+            transfer_id: *transfer_id,
+            direction: *direction,
+            action: rdl_protocol::FileTransferAction::Error,
+            path: path.clone(),
+            relative_path: relative_path.clone(),
+            total_bytes: 0,
+            transferred_bytes: 0,
+            file_size: 0,
+            offset: 0,
+            bytes: Vec::new(),
+            message: error,
         });
     }
 }

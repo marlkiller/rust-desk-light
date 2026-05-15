@@ -25,8 +25,8 @@ TODO: Screenshots will be added later.
 - Command result windows with compact tables, filtering, sorting, copy actions, and row-wide context menus.
 - System information, process list, process kill, performance snapshot, active connections, and event log summary.
 - Clipboard read/write commands.
-- File manager with directory listing, upload, download, delete, rename, new folder, path jump, and parent navigation.
-- Remote terminal with command history, cwd prompt, timeout handling, copy, and clear actions.
+- File manager with directory listing, chunked large file and directory upload/download, progress table, stop/delete transfer actions, delete, rename, new folder, path jump, and parent navigation.
+- Remote terminal with streaming output, cancellation, command history, cwd prompt, copy, and clear actions.
 - Remote desktop viewing with screen selection, quality options, frame coalescing, and binary video frame transport.
 - Remote mouse movement, mouse click, and text input where supported.
 - Camera live view with device selection, quality selection, save-current-frame, and binary video frame transport.

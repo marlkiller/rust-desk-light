@@ -138,13 +138,15 @@ These are useful before full remote desktop because they validate bidirectional 
 
 - [x] Remote terminal command execution with timeout.
 - [x] Improve remote terminal window UX with cwd prompt, command history, copy/clear actions, and safe close handling.
-- [ ] Command output streaming.
+- [x] Command output streaming with remote terminal cancellation.
 - [x] File list for a selected directory.
 - [x] File download.
 - [x] File upload.
+- [x] Large file and directory upload/download through chunked binary file transfer messages.
+- [x] File transfer progress table with stop and delete row actions.
 - [x] File delete, rename, new folder, path jump, and parent directory navigation.
 
-Keep this simple first. Resume, hashing, cancellation, PTY, and permissions can come later.
+Keep this simple first. Resume, hashing, PTY, and permissions can come later.
 
 ## Milestone 7: Screen View First
 
@@ -200,12 +202,12 @@ macOS note:
 - [x] Automatically ad-hoc sign macOS debug builds for `rdl-client`, `rdl-admin`, and `rdl-server`.
 - [ ] General persistent config files beyond identity.
 - [ ] Server config file.
-- [ ] Windows build artifact.
-- [ ] Linux build artifact.
-- [ ] macOS app bundle/release artifact.
+- [x] Windows build artifact.
+- [x] Linux build artifact.
+- [x] macOS release artifact.
 - [ ] macOS Developer ID signing and notarization for release builds.
 - [ ] Optional service/daemon mode.
-- [ ] Basic release script.
+- [x] Basic GitHub Actions release workflow.
 
 ## Not Planned For Now
 

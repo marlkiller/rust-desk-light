@@ -7,13 +7,14 @@ use crate::{
 };
 use eframe::egui;
 use rdl_protocol::{
-    write_envelope_with_token, CommandKind, EnvelopeDecoder, Message, Role, VideoSource,
+    write_envelope_with_token, CommandKind, EnvelopeDecoder, FileTransferAction,
+    FileTransferDirection, Message, Role, VideoSource,
 };
 use std::io;
 use std::net::TcpStream;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self, Receiver, Sender, SyncSender},
     Arc, Mutex,
 };
 use std::thread;
@@ -24,6 +25,9 @@ const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
 const NETWORK_POLL_INTERVAL_MS: u64 = 16;
 const GUI_FRAME_INTERVAL_MS: u64 = 16;
 const NETWORK_IDLE_SLEEP_MS: u64 = 4;
+const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 32;
+const CLIENT_BULK_OUTBOUND_QUEUE_CAPACITY: usize = 2;
+const CLIENT_BULK_POLL_MS: u64 = 2;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -171,8 +175,9 @@ fn client_connection_once(
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(Duration::from_millis(NETWORK_POLL_INTERVAL_MS)))?;
     let writer = stream.try_clone()?;
-    let (out_tx, out_rx) = mpsc::channel();
-    thread::spawn(move || client_writer_loop(writer, out_rx));
+    let (out_tx, out_rx) = mpsc::sync_channel(CLIENT_OUTBOUND_QUEUE_CAPACITY);
+    let (bulk_out_tx, bulk_out_rx) = mpsc::sync_channel(CLIENT_BULK_OUTBOUND_QUEUE_CAPACITY);
+    thread::spawn(move || client_writer_loop(writer, out_rx, bulk_out_rx));
     queue_message(
         &out_tx,
         "",
@@ -247,6 +252,46 @@ fn client_connection_once(
                         text: payload.clone(),
                     });
                 }
+                if command == CommandKind::RemoteTerminal {
+                    let worker_tx = out_tx.clone();
+                    let worker_token = session_token.clone();
+                    thread::spawn(move || {
+                        let client_id = target_id;
+                        let result = crate::remote_management::execute_terminal_streaming(
+                            &payload,
+                            |output| {
+                                queue_message(
+                                    &worker_tx,
+                                    &worker_token,
+                                    Message::CommandOutput {
+                                        client_id: client_id.clone(),
+                                        command: CommandKind::RemoteTerminal,
+                                        stream_id: output.stream_id,
+                                        sequence: output.sequence,
+                                        stream: output.stream,
+                                        chunk: output.chunk,
+                                        current_dir: output.current_dir,
+                                        finished: output.finished,
+                                        success: output.success,
+                                    },
+                                )
+                            },
+                        );
+                        if let Err(error) = result {
+                            let _ = queue_message(
+                                &worker_tx,
+                                &worker_token,
+                                Message::CommandAck {
+                                    client_id,
+                                    command: CommandKind::RemoteTerminal,
+                                    accepted: false,
+                                    detail: format!("remote terminal stream failed: {error}"),
+                                },
+                            );
+                        }
+                    });
+                    continue;
+                }
                 let worker_tx = out_tx.clone();
                 let worker_token = session_token.clone();
                 thread::spawn(move || {
@@ -262,6 +307,32 @@ fn client_connection_once(
                         },
                     );
                 });
+            }
+            message @ Message::FileTransfer {
+                direction: FileTransferDirection::Download,
+                action: FileTransferAction::Start,
+                ..
+            } => {
+                let worker_tx = out_tx.clone();
+                let worker_bulk_tx = bulk_out_tx.clone();
+                let worker_token = session_token.clone();
+                thread::spawn(move || {
+                    let result = crate::remote_management::handle_file_transfer(message, |reply| {
+                        queue_file_transfer_reply(&worker_tx, &worker_bulk_tx, &worker_token, reply)
+                    });
+                    if let Err(error) = result {
+                        eprintln!("file transfer failed: {error}");
+                    }
+                });
+            }
+            message @ Message::FileTransfer { .. } => {
+                if let Err(error) =
+                    crate::remote_management::handle_file_transfer(message, |reply| {
+                        queue_file_transfer_reply(&out_tx, &bulk_out_tx, &session_token, reply)
+                    })
+                {
+                    event_sink.send(ClientEvent::Log(format!("file transfer failed: {error}")));
+                }
             }
             Message::DesktopControl { target_id, payload } => {
                 match remote_desktop_action(&payload).as_deref() {
@@ -458,7 +529,9 @@ impl ClientApp {
     }
 
     fn push_log(&mut self, line: impl Into<String>) {
-        self.log_lines.push(timestamped_log(line));
+        let line = timestamped_log(line);
+        eprintln!("{line}");
+        self.log_lines.push(line);
         prune_activity_logs(&mut self.log_lines);
     }
 
@@ -731,33 +804,91 @@ struct DesktopStreamState {
     generation: std::sync::atomic::AtomicU64,
 }
 
-fn client_writer_loop(mut writer: TcpStream, out_rx: Receiver<ClientOutbound>) {
+fn client_writer_loop(
+    mut writer: TcpStream,
+    out_rx: Receiver<ClientOutbound>,
+    bulk_out_rx: Receiver<ClientOutbound>,
+) {
     let mut next_message_id = 1u64;
-    for outbound in out_rx {
-        let fallback = command_ack_send_failure(&outbound.message);
-        if let Err(error) = send(
-            &mut writer,
-            &mut next_message_id,
-            &outbound.session_token,
-            outbound.message,
-        ) {
-            if let Some(message) = fallback {
-                eprintln!("client write failed, sending command error ack: {error}");
-                if let Err(fallback_error) = send(
-                    &mut writer,
-                    &mut next_message_id,
-                    &outbound.session_token,
-                    message(error),
-                ) {
-                    eprintln!("client fallback write failed: {fallback_error}");
+    let mut out_open = true;
+    let mut bulk_open = true;
+    while out_open || bulk_open {
+        loop {
+            match out_rx.try_recv() {
+                Ok(outbound) => {
+                    if !write_client_outbound(&mut writer, &mut next_message_id, outbound) {
+                        return;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    out_open = false;
                     break;
                 }
-                continue;
             }
-            eprintln!("client write failed: {error}");
-            break;
+        }
+
+        if !bulk_open {
+            match out_rx.recv_timeout(Duration::from_millis(CLIENT_BULK_POLL_MS)) {
+                Ok(outbound) => {
+                    out_open = true;
+                    if !write_client_outbound(&mut writer, &mut next_message_id, outbound) {
+                        return;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => out_open = false,
+            }
+            continue;
+        }
+
+        match bulk_out_rx.recv_timeout(Duration::from_millis(CLIENT_BULK_POLL_MS)) {
+            Ok(outbound) => {
+                if !write_client_outbound(&mut writer, &mut next_message_id, outbound) {
+                    return;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !out_open && !bulk_open {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bulk_open = false;
+            }
         }
     }
+}
+
+fn write_client_outbound(
+    writer: &mut TcpStream,
+    next_message_id: &mut u64,
+    outbound: ClientOutbound,
+) -> bool {
+    let fallback = command_ack_send_failure(&outbound.message);
+    if let Err(error) = send(
+        writer,
+        next_message_id,
+        &outbound.session_token,
+        outbound.message,
+    ) {
+        if let Some(message) = fallback {
+            eprintln!("client write failed, sending command error ack: {error}");
+            if let Err(fallback_error) = send(
+                writer,
+                next_message_id,
+                &outbound.session_token,
+                message(error),
+            ) {
+                eprintln!("client fallback write failed: {fallback_error}");
+                return false;
+            }
+            return true;
+        }
+        eprintln!("client write failed: {error}");
+        return false;
+    }
+    true
 }
 
 fn command_ack_send_failure(
@@ -828,7 +959,7 @@ fn remote_desktop_value(payload: &str, key: &str) -> Option<String> {
 fn remote_desktop_stream_loop(
     client_id: String,
     start_payload: String,
-    out_tx: Sender<ClientOutbound>,
+    out_tx: SyncSender<ClientOutbound>,
     session_token: String,
     stream_state: Arc<DesktopStreamState>,
     generation: u64,
@@ -872,7 +1003,7 @@ fn video_stream_loop(
     client_id: String,
     source: VideoSource,
     start_payload: String,
-    out_tx: Sender<ClientOutbound>,
+    out_tx: SyncSender<ClientOutbound>,
     session_token: String,
     stream_state: Arc<DesktopStreamState>,
     generation: u64,
@@ -982,7 +1113,7 @@ fn video_source_command(source: &VideoSource) -> CommandKind {
 }
 
 fn queue_message(
-    out_tx: &Sender<ClientOutbound>,
+    out_tx: &SyncSender<ClientOutbound>,
     session_token: &str,
     message: Message,
 ) -> io::Result<()> {
@@ -992,6 +1123,79 @@ fn queue_message(
             message,
         })
         .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))
+}
+
+fn queue_file_transfer_reply(
+    out_tx: &SyncSender<ClientOutbound>,
+    bulk_out_tx: &SyncSender<ClientOutbound>,
+    session_token: &str,
+    message: Message,
+) -> io::Result<()> {
+    if file_transfer_reply_is_bulk(&message) {
+        log_client_file_transfer_queue("bulk", &message);
+        queue_message(bulk_out_tx, session_token, message)
+    } else {
+        log_client_file_transfer_queue("high", &message);
+        queue_message(out_tx, session_token, message)
+    }
+}
+
+fn file_transfer_reply_is_bulk(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::FileTransfer {
+            direction: FileTransferDirection::Download,
+            action: FileTransferAction::Directory | FileTransferAction::Chunk,
+            ..
+        }
+    )
+}
+
+fn log_client_file_transfer_queue(queue: &str, message: &Message) {
+    let Message::FileTransfer {
+        target_id,
+        transfer_id,
+        direction,
+        action,
+        total_bytes,
+        transferred_bytes,
+        message,
+        ..
+    } = message
+    else {
+        return;
+    };
+    if matches!(
+        action,
+        FileTransferAction::Directory | FileTransferAction::Chunk
+    ) && message.trim().is_empty()
+    {
+        return;
+    }
+    eprintln!(
+        "debug event=client_file_transfer_queue queue={} client={} id={} direction={} action={} bytes={}/{} message={}",
+        queue,
+        target_id,
+        transfer_id,
+        direction.as_str(),
+        action.as_str(),
+        transferred_bytes,
+        total_bytes,
+        sanitize_log_value(message)
+    );
+}
+
+fn sanitize_log_value(value: &str) -> String {
+    let mut value = value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    const MAX_LOG_VALUE_LEN: usize = 180;
+    if value.len() > MAX_LOG_VALUE_LEN {
+        value.truncate(MAX_LOG_VALUE_LEN);
+        value.push_str("...");
+    }
+    value
 }
 
 fn send(

@@ -7,11 +7,12 @@ PORT="${RDL_PORT:-5169}"
 LOG_DIR="$ROOT_DIR/target/rdl-dev"
 
 mkdir -p "$LOG_DIR"
+: >"$LOG_DIR/server.log"
 
 echo "Building rust-desk-light"
 cargo build --workspace --manifest-path "$ROOT_DIR/Cargo.toml"
 
-SERVER_CMD="cd '$ROOT_DIR' && ./target/debug/rdl-server --ip '$IP' --port '$PORT'"
+SERVER_CMD="cd '$ROOT_DIR' && ./target/debug/rdl-server --ip '$IP' --port '$PORT' 2>&1 | tee '$LOG_DIR/server.log'"
 CLIENT_BIN="$ROOT_DIR/target/debug/rdl-client"
 ADMIN_BIN="$ROOT_DIR/target/debug/rdl-admin"
 
