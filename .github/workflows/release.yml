@@ -26,9 +26,9 @@ jobs:
           - name: linux-x64
             os: ubuntu-latest
           - name: macos-x64
-            os: macos-13
+            os: macos-15-intel
           - name: macos-arm64
-            os: macos-14
+            os: macos-15
           - name: windows-x64
             os: windows-latest
 
@@ -92,38 +92,26 @@ jobs:
       - name: Package Unix artifacts
         if: runner.os != 'Windows'
         run: |
-          package_component() {
-            component="$1"
-            binary="$2"
-            package="rust-desk-light-$component-${{ matrix.name }}"
-            mkdir -p "dist/$package"
-            cp "target/release/$binary" "dist/$package/"
-            cp README.md "dist/$package/"
-            chmod +x "dist/$package/$binary"
-            tar -czf "dist/$package.tar.gz" -C dist "$package"
-          }
-
-          package_component server rdl-server
-          package_component client rdl-client
-          package_component admin rdl-admin
+          package="rust-desk-light-${{ matrix.name }}"
+          mkdir -p "dist/$package"
+          cp target/release/rdl-server "dist/$package/"
+          cp target/release/rdl-client "dist/$package/"
+          cp target/release/rdl-admin "dist/$package/"
+          cp README.md "dist/$package/"
+          chmod +x "dist/$package"/rdl-*
+          tar -czf "dist/$package.tar.gz" -C "dist/$package" .
 
       - name: Package Windows artifacts
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $components = @(
-            @{ Name = "server"; Binary = "rdl-server.exe" },
-            @{ Name = "client"; Binary = "rdl-client.exe" },
-            @{ Name = "admin"; Binary = "rdl-admin.exe" }
-          )
-
-          foreach ($component in $components) {
-            $package = "rust-desk-light-$($component['Name'])-${{ matrix.name }}"
-            New-Item -ItemType Directory -Force -Path "dist\$package" | Out-Null
-            Copy-Item "target\release\$($component['Binary'])" "dist\$package\"
-            Copy-Item "README.md" "dist\$package\"
-            Compress-Archive -Path "dist\$package\*" -DestinationPath "dist\$package.zip"
-          }
+          $package = "rust-desk-light-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path "dist\$package" | Out-Null
+          Copy-Item "target\release\rdl-server.exe" "dist\$package\"
+          Copy-Item "target\release\rdl-client.exe" "dist\$package\"
+          Copy-Item "target\release\rdl-admin.exe" "dist\$package\"
+          Copy-Item "README.md" "dist\$package\"
+          Compress-Archive -Path "dist\$package\*" -DestinationPath "dist\$package.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -159,22 +147,14 @@ jobs:
 
             ### Packages
 
-            | Component | Platform | Package |
-            | --- | --- | --- |
-            | Server | Linux x64 | rust-desk-light-server-linux-x64.tar.gz |
-            | Client | Linux x64 | rust-desk-light-client-linux-x64.tar.gz |
-            | Admin | Linux x64 | rust-desk-light-admin-linux-x64.tar.gz |
-            | Server | macOS x64 | rust-desk-light-server-macos-x64.tar.gz |
-            | Client | macOS x64 | rust-desk-light-client-macos-x64.tar.gz |
-            | Admin | macOS x64 | rust-desk-light-admin-macos-x64.tar.gz |
-            | Server | macOS ARM64 | rust-desk-light-server-macos-arm64.tar.gz |
-            | Client | macOS ARM64 | rust-desk-light-client-macos-arm64.tar.gz |
-            | Admin | macOS ARM64 | rust-desk-light-admin-macos-arm64.tar.gz |
-            | Server | Windows x64 | rust-desk-light-server-windows-x64.zip |
-            | Client | Windows x64 | rust-desk-light-client-windows-x64.zip |
-            | Admin | Windows x64 | rust-desk-light-admin-windows-x64.zip |
+            | Platform | Package |
+            | --- | --- |
+            | Linux x64 | rust-desk-light-linux-x64.tar.gz |
+            | macOS x64 | rust-desk-light-macos-x64.tar.gz |
+            | macOS ARM64 | rust-desk-light-macos-arm64.tar.gz |
+            | Windows x64 | rust-desk-light-windows-x64.zip |
 
-            Each package contains the selected binary and `README.md`.
+            Each package contains `rdl-server`, `rdl-client`, `rdl-admin`, and `README.md`.
             Rust release builds are native binaries, so there is no separate runtime/no-runtime split like .NET.
           draft: false
           prerelease: false

@@ -166,7 +166,15 @@ Pushing a tag like `v0.1.0` creates platform artifacts for:
 - macOS ARM64
 - Windows x64
 
-Each release publishes separate packages for `server`, `client`, and `admin`. Rust release builds are native binaries, so there is no separate runtime/no-runtime split.
+Each release package contains `rdl-server`, `rdl-client`, `rdl-admin`, and `README.md`. Rust release builds are native binaries, so there is no separate runtime/no-runtime split.
+
+On macOS, if a downloaded release binary is blocked by quarantine metadata, clear it after extracting the archive:
+
+```sh
+xattr -cr ./rdl-client
+xattr -cr ./rdl-admin
+xattr -cr ./rdl-server
+```
 
 ## Design Notes
 
