@@ -133,6 +133,7 @@ These are useful before full remote desktop because they validate bidirectional 
 ## Milestone 6: File And Terminal Basics
 
 - [x] Remote terminal command execution with timeout.
+- [x] Improve remote terminal window UX with cwd prompt, command history, copy/clear actions, and safe close handling.
 - [ ] Command output streaming.
 - [x] File list for a selected directory.
 - [x] File download.
