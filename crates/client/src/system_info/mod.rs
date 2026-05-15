@@ -36,13 +36,11 @@ fn os_label() -> String {
         }
     }
     if cfg!(target_os = "windows") {
-        let output = run_powershell(
-            "(Get-CimInstance Win32_OperatingSystem).Caption + ' ' + (Get-CimInstance Win32_OperatingSystem).Version",
-            10,
-        );
-        let trimmed = output.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
+        if let Some(value) = windows_registry_value(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "ProductName",
+        ) {
+            return value;
         }
     }
     if cfg!(target_os = "macos") {
@@ -57,9 +55,11 @@ fn os_label() -> String {
 
 fn kernel_label() -> String {
     if cfg!(target_os = "windows") {
-        return run_powershell("(Get-CimInstance Win32_OperatingSystem).BuildNumber", 10)
-            .trim()
-            .to_string();
+        return windows_registry_value(
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "CurrentBuildNumber",
+        )
+        .unwrap_or_else(|| "unknown".to_string());
     }
     let output = run_command("uname", &["-r"], 10);
     let trimmed = output.trim();
@@ -143,16 +143,22 @@ fn platform_computer_info() -> Vec<String> {
 
 fn windows_computer_info() -> Vec<String> {
     let script = r#"
-$system = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model,TotalPhysicalMemory,Domain,Workgroup
-$os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,OSArchitecture,LastBootUpTime
-$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors
-$ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Where-Object {$_.IPAddress -notlike '169.254*'} |
-  Select-Object InterfaceAlias,IPAddress
+$cv = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+$cs = 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName'
+$product = Get-ItemProperty -Path $cv -ErrorAction SilentlyContinue
+$computer = Get-ItemProperty -Path $cs -ErrorAction SilentlyContinue
+$ip = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+  Where-Object {$_.AddressFamily -eq 'InterNetwork'} |
+  ForEach-Object {$_.IPAddressToString}
 [pscustomobject]@{
-  system = $system
-  os = $os
-  cpu = $cpu
+  product_name = $product.ProductName
+  display_version = $product.DisplayVersion
+  current_build = $product.CurrentBuildNumber
+  ubr = $product.UBR
+  computer_name = $computer.ComputerName
+  processor = $env:PROCESSOR_IDENTIFIER
+  processor_count = $env:NUMBER_OF_PROCESSORS
+  user_domain = $env:USERDOMAIN
   ip = $ip
 } | ConvertTo-Json -Compress -Depth 4
 "#;
@@ -160,6 +166,17 @@ $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         "windows={}",
         trim_command(run_powershell(script, 80))
     )]
+}
+
+fn windows_registry_value(key: &str, name: &str) -> Option<String> {
+    let output = run_command("reg", &["query", key, "/v", name], 20);
+    output
+        .lines()
+        .find(|line| line.contains(name))
+        .and_then(|line| line.split("REG_").nth(1))
+        .and_then(|rest| rest.split_once(' '))
+        .map(|(_, value)| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn os_release_value(key: &str) -> Option<String> {
