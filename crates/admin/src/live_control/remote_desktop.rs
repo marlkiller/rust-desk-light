@@ -74,11 +74,16 @@ pub(crate) fn handle_decoded_frame(
     else {
         return;
     };
+    if !window.running.load(Ordering::Relaxed) {
+        return;
+    }
     handle_frame(window, frame, None);
 }
 
 fn handle_frame(window: &mut RemoteDesktopWindow, frame: DesktopFrame, latency_ms: Option<u128>) {
-    let is_running = window.running.load(Ordering::Relaxed);
+    if !window.running.load(Ordering::Relaxed) {
+        return;
+    }
     let now = Instant::now();
     window.stats.fps = window
         .stats
@@ -100,13 +105,22 @@ fn handle_frame(window: &mut RemoteDesktopWindow, frame: DesktopFrame, latency_m
     window.stats.screen_width = frame.screen_width;
     window.stats.screen_height = frame.screen_height;
     window.frame = Some(frame);
-    if is_running {
-        window.status = DesktopStatus::Live;
-        window.notice = "Frame received".to_string();
-    } else {
-        window.status = DesktopStatus::Ready;
-        window.notice = "Stopped".to_string();
-    }
+    window.status = DesktopStatus::Live;
+    window.notice = "Frame received".to_string();
+}
+
+fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
+    window.running.store(false, Ordering::Relaxed);
+    window.mouse_follow.store(false, Ordering::Relaxed);
+    window.mouse_click.store(false, Ordering::Relaxed);
+    window.outbound.clear();
+    window.pending_since = None;
+    window.frame = None;
+    window.texture = None;
+    window.texture_seq = 0;
+    window.stats = DesktopStats::default();
+    window.status = DesktopStatus::Ready;
+    window.notice = notice.to_string();
 }
 
 #[derive(Clone, Default)]
@@ -205,10 +219,8 @@ pub(crate) fn handle_ack(
         return;
     };
     if !accepted {
+        stop_capture(window, &detail);
         window.status = DesktopStatus::Failed;
-        window.notice = detail;
-        window.pending_since = None;
-        window.running.store(false, Ordering::Relaxed);
         return;
     }
     let latency_ms = window
@@ -233,15 +245,11 @@ pub(crate) fn handle_ack(
             window.notice = message;
         }
         DesktopResponse::Error(message) => {
+            stop_capture(window, &message);
             window.status = DesktopStatus::Failed;
-            window.notice = message;
-            window.running.store(false, Ordering::Relaxed);
         }
         DesktopResponse::Stopped => {
-            window.status = DesktopStatus::Ready;
-            window.notice = "Stopped".to_string();
-            window.pending_since = None;
-            window.running.store(false, Ordering::Relaxed);
+            stop_capture(window, "Stopped");
         }
     }
 }
@@ -253,15 +261,14 @@ pub(crate) fn render_windows(
     let mut outbound = Vec::new();
     for window in windows.iter_mut() {
         if window.close_requested.load(Ordering::Relaxed) {
-            if window.running.swap(false, Ordering::Relaxed) {
+            if window.running.load(Ordering::Relaxed) {
                 outbound.push(OutboundCommand {
                     client_id: window.client_id.clone(),
                     payload: "action=stop".to_string(),
                     input: false,
                 });
             }
-            window.outbound.clear();
-            window.pending_since = None;
+            stop_capture(window, "Stopped");
             window.open = false;
         }
         if !window.open {
@@ -275,7 +282,8 @@ pub(crate) fn render_windows(
             window.status = DesktopStatus::Failed;
             window.notice = "Timed out waiting for remote desktop result".to_string();
             window.pending_since = None;
-            window.running.store(false, Ordering::Relaxed);
+            stop_capture(window, "Timed out waiting for remote desktop result");
+            window.status = DesktopStatus::Failed;
         }
         if let Some(frame) = &window.frame {
             if window.texture_seq != frame.seq {
@@ -390,13 +398,7 @@ pub(crate) fn render_windows(
         if let Ok(mut queued) = queued.lock() {
             for payload in queued.drain(..) {
                 if payload.trim() == "action=stop" {
-                    window.outbound.clear();
-                    window.pending_since = None;
-                    window.status = DesktopStatus::Ready;
-                    window.notice = "Stopping".to_string();
-                    window.running.store(false, Ordering::Relaxed);
-                    window.mouse_follow.store(false, Ordering::Relaxed);
-                    window.mouse_click.store(false, Ordering::Relaxed);
+                    stop_capture(window, "Stopped");
                 }
                 window.queue_payload(payload);
             }
