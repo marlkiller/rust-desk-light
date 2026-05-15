@@ -107,6 +107,19 @@ Run the server:
 cargo run -p rust-desk-light-server -- --ip 0.0.0.0 --port 21115
 ```
 
+On a Linux server, pull latest code, rebuild, and restart `rdl-server` in the background:
+
+```sh
+sh scripts/start-server.sh
+```
+
+Optional environment variables:
+
+```sh
+RDL_IP=0.0.0.0 RDL_PORT=21115 RDL_PROFILE=release sh scripts/start-server.sh
+RDL_SKIP_PULL=1 sh scripts/start-server.sh
+```
+
 Run a client:
 
 ```sh
