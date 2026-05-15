@@ -720,8 +720,8 @@ fn quality_label(value: &str) -> &'static str {
 
 fn quality_fps(value: &str) -> u32 {
     match value {
-        "low" => 8,
-        "high" => 3,
+        "low" => 10,
+        "high" => 2,
         _ => 5,
     }
 }

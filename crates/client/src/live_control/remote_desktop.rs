@@ -95,7 +95,7 @@ fn screenshot(screen_index: usize, quality: &str) -> String {
     let _ = quality;
     #[cfg(target_os = "linux")]
     {
-        return linux_capture::screenshot(screen_index);
+        return linux_capture::screenshot(screen_index, quality);
     }
     #[cfg(target_os = "macos")]
     {
@@ -180,12 +180,12 @@ mod windows_capture {
     fn quality_profile(value: &str) -> QualityProfile {
         match value {
             "low" => QualityProfile {
-                max_width: 960,
-                jpeg_quality: 58,
+                max_width: 640,
+                jpeg_quality: 42,
             },
             "high" => QualityProfile {
-                max_width: 1600,
-                jpeg_quality: 82,
+                max_width: 1920,
+                jpeg_quality: 88,
             },
             _ => QualityProfile {
                 max_width: 1280,
@@ -368,6 +368,8 @@ mod windows_capture {
 #[cfg(target_os = "linux")]
 mod linux_capture {
     use base64::Engine;
+    use image::codecs::jpeg::JpegEncoder;
+    use image::{imageops::FilterType, DynamicImage};
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
@@ -390,7 +392,7 @@ mod linux_capture {
         }
     }
 
-    pub(super) fn screenshot(screen_index: usize) -> String {
+    pub(super) fn screenshot(screen_index: usize, quality: &str) -> String {
         match enum_screens()
             .and_then(|screens| {
                 screens
@@ -398,10 +400,33 @@ mod linux_capture {
                     .find(|screen| screen.index == screen_index)
                     .ok_or_else(|| format!("screen index {screen_index} is not available"))
             })
-            .and_then(capture_screen)
+            .and_then(|screen| capture_screen(screen, quality_profile(quality)))
         {
             Ok(frame) => frame,
             Err(error) => format!("remote_desktop_error\nmessage={error}"),
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct QualityProfile {
+        max_width: u32,
+        jpeg_quality: u8,
+    }
+
+    fn quality_profile(value: &str) -> QualityProfile {
+        match value {
+            "low" => QualityProfile {
+                max_width: 640,
+                jpeg_quality: 42,
+            },
+            "high" => QualityProfile {
+                max_width: 1920,
+                jpeg_quality: 88,
+            },
+            _ => QualityProfile {
+                max_width: 1280,
+                jpeg_quality: 72,
+            },
         }
     }
 
@@ -470,7 +495,7 @@ mod linux_capture {
         ))
     }
 
-    fn capture_screen(screen: Screen) -> Result<String, String> {
+    fn capture_screen(screen: Screen, quality: QualityProfile) -> Result<String, String> {
         let path = temp_path("rdl-linux-screen", "jpg");
         let geometry = format!(
             "{}x{}+{}+{}",
@@ -492,7 +517,7 @@ mod linux_capture {
         }
         let bytes = fs::read(&path).map_err(|error| format!("read screenshot failed: {error}"))?;
         let _ = fs::remove_file(&path);
-        encode_frame(screen, bytes, "jpeg")
+        encode_frame(screen, bytes, quality)
     }
 
     fn run_capture_command(program: &str, args: &[&str]) -> Result<(), String> {
@@ -507,19 +532,36 @@ mod linux_capture {
         }
     }
 
-    fn encode_frame(screen: Screen, bytes: Vec<u8>, format: &str) -> Result<String, String> {
+    fn encode_frame(
+        screen: Screen,
+        bytes: Vec<u8>,
+        quality: QualityProfile,
+    ) -> Result<String, String> {
         let image = image::load_from_memory(&bytes)
             .map_err(|error| format!("load captured image failed: {error}"))?;
+        let scale = (quality.max_width as f32 / image.width() as f32).min(1.0);
+        let (image_width, image_height, image) = if scale < 1.0 {
+            let width = ((image.width() as f32 * scale).round() as u32).max(1);
+            let height = ((image.height() as f32 * scale).round() as u32).max(1);
+            let resized = image::imageops::resize(&image, width, height, FilterType::Triangle);
+            (width, height, DynamicImage::ImageRgba8(resized))
+        } else {
+            (image.width(), image.height(), image)
+        };
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
+            .encode_image(&image)
+            .map_err(|error| format!("jpeg encode failed: {error}"))?;
         Ok(format!(
             "remote_desktop_frame\nscreen_index={}\nscreen_width={}\nscreen_height={}\nimage_width={}\nimage_height={}\nformat={}\nbytes={}\npng_base64={}",
             screen.index,
             screen.width,
             screen.height,
-            image.width(),
-            image.height(),
-            format,
-            bytes.len(),
-            base64::engine::general_purpose::STANDARD.encode(bytes)
+            image_width,
+            image_height,
+            "jpeg",
+            encoded.len(),
+            base64::engine::general_purpose::STANDARD.encode(encoded)
         ))
     }
 

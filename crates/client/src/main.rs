@@ -744,8 +744,8 @@ fn remote_desktop_stream_loop(
 
 fn quality_fps(value: &str) -> u64 {
     match value {
-        "low" => 8,
-        "high" => 3,
+        "low" => 10,
+        "high" => 2,
         _ => 5,
     }
 }
