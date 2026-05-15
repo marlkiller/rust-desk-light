@@ -11,6 +11,5 @@ resolver = "2"
 edition = "2021"
 version = "0.1.0"
 authors = ["rust-desk-light contributors"]
-license = "AGPL-3.0-or-later"
+license = "Apache-2.0"
 repository = "https://local/rust-desk-light"
-

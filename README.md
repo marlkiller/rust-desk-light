@@ -188,4 +188,4 @@ See [ROADMAP.md](ROADMAP.md) for current milestones and planned work.
 
 ## License
 
-This project is licensed under the AGPL-3.0-or-later license.
+This project is licensed under the Apache License 2.0.
