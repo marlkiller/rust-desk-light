@@ -461,25 +461,27 @@ fn render_toolbar(
         if ui.button("Reload Screens").clicked() {
             queue_ui_payload(queued, "action=screens".to_string());
         }
+        let is_running = running.load(Ordering::Relaxed);
         let mut selected_quality = quality
             .lock()
             .map(|value| value.clone())
             .unwrap_or_else(|_| DEFAULT_QUALITY.to_string());
-        egui::ComboBox::from_id_salt("remote_desktop_quality")
-            .selected_text(quality_label(&selected_quality))
-            .show_ui(ui, |ui| {
-                for option in ["low", "medium", "high"] {
-                    ui.selectable_value(
-                        &mut selected_quality,
-                        option.to_string(),
-                        quality_label(option),
-                    );
-                }
-            });
+        ui.add_enabled_ui(!is_running, |ui| {
+            egui::ComboBox::from_id_salt("remote_desktop_quality")
+                .selected_text(quality_label(&selected_quality))
+                .show_ui(ui, |ui| {
+                    for option in ["low", "medium", "high"] {
+                        ui.selectable_value(
+                            &mut selected_quality,
+                            option.to_string(),
+                            quality_label(option),
+                        );
+                    }
+                });
+        });
         if let Ok(mut value) = quality.lock() {
             *value = selected_quality.clone();
         }
-        let is_running = running.load(Ordering::Relaxed);
         if ui
             .add_enabled(
                 !screens.is_empty(),
