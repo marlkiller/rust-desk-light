@@ -2340,7 +2340,13 @@ fn command_status_notice(
 fn command_expects_result_table(command: &CommandKind) -> bool {
     matches!(
         command,
-        CommandKind::ProcessManager | CommandKind::EventLog | CommandKind::ActiveConnections
+        CommandKind::ProcessManager
+            | CommandKind::WindowManager
+            | CommandKind::StartupManager
+            | CommandKind::RegistryManager
+            | CommandKind::DriverManager
+            | CommandKind::EventLog
+            | CommandKind::ActiveConnections
     )
 }
 
@@ -3274,6 +3280,10 @@ struct TableColumnSpec {
 fn table_column_spec(command: &CommandKind, header: &str) -> TableColumnSpec {
     match command {
         CommandKind::ProcessManager => process_column_spec(header),
+        CommandKind::WindowManager => window_column_spec(header),
+        CommandKind::StartupManager => startup_column_spec(header),
+        CommandKind::RegistryManager => registry_column_spec(header),
+        CommandKind::DriverManager => driver_column_spec(header),
         CommandKind::EventLog => event_log_column_spec(header),
         CommandKind::ActiveConnections => connection_column_spec(header),
         _ => default_column_spec(header),
@@ -3298,6 +3308,49 @@ fn process_column_spec(header: &str) -> TableColumnSpec {
         "memorymb" => column_spec(70.0, 96.0, 0.0, egui::Align::Max),
         "name" | "processname" | "comm" => column_spec(110.0, 260.0, 1.0, egui::Align::Min),
         "command" => column_spec(180.0, 560.0, 3.0, egui::Align::Min),
+        _ => default_column_spec(header),
+    }
+}
+
+fn window_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "windowid" => column_spec(78.0, 130.0, 0.0, egui::Align::Min),
+        "desktop" | "pid" => column_spec(48.0, 74.0, 0.0, egui::Align::Max),
+        "responding" | "visible" | "status" => column_spec(70.0, 96.0, 0.0, egui::Align::Min),
+        "process" | "class" => column_spec(110.0, 220.0, 0.6, egui::Align::Min),
+        "title" => column_spec(220.0, 620.0, 2.4, egui::Align::Min),
+        "path" => column_spec(180.0, 520.0, 1.6, egui::Align::Min),
+        _ => default_column_spec(header),
+    }
+}
+
+fn startup_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "scope" | "source" | "status" => column_spec(86.0, 150.0, 0.0, egui::Align::Min),
+        "name" => column_spec(150.0, 320.0, 0.8, egui::Align::Min),
+        "command" => column_spec(220.0, 720.0, 2.6, egui::Align::Min),
+        _ => default_column_spec(header),
+    }
+}
+
+fn registry_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "hive" | "type" => column_spec(52.0, 86.0, 0.0, egui::Align::Min),
+        "path" => column_spec(190.0, 460.0, 1.5, egui::Align::Min),
+        "name" => column_spec(130.0, 280.0, 0.8, egui::Align::Min),
+        "value" => column_spec(220.0, 760.0, 2.4, egui::Align::Min),
+        _ => default_column_spec(header),
+    }
+}
+
+fn driver_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "index" | "refs" | "size" | "usedby" => column_spec(48.0, 80.0, 0.0, egui::Align::Max),
+        "state" | "status" | "startmode" | "version" => {
+            column_spec(74.0, 120.0, 0.0, egui::Align::Min)
+        }
+        "name" => column_spec(160.0, 360.0, 1.2, egui::Align::Min),
+        "path" | "description" | "dependencies" => column_spec(220.0, 720.0, 2.2, egui::Align::Min),
         _ => default_column_spec(header),
     }
 }
@@ -3464,6 +3517,19 @@ mod tests {
             .as_deref(),
             Some("Table data could not be parsed")
         );
+    }
+
+    #[test]
+    fn manager_commands_expect_table_results() {
+        for command in [
+            CommandKind::WindowManager,
+            CommandKind::StartupManager,
+            CommandKind::RegistryManager,
+            CommandKind::DriverManager,
+        ] {
+            assert!(command_expects_result_table(&command));
+            assert!(!command_allows_plain_detail(&command, "not a table"));
+        }
     }
 
     #[test]

@@ -147,15 +147,36 @@ jobs:
 
             ### Packages
 
-            | Platform | Package |
-            | --- | --- |
-            | Linux x64 | rust-desk-light-linux-x64.tar.gz |
-            | macOS x64 | rust-desk-light-macos-x64.tar.gz |
-            | macOS ARM64 | rust-desk-light-macos-arm64.tar.gz |
-            | Windows x64 | rust-desk-light-windows-x64.zip |
+            | Platform | Package | Archive |
+            | --- | --- | --- |
+            | Linux x64 | rust-desk-light-linux-x64.tar.gz | tar.gz |
+            | macOS x64 | rust-desk-light-macos-x64.tar.gz | tar.gz |
+            | macOS ARM64 | rust-desk-light-macos-arm64.tar.gz | tar.gz |
+            | Windows x64 | rust-desk-light-windows-x64.zip | zip |
 
-            Each package contains `rdl-server`, `rdl-client`, `rdl-admin`, and `README.md`.
-            Rust release builds are native binaries, so there is no separate runtime/no-runtime split like .NET.
+            ### Package Contents
+
+            Each package contains the following binaries and documentation:
+
+            ```
+            rust-desk-light-<platform>/
+            ├── rdl-server          # Remote desktop server daemon
+            ├── rdl-client          # Remote desktop client application
+            ├── rdl-admin           # Administration utility
+            └── README.md           # Documentation
+            ```
+
+            **Binary Types:**
+            - `rdl-server` - Server application (executable binary)
+            - `rdl-client` - Client application (executable binary)
+            - `rdl-admin` - Admin CLI tool (executable binary)
+
+            All binaries are native Rust release builds optimized for their respective platforms.
+
+            **Platform-Specific Notes:**
+            - **Linux**: Requires glibc and common X11 development libraries
+            - **macOS**: Ad-hoc signed binaries for M1/M2/M3 (ARM64) and Intel (x64) architectures
+            - **Windows**: Native Windows executables (.exe)
           draft: false
           prerelease: false
           files: dist/*

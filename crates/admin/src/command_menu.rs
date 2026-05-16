@@ -346,6 +346,10 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::Clipboard
             | CommandKind::FileManager
             | CommandKind::ProcessManager
+            | CommandKind::WindowManager
+            | CommandKind::StartupManager
+            | CommandKind::RegistryManager
+            | CommandKind::DriverManager
             | CommandKind::RemoteDesktop
             | CommandKind::Camera
             | CommandKind::MessageBox

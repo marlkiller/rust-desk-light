@@ -241,10 +241,10 @@ Remote Management
   [x] File Manager: file_manager
   [x] Remote Terminal: remote_terminal
   [x] Process Manager: process_manager
-  [ ] Window Manager: window_manager
-  [ ] Startup Manager: startup_manager
-  [ ] Registry Manager: registry_manager
-  [ ] Driver Manager: driver_manager
+  [x] Window Manager: window_manager
+  [x] Startup Manager: startup_manager
+  [x] Registry Manager: registry_manager
+  [x] Driver Manager: driver_manager
   [x] Event Log: event_log
   [x] Active Connections: active_connections
   [x] Performance Monitor: performance_monitor

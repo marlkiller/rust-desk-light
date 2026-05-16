@@ -10,10 +10,14 @@ pub(crate) use remote_terminal::execute_streaming as execute_terminal_streaming;
 pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {
         CommandKind::ActiveConnections => active_connections(),
+        CommandKind::DriverManager => driver_manager(),
         CommandKind::FileManager => file_manager::handle(payload),
         CommandKind::KillTargetProcess => kill_target_process(payload),
         CommandKind::ProcessManager => process_list(),
+        CommandKind::RegistryManager => registry_manager(),
         CommandKind::RemoteTerminal => remote_terminal::execute(payload),
+        CommandKind::StartupManager => startup_manager(),
+        CommandKind::WindowManager => window_manager(),
         CommandKind::PerformanceMonitor => performance_snapshot(),
         CommandKind::EventLog => event_log_summary(),
         _ => format!(
@@ -40,6 +44,367 @@ fn active_connections() -> String {
         )
     };
     join_sections("active_connections", vec![output])
+}
+
+fn window_manager() -> String {
+    let output = if cfg!(target_os = "windows") {
+        windows_window_manager()
+    } else if cfg!(target_os = "macos") {
+        macos_window_manager()
+    } else {
+        linux_window_manager()
+    };
+    join_sections("window_manager", vec![output])
+}
+
+fn startup_manager() -> String {
+    let output = if cfg!(target_os = "windows") {
+        windows_startup_manager()
+    } else if cfg!(target_os = "macos") {
+        macos_startup_manager()
+    } else {
+        linux_startup_manager()
+    };
+    join_sections("startup_manager", vec![output])
+}
+
+fn registry_manager() -> String {
+    let output = if cfg!(target_os = "windows") {
+        windows_registry_manager()
+    } else {
+        unsupported_registry_table()
+    };
+    join_sections("registry_manager", vec![output])
+}
+
+fn driver_manager() -> String {
+    let output = if cfg!(target_os = "windows") {
+        windows_driver_manager()
+    } else if cfg!(target_os = "macos") {
+        macos_driver_manager()
+    } else {
+        linux_driver_manager()
+    };
+    join_sections("driver_manager", vec![output])
+}
+
+fn windows_window_manager() -> String {
+    run_powershell(
+        r#"
+function Clean($value) {
+  if ($null -eq $value) { return "-" }
+  $text = [string]$value
+  $text = $text -replace "`r|`n|`t", " "
+  if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
+}
+Write-Output "PID`tProcess`tTitle`tResponding`tPath"
+$count = 0
+Get-Process | Where-Object { $_.MainWindowTitle } | Sort-Object ProcessName | ForEach-Object {
+  $count += 1
+  $path = try { $_.Path } catch { "" }
+  "{0}`t{1}`t{2}`t{3}`t{4}" -f $_.Id,(Clean $_.ProcessName),(Clean $_.MainWindowTitle),$_.Responding,(Clean $path)
+}
+if ($count -eq 0) {
+  "0`tInfo`tNo visible top-level windows found`t-`t-"
+}
+"#,
+        300,
+    )
+}
+
+fn macos_window_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+output="$(osascript <<'OSA' 2>/dev/null
+set output to "PID	Process	Title	Visible	Path"
+tell application "System Events"
+  repeat with p in (processes whose background only is false)
+    set processName to name of p
+    set processPid to unix id of p
+    set processVisible to visible of p
+    set processPath to "-"
+    try
+      set processPath to POSIX path of application file of p
+    end try
+    set windowCount to count of windows of p
+    if windowCount is 0 then
+      set output to output & linefeed & processPid & tab & processName & tab & "-" & tab & processVisible & tab & processPath
+    else
+      repeat with w in windows of p
+        set windowName to "-"
+        try
+          set windowName to name of w
+        end try
+        set output to output & linefeed & processPid & tab & processName & tab & windowName & tab & processVisible & tab & processPath
+      end repeat
+    end if
+  end repeat
+end tell
+return output
+OSA
+)" && [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -gt 1 ] || output="PID	Process	Title	Visible	Path
+0	Info	Window listing requires Accessibility permission or no GUI windows were found	-	-"
+printf '%s\n' "$output"
+"#,
+        ],
+        300,
+    )
+}
+
+fn linux_window_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+if command -v wmctrl >/dev/null 2>&1; then
+  wmctrl -lxp 2>/dev/null | awk 'BEGIN { OFS="\t"; print "WindowId","Desktop","PID","Class","Title" } { count++; title=""; for (i=6; i<=NF; i++) title=title (i>6 ? " " : "") $i; if (title=="") title="-"; print $1,$2,$3,$4,title } END { if (count == 0) print "-","-","-","Info","No desktop windows found" }'
+else
+  printf 'WindowId\tDesktop\tPID\tClass\tTitle\n-\t-\t-\tUnavailable\tInstall wmctrl to list desktop windows\n'
+fi
+"#,
+        ],
+        300,
+    )
+}
+
+fn windows_startup_manager() -> String {
+    run_powershell(
+        r#"
+function Clean($value) {
+  if ($null -eq $value) { return "-" }
+  $text = [string]$value
+  $text = $text -replace "`r|`n|`t", " "
+  if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
+}
+Write-Output "Scope`tSource`tName`tCommand`tStatus"
+$count = 0
+function EmitRow($scope, $source, $name, $command, $status) {
+  $script:count += 1
+  "{0}`t{1}`t{2}`t{3}`t{4}" -f (Clean $scope),(Clean $source),(Clean $name),(Clean $command),(Clean $status)
+}
+$runKeys = @(
+  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" },
+  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" },
+  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" },
+  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" }
+)
+foreach ($entry in $runKeys) {
+  if (Test-Path $entry.Path) {
+    $props = Get-ItemProperty -Path $entry.Path
+    $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
+      EmitRow $entry.Scope $entry.Path $_.Name $_.Value "Registry"
+    }
+  }
+}
+$folders = @(
+  @{ Scope = "CurrentUser"; Path = [Environment]::GetFolderPath("Startup") },
+  @{ Scope = "AllUsers"; Path = [Environment]::GetFolderPath("CommonStartup") }
+)
+foreach ($folder in $folders) {
+  if ($folder.Path -and (Test-Path $folder.Path)) {
+    Get-ChildItem -Path $folder.Path -File -ErrorAction SilentlyContinue | ForEach-Object {
+      EmitRow $folder.Scope $folder.Path $_.Name $_.FullName "File"
+    }
+  }
+}
+if ($count -eq 0) {
+  EmitRow "-" "-" "No startup items found" "-" "Info"
+}
+"#,
+        300,
+    )
+}
+
+fn macos_startup_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+printf 'Scope\tSource\tName\tCommand\tStatus\n'
+count=0
+emit() {
+  count=$((count + 1))
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
+}
+for dir in "$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons" "/System/Library/LaunchAgents" "/System/Library/LaunchDaemons"; do
+  [ -d "$dir" ] || continue
+  case "$dir" in
+    "$HOME"/*) scope="CurrentUser" ;;
+    /System/*) scope="System" ;;
+    *) scope="LocalMachine" ;;
+  esac
+  for file in "$dir"/*.plist; do
+    [ -e "$file" ] || continue
+    emit "$scope" "$dir" "$(basename "$file")" "$file" "Present"
+  done
+done
+if [ "$count" -eq 0 ]; then
+  emit "-" "-" "No launch agents or daemons found" "-" "Info"
+fi
+"#,
+        ],
+        300,
+    )
+}
+
+fn linux_startup_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+printf 'Scope\tSource\tName\tCommand\tStatus\n'
+count=0
+emit() {
+  count=$((count + 1))
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
+}
+for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
+  [ -d "$dir" ] || continue
+  case "$dir" in
+    "$HOME"/*) scope="CurrentUser" ;;
+    *) scope="System" ;;
+  esac
+  for file in "$dir"/*.desktop; do
+    [ -e "$file" ] || continue
+    name="$(basename "$file")"
+    command="$(sed -n 's/^Exec=//p' "$file" | head -n 1)"
+    emit "$scope" "$dir" "$name" "${command:-$file}" "DesktopEntry"
+  done
+done
+if command -v systemctl >/dev/null 2>&1; then
+  system_rows="$(systemctl list-unit-files --type=service --state=enabled --no-legend --no-pager 2>/dev/null | awk 'NF > 0 { printf "System\tsystemd\t%s\t-\t%s\n", $1, ($2 == "" ? "enabled" : $2) }')"
+  if [ -n "$system_rows" ]; then
+    printf '%s\n' "$system_rows"
+    row_count="$(printf '%s\n' "$system_rows" | wc -l | tr -d ' ')"
+    count=$((count + row_count))
+  fi
+fi
+if [ "$count" -eq 0 ]; then
+  emit "-" "-" "No startup items found" "-" "Info"
+fi
+"#,
+        ],
+        300,
+    )
+}
+
+fn windows_registry_manager() -> String {
+    run_powershell(
+        r#"
+function Clean($value) {
+  if ($null -eq $value) { return "-" }
+  $text = [string]$value
+  $text = $text -replace "`r|`n|`t", " "
+  if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
+}
+Write-Output "Hive`tPath`tName`tType`tValue"
+$count = 0
+function EmitRow($hive, $path, $name, $type, $value) {
+  $script:count += 1
+  "{0}`t{1}`t{2}`t{3}`t{4}" -f (Clean $hive),(Clean $path),(Clean $name),(Clean $type),(Clean $value)
+}
+$keys = @(
+  "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+  "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+  "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+  "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+  "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+)
+foreach ($key in $keys) {
+  if (!(Test-Path $key)) { continue }
+  $item = Get-Item -Path $key
+  $props = Get-ItemProperty -Path $key
+  $hive = if ($key.StartsWith("HKCU:")) { "HKCU" } elseif ($key.StartsWith("HKLM:")) { "HKLM" } else { "-" }
+  $path = $key -replace "^[^:]+:\\", ""
+  $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | Select-Object -First 120 | ForEach-Object {
+    $kind = try { $item.GetValueKind($_.Name) } catch { "Unknown" }
+    EmitRow $hive $path $_.Name $kind $_.Value
+  }
+}
+if ($count -eq 0) {
+  EmitRow "-" "-" "No registry values found" "Info" "-"
+}
+"#,
+        300,
+    )
+}
+
+fn unsupported_registry_table() -> String {
+    format!(
+        "Hive\tPath\tName\tType\tValue\n{}",
+        table_row(&[
+            "-",
+            "-",
+            "Unsupported",
+            "Info",
+            "Registry Manager is only available on Windows",
+        ])
+    )
+}
+
+fn windows_driver_manager() -> String {
+    run_powershell(
+        r#"
+function Clean($value) {
+  if ($null -eq $value) { return "-" }
+  $text = [string]$value
+  $text = $text -replace "`r|`n|`t", " "
+  if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
+}
+Write-Output "Name`tState`tStartMode`tPath`tDescription"
+$count = 0
+Get-CimInstance Win32_SystemDriver | Sort-Object Name | Select-Object -First 250 | ForEach-Object {
+  $count += 1
+  "{0}`t{1}`t{2}`t{3}`t{4}" -f (Clean $_.Name),(Clean $_.State),(Clean $_.StartMode),(Clean $_.PathName),(Clean $_.Description)
+}
+if ($count -eq 0) {
+  "Info`t-`t-`t-`tNo system drivers found"
+}
+"#,
+        300,
+    )
+}
+
+fn macos_driver_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+if command -v kmutil >/dev/null 2>&1; then
+  kmutil showloaded 2>/dev/null | awk 'BEGIN { OFS="\t"; print "Index","Refs","Name","Version","Status" } NR > 1 { version=$7; gsub(/[()]/, "", version); print $1,$2,$6,version,"Loaded"; count++ } END { if (count == 0) print "-","-","Info","-","No loaded kernel extensions found" }'
+elif command -v kextstat >/dev/null 2>&1; then
+  kextstat 2>/dev/null | awk 'BEGIN { OFS="\t"; print "Index","Refs","Name","Version","Status" } NR > 1 { version=$7; gsub(/[()]/, "", version); print $1,$2,$6,version,"Loaded"; count++ } END { if (count == 0) print "-","-","Info","-","No loaded kernel extensions found" }'
+else
+  printf 'Index\tRefs\tName\tVersion\tStatus\n-\t-\tUnavailable\t-\tNo macOS driver listing tool found\n'
+fi
+"#,
+        ],
+        300,
+    )
+}
+
+fn linux_driver_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+if command -v lsmod >/dev/null 2>&1; then
+  lsmod | awk 'BEGIN { OFS="\t"; print "Name","Size","UsedBy","Dependencies","Status" } NR > 1 { deps=$4; if (deps == "") deps="-"; print $1,$2,$3,deps,"Loaded"; count++ } END { if (count == 0) print "Info","-","-","-","No loaded kernel modules found" }'
+else
+  printf 'Name\tSize\tUsedBy\tDependencies\tStatus\nUnavailable\t-\t-\t-\tNo lsmod command found\n'
+fi
+"#,
+        ],
+        300,
+    )
 }
 
 fn macos_active_connections() -> String {
@@ -255,6 +620,14 @@ fn sanitize_table_cell(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ")
 }
 
+fn table_row(cells: &[&str]) -> String {
+    cells
+        .iter()
+        .map(|cell| sanitize_table_cell(cell))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
 fn macos_lsof_connection_row(line: &str) -> Option<String> {
     let line = line.trim();
     if line.is_empty() || line.starts_with("COMMAND") {
@@ -309,7 +682,22 @@ fn macos_lsof_connection_row(line: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_log_row, macos_lsof_connection_row};
+    use super::{macos_log_row, macos_lsof_connection_row, table_row, unsupported_registry_table};
+
+    #[test]
+    fn table_row_sanitizes_embedded_line_breaks_and_tabs() {
+        assert_eq!(table_row(&["a\tb", "c\rd", "e\nf"]), "a b\tc d\te f");
+    }
+
+    #[test]
+    fn unsupported_registry_response_stays_tabular() {
+        let table = unsupported_registry_table();
+        let rows = table.lines().collect::<Vec<_>>();
+
+        assert_eq!(rows.first(), Some(&"Hive\tPath\tName\tType\tValue"));
+        assert_eq!(rows.len(), 2);
+        assert!(rows[1].contains("Registry Manager is only available on Windows"));
+    }
 
     #[test]
     fn macos_log_row_parses_compact_error_lines_with_extra_spacing() {

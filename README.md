@@ -24,7 +24,7 @@ TODO: Screenshots will be added later.
 - Persistent client/admin identity files.
 - Confirmed session lifecycle commands for client restart/update, uninstall, process stop, shutdown, reboot, and client deletion.
 - Command result windows with compact tables, filtering, sorting, copy actions, and row-wide context menus.
-- System information, process list, process kill, performance snapshot, active connections, and event log summary.
+- System information, process/window/startup/driver lists, Windows registry snapshot, process kill, performance snapshot, active connections, and event log summary.
 - Clipboard read/write commands.
 - File manager with directory listing, chunked large file and directory upload/download, progress table, stop/delete transfer actions, delete, rename, new folder, path jump, and parent navigation.
 - Remote terminal with streaming output, cancellation, command history, cwd prompt, copy, and clear actions.
