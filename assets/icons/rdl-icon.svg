@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Rust Desk Light application icon</title>
+  <desc id="desc">A minimal modern geek-style RDL monogram with a dark rounded square, terminal frame, and cyan network accents.</desc>
+  <defs>
+    <linearGradient id="bg" x1="132" y1="88" x2="900" y2="936" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1B2428"/>
+      <stop offset="0.46" stop-color="#0B1114"/>
+      <stop offset="1" stop-color="#050708"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="140" y1="110" x2="886" y2="918" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EFFF2"/>
+      <stop offset="0.55" stop-color="#54D6FF" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#B7FF61"/>
+    </linearGradient>
+    <linearGradient id="rdl" x1="254" y1="418" x2="760" y2="604" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F2FFFD"/>
+      <stop offset="0.35" stop-color="#6EFFF2"/>
+      <stop offset="0.72" stop-color="#54D6FF"/>
+      <stop offset="1" stop-color="#B7FF61"/>
+    </linearGradient>
+    <linearGradient id="rail" x1="266" y1="697" x2="758" y2="697" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#B7FF61"/>
+      <stop offset="1" stop-color="#6EFFF2"/>
+    </linearGradient>
+    <filter id="glow" x="-24%" y="-24%" width="148%" height="148%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#6EFFF2" flood-opacity="0.55"/>
+    </filter>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="28" stdDeviation="24" flood-color="#000000" flood-opacity="0.48"/>
+    </filter>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#bg)"/>
+  <rect x="88" y="88" width="848" height="848" rx="202" fill="none" stroke="url(#edge)" stroke-width="20"/>
+
+  <g opacity="0.26">
+    <path d="M206 282H818M206 742H818M282 206V818M742 206V818" stroke="#6EFFF2" stroke-width="3"/>
+    <path d="M326 154V870M512 126V898M698 154V870" stroke="#FFFFFF" stroke-width="2" opacity="0.09"/>
+    <path d="M154 326H870M126 512H898M154 698H870" stroke="#FFFFFF" stroke-width="2" opacity="0.09"/>
+  </g>
+
+  <g filter="url(#drop)">
+    <rect x="210" y="294" width="604" height="436" rx="66" fill="#081014" stroke="#24353A" stroke-width="18"/>
+    <rect x="258" y="342" width="508" height="340" rx="38" fill="#0B1418"/>
+    <path d="M258 398H766" stroke="#22343A" stroke-width="16"/>
+    <circle cx="314" cy="370" r="10" fill="#FF5F57"/>
+    <circle cx="354" cy="370" r="10" fill="#FFBD2E"/>
+    <circle cx="394" cy="370" r="10" fill="#28C840"/>
+  </g>
+
+  <g filter="url(#glow)">
+    <text
+      x="512"
+      y="590"
+      fill="url(#rdl)"
+      font-family="SF Mono, Menlo, Consolas, Liberation Mono, monospace"
+      font-size="190"
+      font-weight="900"
+      letter-spacing="12"
+      text-anchor="middle">RDL</text>
+    <path d="M295 648H612" stroke="#6EFFF2" stroke-width="20" stroke-linecap="round"/>
+    <path d="M660 648H728" stroke="#B7FF61" stroke-width="20" stroke-linecap="round"/>
+    <path d="M298 704H726" stroke="url(#rail)" stroke-width="24" stroke-linecap="round"/>
+    <circle cx="298" cy="704" r="27" fill="#B7FF61"/>
+    <circle cx="726" cy="704" r="27" fill="#6EFFF2"/>
+    <circle cx="726" cy="704" r="9" fill="#071014"/>
+  </g>
+
+  <g fill="none" filter="url(#glow)" opacity="0.95">
+    <path d="M726 704C774 641 798 574 794 504C789 388 695 294 581 282" stroke="#6EFFF2" stroke-width="15" stroke-linecap="round" stroke-dasharray="1 40"/>
+    <path d="M298 704C252 638 231 565 240 487C251 391 315 314 404 285" stroke="#B7FF61" stroke-width="15" stroke-linecap="round" stroke-dasharray="1 40"/>
+  </g>
+
+  <g opacity="0.86">
+    <path d="M308 438H454" stroke="#B7FF61" stroke-width="8" stroke-linecap="round" opacity="0.58"/>
+    <path d="M308 466H402" stroke="#6EFFF2" stroke-width="8" stroke-linecap="round" opacity="0.38"/>
+    <path d="M570 438H716" stroke="#6EFFF2" stroke-width="8" stroke-linecap="round" opacity="0.42"/>
+  </g>
+</svg>

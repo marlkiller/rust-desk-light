@@ -3,18 +3,9 @@ use std::fs;
 use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Once;
 use std::sync::OnceLock;
 
 static HOSTNAME_CACHE: OnceLock<String> = OnceLock::new();
-static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
-static INSTALL_SIGNAL_HANDLERS: Once = Once::new();
-
-#[cfg(target_family = "unix")]
-const SIGINT: c_int = 2;
-#[cfg(target_family = "unix")]
-const SIGTERM: c_int = 15;
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -76,45 +67,6 @@ pub(crate) fn gui_available() -> bool {
     {
         true
     }
-}
-
-pub(crate) fn install_gui_shutdown_signal_handlers() {
-    INSTALL_SIGNAL_HANDLERS.call_once(|| {
-        #[cfg(target_family = "unix")]
-        unsafe {
-            signal(SIGINT, handle_shutdown_signal);
-            signal(SIGTERM, handle_shutdown_signal);
-        }
-    });
-}
-
-pub(crate) fn shutdown_requested() -> bool {
-    SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
-}
-
-#[cfg(target_family = "unix")]
-extern "C" fn handle_shutdown_signal(_signal: c_int) {
-    #[cfg(target_os = "macos")]
-    unsafe {
-        // AppKit can throw from Touch Bar KVO teardown during window close on Ctrl+C.
-        _exit(0);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
-}
-
-#[cfg(target_family = "unix")]
-type SignalHandler = extern "C" fn(c_int);
-
-#[cfg(target_family = "unix")]
-extern "C" {
-    fn signal(signum: c_int, handler: SignalHandler) -> SignalHandler;
-}
-
-#[cfg(target_os = "macos")]
-extern "C" {
-    fn _exit(status: c_int) -> !;
 }
 
 pub(crate) fn hostname() -> String {
