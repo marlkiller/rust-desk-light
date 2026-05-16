@@ -15,6 +15,9 @@ const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const VOICE_CHAT_REPAINT_MS: u64 = 20;
+const CALL_BUTTON_WIDTH: f32 = 112.0;
+const CALL_BUTTON_HEIGHT: f32 = 42.0;
+const CALL_BUTTON_GAP: f32 = 20.0;
 
 pub(crate) struct VoiceChatWindow {
     status: VoiceChatStatus,
@@ -277,15 +280,20 @@ fn render_controls(
 ) {
     match status {
         VoiceChatStatus::Incoming => {
-            ui.horizontal(|ui| {
-                if call_button(ui, "Decline", COLOR_BAD).clicked() {
-                    decline_requested.store(true, Ordering::Relaxed);
-                }
-                ui.add_space(20.0);
-                if call_button(ui, "Accept", COLOR_GOOD).clicked() {
-                    accept_requested.store(true, Ordering::Relaxed);
-                }
-            });
+            let button_group_width = CALL_BUTTON_WIDTH * 2.0 + CALL_BUTTON_GAP;
+            ui.allocate_ui_with_layout(
+                egui::vec2(button_group_width, CALL_BUTTON_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    if call_button(ui, "Decline", COLOR_BAD).clicked() {
+                        decline_requested.store(true, Ordering::Relaxed);
+                    }
+                    ui.add_space(CALL_BUTTON_GAP);
+                    if call_button(ui, "Accept", COLOR_GOOD).clicked() {
+                        accept_requested.store(true, Ordering::Relaxed);
+                    }
+                },
+            );
         }
         VoiceChatStatus::Connecting | VoiceChatStatus::Live => {
             ui.horizontal(|ui| {
@@ -317,7 +325,7 @@ fn call_button(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> egui::Re
         .color(egui::Color32::WHITE)
         .strong();
     ui.add_sized(
-        [112.0, 42.0],
+        [CALL_BUTTON_WIDTH, CALL_BUTTON_HEIGHT],
         egui::Button::new(text)
             .fill(fill)
             .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.65))),

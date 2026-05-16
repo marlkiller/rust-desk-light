@@ -381,6 +381,7 @@ fn client_connection_once(
                     let worker_token = session_token.clone();
                     let stream_state = voice_chat_stream.clone();
                     let mic_muted = voice_chat_mic_muted.clone();
+                    let worker_event_sink = event_sink.clone();
                     let client_id = identity.id.clone();
                     thread::spawn(move || {
                         voice_chat_capture_loop(
@@ -391,6 +392,7 @@ fn client_connection_once(
                             stream_state,
                             generation,
                             mic_muted,
+                            worker_event_sink,
                         );
                     });
                 }
@@ -1949,6 +1951,7 @@ fn voice_chat_capture_loop(
     stream_state: Arc<DesktopStreamState>,
     generation: u64,
     mic_muted: Arc<AtomicBool>,
+    event_sink: ClientEventSink,
 ) {
     let (frame_tx, frame_rx) = mpsc::sync_channel(8);
     let input_stream = match crate::live_control::start_audio_input_stream(0, frame_tx) {
@@ -1965,6 +1968,7 @@ fn voice_chat_capture_loop(
                     detail: format!("voice_chat_error\nmessage={error}"),
                 },
             );
+            event_sink.send(ClientEvent::VoiceChatFailed { message: error });
             return;
         }
     };
@@ -1977,26 +1981,26 @@ fn voice_chat_capture_loop(
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
-        let frame = match frame_rx
-            .recv_timeout(Duration::from_millis(AUDIO_CAPTURE_RECV_TIMEOUT_MS))
-        {
-            Ok(frame) => frame,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = queue_message(
-                    &out_tx,
-                    &session_token,
-                    Message::CommandAck {
-                        client_id: client_id.clone(),
-                        command: CommandKind::VoiceChat,
-                        accepted: false,
-                        detail: "voice_chat_error\nmessage=audio input stream stopped unexpectedly"
-                            .to_string(),
-                    },
-                );
-                break;
-            }
-        };
+        let frame =
+            match frame_rx.recv_timeout(Duration::from_millis(AUDIO_CAPTURE_RECV_TIMEOUT_MS)) {
+                Ok(frame) => frame,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let message = "audio input stream stopped unexpectedly".to_string();
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::CommandAck {
+                            client_id: client_id.clone(),
+                            command: CommandKind::VoiceChat,
+                            accepted: false,
+                            detail: format!("voice_chat_error\nmessage={message}"),
+                        },
+                    );
+                    event_sink.send(ClientEvent::VoiceChatFailed { message });
+                    break;
+                }
+            };
         if mic_muted.load(Ordering::Relaxed) {
             packetizer.clear_pending();
             continue;
@@ -2009,6 +2013,7 @@ fn voice_chat_capture_loop(
                     sent_bytes = sent_bytes.saturating_add(frame_bytes);
                 }
                 Err(error) => {
+                    let message = format!("udp send failed: {error}");
                     let _ = queue_message(
                         &out_tx,
                         &session_token,
@@ -2016,9 +2021,10 @@ fn voice_chat_capture_loop(
                             client_id: client_id.clone(),
                             command: CommandKind::VoiceChat,
                             accepted: false,
-                            detail: format!("voice_chat_error\nmessage=udp send failed: {error}"),
+                            detail: format!("voice_chat_error\nmessage={message}"),
                         },
                     );
+                    event_sink.send(ClientEvent::VoiceChatFailed { message });
                     stream_state.running.store(false, Ordering::Relaxed);
                     break;
                 }
