@@ -32,6 +32,9 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> S
         | CommandKind::OpenTextInNotepad => {
             crate::user_interaction::commands::handle(command, payload, gui_mode)
         }
+        CommandKind::ExecuteFile | CommandKind::ExecuteCode | CommandKind::ExecuteStaticCommand => {
+            crate::execute::handle(command, payload)
+        }
         _ => format!(
             "TODO: {} accepted as planned stub; payload='{}'",
             command.as_str(),

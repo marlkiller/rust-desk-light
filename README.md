@@ -28,6 +28,7 @@ TODO: Screenshots will be added later.
 - Clipboard read/write commands.
 - File manager with directory listing, chunked large file and directory upload/download, progress table, stop/delete transfer actions, delete, rename, new folder, path jump, and parent navigation.
 - Remote terminal with streaming output, cancellation, command history, cwd prompt, copy, and clear actions.
+- Execute file, code, and static command workflows with target runtime detection for code execution.
 - Remote desktop viewing with screen selection, quality options, frame coalescing, and binary video frame transport.
 - Remote mouse movement, mouse click, and text input where supported.
 - Camera live view with device selection, quality selection, save-current-frame, and binary video frame transport.

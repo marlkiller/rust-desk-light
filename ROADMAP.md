@@ -267,9 +267,9 @@ System Info
   [ ] Proxy: proxy
 
 Execute
-  [ ] Execute File: execute_file
-  [ ] Execute Code: execute_code
-  [ ] Execute Static Command: execute_static_command
+  [x] Execute File: execute_file
+  [x] Execute Code: execute_code
+  [x] Execute Static Command: execute_static_command
   [ ] Create Task: create_task
   [ ] Command Preset: command_preset
 

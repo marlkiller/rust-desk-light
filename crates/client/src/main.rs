@@ -1,5 +1,6 @@
 mod app;
 mod commands;
+mod execute;
 mod live_control;
 mod remote_management;
 mod runtime;

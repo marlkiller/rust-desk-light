@@ -562,6 +562,7 @@ struct AdminApp {
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     interaction_command_windows: Vec<user_interaction::commands::InteractionCommandWindow>,
     session_command_windows: Vec<crate::session::SessionCommandWindow>,
+    execute_windows: Vec<crate::execute::ExecuteWindow>,
     file_transfer_cancel_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
@@ -644,6 +645,7 @@ impl AdminApp {
             chat_windows: Vec::new(),
             interaction_command_windows: Vec::new(),
             session_command_windows: Vec::new(),
+            execute_windows: Vec::new(),
             file_transfer_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             ignored_file_transfers,
             log_lines: vec![timestamped_log(format!(
@@ -992,6 +994,13 @@ impl AdminApp {
         }
         if matches!(
             command,
+            CommandKind::ExecuteFile | CommandKind::ExecuteCode | CommandKind::ExecuteStaticCommand
+        ) {
+            self.open_execute_window(client_id, command);
+            return;
+        }
+        if matches!(
+            command,
             CommandKind::MessageBox | CommandKind::BalloonTip | CommandKind::OpenTextInNotepad
         ) {
             self.open_interaction_command_window(client_id, command);
@@ -1077,6 +1086,17 @@ impl AdminApp {
         );
     }
 
+    fn open_execute_window(&mut self, client_id: &str, command: CommandKind) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        crate::execute::open_window(
+            &mut self.execute_windows,
+            client_id,
+            hostname,
+            username,
+            command,
+        );
+    }
+
     fn open_command_window(&mut self, client_id: &str, command: CommandKind) {
         let (hostname, username) = self.client_window_identity(client_id);
         self.command_windows.push(CommandResultWindow {
@@ -1152,6 +1172,11 @@ impl AdminApp {
         }
         if command == CommandKind::Camera {
             self.handle_camera_ack(&client_id, accepted, detail);
+            return;
+        }
+        if command == CommandKind::ExecuteCode
+            && crate::execute::handle_ack(&mut self.execute_windows, &client_id, &detail)
+        {
             return;
         }
         if session_command_requires_confirmation(&command) {
@@ -1777,6 +1802,24 @@ impl AdminApp {
         }
     }
 
+    fn render_execute_windows(&mut self, ctx: &egui::Context) {
+        for outbound in crate::execute::render_windows(ctx, &mut self.execute_windows) {
+            if outbound.open_result_window {
+                self.open_command_window(&outbound.client_id, outbound.command.clone());
+            }
+            let _ = self.input_tx.send(AdminInput::Command {
+                target_id: outbound.client_id.clone(),
+                command: outbound.command.clone(),
+                payload: outbound.payload,
+            });
+            self.push_log(format!(
+                "sent command={} to {}",
+                outbound.command.as_str(),
+                outbound.client_id
+            ));
+        }
+    }
+
     fn render_file_manager_windows(&mut self, ctx: &egui::Context) {
         for outbound in
             remote_management::file_manager::render_windows(ctx, &mut self.file_manager_windows)
@@ -2036,6 +2079,7 @@ impl eframe::App for AdminApp {
         self.render_chat_windows(ui.ctx());
         self.render_interaction_command_windows(ui.ctx());
         self.render_session_command_windows(ui.ctx());
+        self.render_execute_windows(ui.ctx());
 
         if changed {
             ui.ctx().request_repaint();

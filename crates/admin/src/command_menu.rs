@@ -360,5 +360,8 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::PerformanceMonitor
             | CommandKind::TextChat
             | CommandKind::OpenTextInNotepad
+            | CommandKind::ExecuteFile
+            | CommandKind::ExecuteCode
+            | CommandKind::ExecuteStaticCommand
     )
 }
