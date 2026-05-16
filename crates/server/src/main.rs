@@ -1,5 +1,5 @@
 use rdl_protocol::{
-    now_epoch_ms, read_envelope, write_envelope, ClientInfo, FileTransferAction,
+    now_epoch_ms, read_envelope, write_envelope, AudioSource, ClientInfo, FileTransferAction,
     FileTransferDirection, Message, Role,
 };
 use std::collections::{HashMap, HashSet};
@@ -268,7 +268,7 @@ fn server_message_is_bulk(message: &Message) -> bool {
                 | FileTransferAction::Chunk
                 | FileTransferAction::Progress,
             ..
-        }
+        } | Message::AudioFrame { .. }
     )
 }
 
@@ -637,6 +637,67 @@ fn event_loop(events_rx: Receiver<ServerEvent>) {
                             }
                         }
                     }
+                    Message::AudioControl {
+                        target_id,
+                        source,
+                        payload,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        println!(
+                            "audit event=audio_control peer=#{peer_id} identity={} target={} source={}",
+                            peer_identity(peer_id, &peers),
+                            target_id,
+                            source.as_str()
+                        );
+                        if let Some(error) = route_audio_control_to_client(
+                            &peers,
+                            &target_id,
+                            source.clone(),
+                            payload,
+                        ) {
+                            send_audio_error(peer_id, &target_id, source, error, &peers);
+                        }
+                    }
+                    Message::AudioFrame {
+                        client_id,
+                        source,
+                        seq,
+                        sample_rate,
+                        channels,
+                        format,
+                        bytes,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        let from_admin = peers.get(&peer_id).and_then(|peer| peer.role.as_ref())
+                            == Some(&Role::Admin);
+                        let message = Message::AudioFrame {
+                            client_id: client_id.clone(),
+                            source,
+                            seq,
+                            sample_rate,
+                            channels,
+                            format,
+                            bytes,
+                        };
+                        if from_admin {
+                            if let Some(peer) = peers.values().find(|peer| {
+                                peer.role == Some(Role::Client)
+                                    && peer
+                                        .client_info
+                                        .as_ref()
+                                        .map(|info| info.id == client_id)
+                                        .unwrap_or(false)
+                            }) {
+                                let _ = peer.sender.send(message);
+                            }
+                        } else {
+                            for peer in peers.values() {
+                                if peer.role == Some(Role::Admin) {
+                                    let _ = peer.sender.send(message.clone());
+                                }
+                            }
+                        }
+                    }
                     Message::Ping => {
                         mark_seen(peer_id, &mut peers);
                         if let Some(peer) = peers.get(&peer_id) {
@@ -839,6 +900,34 @@ fn route_video_control_to_client(
         .map(|error| error.to_string())
 }
 
+fn route_audio_control_to_client(
+    peers: &HashMap<usize, Peer>,
+    target_id: &str,
+    source: AudioSource,
+    payload: String,
+) -> Option<String> {
+    let target = peers.values().find(|peer| {
+        peer.role == Some(Role::Client)
+            && peer
+                .client_info
+                .as_ref()
+                .map(|info| info.id == target_id)
+                .unwrap_or(false)
+    });
+
+    let Some(peer) = target else {
+        return Some(format!("client '{target_id}' is offline"));
+    };
+    peer.sender
+        .send(Message::AudioControl {
+            target_id: target_id.to_string(),
+            source,
+            payload,
+        })
+        .err()
+        .map(|error| error.to_string())
+}
+
 fn route_file_transfer_to_client(
     peers: &HashMap<usize, Peer>,
     message: &Message,
@@ -1000,6 +1089,27 @@ fn send_video_error(peer_id: usize, client_id: &str, error: String, peers: &Hash
             image_height: 0,
             format: format!("error:{error}"),
             bytes: Vec::new(),
+        });
+    }
+}
+
+fn send_audio_error(
+    peer_id: usize,
+    client_id: &str,
+    source: AudioSource,
+    error: String,
+    peers: &HashMap<usize, Peer>,
+) {
+    if let Some(peer) = peers.get(&peer_id) {
+        let (command, prefix) = match source {
+            AudioSource::AudioListen => (rdl_protocol::CommandKind::AudioListen, "audio_listen"),
+            AudioSource::VoiceChat => (rdl_protocol::CommandKind::VoiceChat, "voice_chat"),
+        };
+        let _ = peer.sender.send(Message::CommandAck {
+            client_id: client_id.to_string(),
+            command,
+            accepted: false,
+            detail: format!("{prefix}_error\nmessage={error}"),
         });
     }
 }

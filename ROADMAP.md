@@ -248,13 +248,13 @@ Remote Management
 Live Control
   [x] Remote Desktop: remote_desktop
   [x] Camera: camera
-  [ ] Audio Listen: audio_listen
+  [x] Audio Listen: audio_listen
 
 User Interaction
   [x] Message Box: message_box
   [x] Balloon Tip: balloon_tip
   [x] Text Chat: text_chat
-  [ ] Voice Chat: voice_chat
+  [x] Voice Chat: voice_chat
   [x] Open Text In Notepad: open_text_in_notepad
 
 System Info

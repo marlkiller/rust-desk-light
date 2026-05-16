@@ -7,7 +7,7 @@ use crate::{
 };
 use eframe::egui;
 use rdl_protocol::{
-    write_envelope_with_token, CommandKind, EnvelopeDecoder, FileTransferAction,
+    write_envelope_with_token, AudioSource, CommandKind, EnvelopeDecoder, FileTransferAction,
     FileTransferDirection, Message, Role, VideoSource,
 };
 use std::io;
@@ -128,6 +128,10 @@ fn run_terminal(config: Config) -> io::Result<()> {
                 println!("command={} payload={payload}", command.as_str());
             }
             ClientEvent::ChatMessage { text } => println!("text_chat={text}"),
+            ClientEvent::VoiceChatInvite => println!("voice_chat=incoming"),
+            ClientEvent::VoiceChatConnected => println!("voice_chat=connected"),
+            ClientEvent::VoiceChatEnded { message } => println!("voice_chat=ended {message}"),
+            ClientEvent::VoiceChatFailed { message } => println!("voice_chat=failed {message}"),
             ClientEvent::Log(line) => println!("{line}"),
         }
     }
@@ -203,6 +207,17 @@ fn client_connection_once(
         running: AtomicBool::new(false),
         generation: std::sync::atomic::AtomicU64::new(0),
     });
+    let audio_stream = Arc::new(DesktopStreamState {
+        running: AtomicBool::new(false),
+        generation: std::sync::atomic::AtomicU64::new(0),
+    });
+    let voice_chat_stream = Arc::new(DesktopStreamState {
+        running: AtomicBool::new(false),
+        generation: std::sync::atomic::AtomicU64::new(0),
+    });
+    let voice_chat_mic_muted = Arc::new(AtomicBool::new(false));
+    let mut voice_chat_speaker_muted = false;
+    let mut voice_chat_player: Option<crate::live_control::AudioOutputPlayer> = None;
     loop {
         while let Ok(input) = input_rx.try_recv() {
             match input {
@@ -216,6 +231,101 @@ fn client_connection_once(
                         detail: format!("chat_message:{text}"),
                     },
                 )?,
+                ClientInput::VoiceChatAccept => {
+                    voice_chat_stream.running.store(false, Ordering::Relaxed);
+                    let generation = voice_chat_stream
+                        .generation
+                        .fetch_add(1, Ordering::Relaxed)
+                        .saturating_add(1);
+                    match crate::live_control::AudioOutputPlayer::start() {
+                        Ok(player) => {
+                            voice_chat_player = Some(player);
+                            voice_chat_stream.running.store(true, Ordering::Relaxed);
+                            let _ = queue_message(
+                                &out_tx,
+                                &session_token,
+                                Message::CommandAck {
+                                    client_id: identity.id.clone(),
+                                    command: CommandKind::VoiceChat,
+                                    accepted: true,
+                                    detail: "voice_chat_accepted\nmessage=accepted".to_string(),
+                                },
+                            );
+                            event_sink.send(ClientEvent::VoiceChatConnected);
+                            let worker_tx = out_tx.clone();
+                            let worker_token = session_token.clone();
+                            let stream_state = voice_chat_stream.clone();
+                            let mic_muted = voice_chat_mic_muted.clone();
+                            let client_id = identity.id.clone();
+                            thread::spawn(move || {
+                                voice_chat_capture_loop(
+                                    client_id,
+                                    worker_tx,
+                                    worker_token,
+                                    stream_state,
+                                    generation,
+                                    mic_muted,
+                                );
+                            });
+                        }
+                        Err(error) => {
+                            voice_chat_stream.running.store(false, Ordering::Relaxed);
+                            let _ = queue_message(
+                                &out_tx,
+                                &session_token,
+                                Message::CommandAck {
+                                    client_id: identity.id.clone(),
+                                    command: CommandKind::VoiceChat,
+                                    accepted: false,
+                                    detail: format!("voice_chat_error\nmessage={error}"),
+                                },
+                            );
+                            event_sink.send(ClientEvent::VoiceChatFailed { message: error });
+                        }
+                    }
+                }
+                ClientInput::VoiceChatDecline => {
+                    voice_chat_stream.running.store(false, Ordering::Relaxed);
+                    voice_chat_stream.generation.fetch_add(1, Ordering::Relaxed);
+                    voice_chat_player = None;
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::CommandAck {
+                            client_id: identity.id.clone(),
+                            command: CommandKind::VoiceChat,
+                            accepted: false,
+                            detail: "voice_chat_declined\nmessage=declined".to_string(),
+                        },
+                    );
+                    event_sink.send(ClientEvent::VoiceChatEnded {
+                        message: "Declined".to_string(),
+                    });
+                }
+                ClientInput::VoiceChatEnd => {
+                    voice_chat_stream.running.store(false, Ordering::Relaxed);
+                    voice_chat_stream.generation.fetch_add(1, Ordering::Relaxed);
+                    voice_chat_player = None;
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::CommandAck {
+                            client_id: identity.id.clone(),
+                            command: CommandKind::VoiceChat,
+                            accepted: true,
+                            detail: "voice_chat_ended\nmessage=ended".to_string(),
+                        },
+                    );
+                    event_sink.send(ClientEvent::VoiceChatEnded {
+                        message: "Call ended".to_string(),
+                    });
+                }
+                ClientInput::VoiceChatMicMuted { muted } => {
+                    voice_chat_mic_muted.store(muted, Ordering::Relaxed);
+                }
+                ClientInput::VoiceChatSpeakerMuted { muted } => {
+                    voice_chat_speaker_muted = muted;
+                }
             }
         }
 
@@ -251,6 +361,23 @@ fn client_connection_once(
                     event_sink.send(ClientEvent::ChatMessage {
                         text: payload.clone(),
                     });
+                }
+                if command == CommandKind::VoiceChat {
+                    if gui_mode {
+                        event_sink.send(ClientEvent::VoiceChatInvite);
+                    } else {
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::CommandAck {
+                                client_id: target_id,
+                                command: CommandKind::VoiceChat,
+                                accepted: false,
+                                detail: commands::gui_disabled_detail(&CommandKind::VoiceChat),
+                            },
+                        );
+                    }
+                    continue;
                 }
                 if command == CommandKind::RemoteTerminal {
                     let worker_tx = out_tx.clone();
@@ -502,6 +629,119 @@ fn client_connection_once(
                 }
                 _ => {}
             },
+            Message::AudioControl {
+                target_id,
+                source,
+                payload,
+            } => match source {
+                AudioSource::AudioListen => match video_control_action(&payload).as_deref() {
+                    _ if !gui_mode => {
+                        audio_stream.running.store(false, Ordering::Relaxed);
+                        audio_stream.generation.fetch_add(1, Ordering::Relaxed);
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::CommandAck {
+                                client_id: target_id,
+                                command: CommandKind::AudioListen,
+                                accepted: false,
+                                detail: commands::gui_disabled_detail(&CommandKind::AudioListen),
+                            },
+                        );
+                    }
+                    Some("start") => {
+                        audio_stream.running.store(false, Ordering::Relaxed);
+                        let generation = audio_stream
+                            .generation
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1);
+                        thread::sleep(Duration::from_millis(5));
+                        audio_stream.running.store(true, Ordering::Relaxed);
+                        let worker_tx = out_tx.clone();
+                        let worker_token = session_token.clone();
+                        let stream_state = audio_stream.clone();
+                        thread::spawn(move || {
+                            audio_stream_loop(
+                                target_id,
+                                payload,
+                                worker_tx,
+                                worker_token,
+                                stream_state,
+                                generation,
+                            );
+                        });
+                    }
+                    Some("stop") => {
+                        audio_stream.running.store(false, Ordering::Relaxed);
+                        audio_stream.generation.fetch_add(1, Ordering::Relaxed);
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::CommandAck {
+                                client_id: target_id,
+                                command: CommandKind::AudioListen,
+                                accepted: true,
+                                detail: "audio_listen_stopped\nmessage=stopped".to_string(),
+                            },
+                        );
+                    }
+                    _ => {
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::CommandAck {
+                                client_id: target_id,
+                                command: CommandKind::AudioListen,
+                                accepted: false,
+                                detail:
+                                    "audio_listen_error\nmessage=unsupported audio control action"
+                                        .to_string(),
+                            },
+                        );
+                    }
+                },
+                AudioSource::VoiceChat => match video_control_action(&payload).as_deref() {
+                    Some("stop") | Some("end") => {
+                        voice_chat_stream.running.store(false, Ordering::Relaxed);
+                        voice_chat_stream.generation.fetch_add(1, Ordering::Relaxed);
+                        voice_chat_player = None;
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::CommandAck {
+                                client_id: target_id,
+                                command: CommandKind::VoiceChat,
+                                accepted: true,
+                                detail: "voice_chat_ended\nmessage=ended".to_string(),
+                            },
+                        );
+                        event_sink.send(ClientEvent::VoiceChatEnded {
+                            message: "Call ended".to_string(),
+                        });
+                    }
+                    _ => {}
+                },
+            },
+            Message::AudioFrame {
+                source,
+                sample_rate,
+                channels,
+                format,
+                bytes,
+                ..
+            } => {
+                if source == AudioSource::VoiceChat && !voice_chat_speaker_muted {
+                    if let Some(player) = &voice_chat_player {
+                        if let Err(error) =
+                            player.push_frame(sample_rate, channels, &format, &bytes)
+                        {
+                            event_sink.send(ClientEvent::Log(format!(
+                                "voice chat playback failed: {error}"
+                            )));
+                        }
+                    }
+                }
+            }
             Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
             other => {
                 event_sink.send(ClientEvent::Log(format!("server: {other:?}")));
@@ -520,6 +760,7 @@ struct ClientApp {
     connected: bool,
     log_lines: Vec<String>,
     chat_window: Option<user_interaction::text_chat::ChatWindow>,
+    voice_chat_window: Option<user_interaction::voice_chat::VoiceChatWindow>,
 }
 
 impl ClientApp {
@@ -546,6 +787,7 @@ impl ClientApp {
                 rdl_version::display_version()
             ))],
             chat_window: None,
+            voice_chat_window: None,
         }
     }
 
@@ -570,6 +812,28 @@ impl ClientApp {
                 }
                 ClientEvent::ChatMessage { text } => {
                     user_interaction::text_chat::receive_admin_message(&mut self.chat_window, text);
+                }
+                ClientEvent::VoiceChatInvite => {
+                    user_interaction::voice_chat::receive_invite(&mut self.voice_chat_window);
+                    self.push_log("incoming voice_chat invite");
+                }
+                ClientEvent::VoiceChatConnected => {
+                    user_interaction::voice_chat::mark_live(&mut self.voice_chat_window);
+                    self.push_log("voice_chat connected");
+                }
+                ClientEvent::VoiceChatEnded { message } => {
+                    user_interaction::voice_chat::mark_ended(
+                        &mut self.voice_chat_window,
+                        message.clone(),
+                    );
+                    self.push_log(format!("voice_chat ended: {message}"));
+                }
+                ClientEvent::VoiceChatFailed { message } => {
+                    user_interaction::voice_chat::mark_failed(
+                        &mut self.voice_chat_window,
+                        message.clone(),
+                    );
+                    self.push_log(format!("voice_chat failed: {message}"));
                 }
                 ClientEvent::Log(line) => self.push_log(line),
             }
@@ -682,6 +946,30 @@ impl eframe::App for ClientApp {
         });
         for text in user_interaction::text_chat::render_window(ui.ctx(), &mut self.chat_window) {
             let _ = self.input_tx.send(ClientInput::ChatReply { text });
+        }
+        for action in
+            user_interaction::voice_chat::render_window(ui.ctx(), &mut self.voice_chat_window)
+        {
+            match action {
+                user_interaction::voice_chat::VoiceChatAction::Accept => {
+                    user_interaction::voice_chat::mark_connecting(&mut self.voice_chat_window);
+                    let _ = self.input_tx.send(ClientInput::VoiceChatAccept);
+                }
+                user_interaction::voice_chat::VoiceChatAction::Decline => {
+                    let _ = self.input_tx.send(ClientInput::VoiceChatDecline);
+                }
+                user_interaction::voice_chat::VoiceChatAction::End => {
+                    let _ = self.input_tx.send(ClientInput::VoiceChatEnd);
+                }
+                user_interaction::voice_chat::VoiceChatAction::MicMuted(muted) => {
+                    let _ = self.input_tx.send(ClientInput::VoiceChatMicMuted { muted });
+                }
+                user_interaction::voice_chat::VoiceChatAction::SpeakerMuted(muted) => {
+                    let _ = self
+                        .input_tx
+                        .send(ClientInput::VoiceChatSpeakerMuted { muted });
+                }
+            }
         }
 
         if changed {
@@ -810,6 +1098,14 @@ enum ClientEvent {
     ChatMessage {
         text: String,
     },
+    VoiceChatInvite,
+    VoiceChatConnected,
+    VoiceChatEnded {
+        message: String,
+    },
+    VoiceChatFailed {
+        message: String,
+    },
     Log(String),
 }
 
@@ -841,6 +1137,11 @@ impl ClientEventSink {
 
 enum ClientInput {
     ChatReply { text: String },
+    VoiceChatAccept,
+    VoiceChatDecline,
+    VoiceChatEnd,
+    VoiceChatMicMuted { muted: bool },
+    VoiceChatSpeakerMuted { muted: bool },
 }
 
 struct ClientOutbound {
@@ -1133,6 +1434,185 @@ fn video_stream_loop(
             thread::sleep(interval - elapsed);
         }
     }
+}
+
+fn audio_stream_loop(
+    client_id: String,
+    start_payload: String,
+    out_tx: SyncSender<ClientOutbound>,
+    session_token: String,
+    stream_state: Arc<DesktopStreamState>,
+    generation: u64,
+) {
+    if let Err(error) = crate::live_control::confirm_audio_listen() {
+        stream_state.running.store(false, Ordering::Relaxed);
+        let _ = queue_message(
+            &out_tx,
+            &session_token,
+            Message::CommandAck {
+                client_id,
+                command: CommandKind::AudioListen,
+                accepted: false,
+                detail: format!("audio_listen_error\nmessage={error}"),
+            },
+        );
+        return;
+    }
+
+    let device = video_control_value(&start_payload, "device")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let (frame_tx, frame_rx) = mpsc::sync_channel(8);
+    let input_stream = match crate::live_control::start_audio_input_stream(device, frame_tx) {
+        Ok(stream) => stream,
+        Err(error) => {
+            stream_state.running.store(false, Ordering::Relaxed);
+            let _ = queue_message(
+                &out_tx,
+                &session_token,
+                Message::CommandAck {
+                    client_id,
+                    command: CommandKind::AudioListen,
+                    accepted: false,
+                    detail: format!("audio_listen_error\nmessage={error}"),
+                },
+            );
+            return;
+        }
+    };
+    let _ = queue_message(
+        &out_tx,
+        &session_token,
+        Message::CommandAck {
+            client_id: client_id.clone(),
+            command: CommandKind::AudioListen,
+            accepted: true,
+            detail: format!(
+                "audio_listen_started\nsample_rate={}\nchannels={}\nformat={}",
+                input_stream.sample_rate, input_stream.channels, input_stream.format
+            ),
+        },
+    );
+
+    let mut seq = 1u64;
+    while stream_state.running.load(Ordering::Relaxed)
+        && stream_state.generation.load(Ordering::Relaxed) == generation
+    {
+        let frame = match frame_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(frame) => frame,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = queue_message(
+                    &out_tx,
+                    &session_token,
+                    Message::CommandAck {
+                        client_id: client_id.clone(),
+                        command: CommandKind::AudioListen,
+                        accepted: false,
+                        detail:
+                            "audio_listen_error\nmessage=audio input stream stopped unexpectedly"
+                                .to_string(),
+                    },
+                );
+                break;
+            }
+        };
+        if queue_message(
+            &out_tx,
+            &session_token,
+            Message::AudioFrame {
+                client_id: client_id.clone(),
+                source: AudioSource::AudioListen,
+                seq,
+                sample_rate: frame.sample_rate,
+                channels: frame.channels,
+                format: frame.format,
+                bytes: frame.bytes,
+            },
+        )
+        .is_err()
+        {
+            stream_state.running.store(false, Ordering::Relaxed);
+            break;
+        }
+        seq = seq.saturating_add(1);
+    }
+    drop(input_stream);
+}
+
+fn voice_chat_capture_loop(
+    client_id: String,
+    out_tx: SyncSender<ClientOutbound>,
+    session_token: String,
+    stream_state: Arc<DesktopStreamState>,
+    generation: u64,
+    mic_muted: Arc<AtomicBool>,
+) {
+    let (frame_tx, frame_rx) = mpsc::sync_channel(8);
+    let input_stream = match crate::live_control::start_audio_input_stream(0, frame_tx) {
+        Ok(stream) => stream,
+        Err(error) => {
+            stream_state.running.store(false, Ordering::Relaxed);
+            let _ = queue_message(
+                &out_tx,
+                &session_token,
+                Message::CommandAck {
+                    client_id,
+                    command: CommandKind::VoiceChat,
+                    accepted: false,
+                    detail: format!("voice_chat_error\nmessage={error}"),
+                },
+            );
+            return;
+        }
+    };
+
+    let mut seq = 1u64;
+    while stream_state.running.load(Ordering::Relaxed)
+        && stream_state.generation.load(Ordering::Relaxed) == generation
+    {
+        let frame = match frame_rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(frame) => frame,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = queue_message(
+                    &out_tx,
+                    &session_token,
+                    Message::CommandAck {
+                        client_id: client_id.clone(),
+                        command: CommandKind::VoiceChat,
+                        accepted: false,
+                        detail: "voice_chat_error\nmessage=audio input stream stopped unexpectedly"
+                            .to_string(),
+                    },
+                );
+                break;
+            }
+        };
+        if mic_muted.load(Ordering::Relaxed) {
+            continue;
+        }
+        if queue_message(
+            &out_tx,
+            &session_token,
+            Message::AudioFrame {
+                client_id: client_id.clone(),
+                source: AudioSource::VoiceChat,
+                seq,
+                sample_rate: frame.sample_rate,
+                channels: frame.channels,
+                format: frame.format,
+                bytes: frame.bytes,
+            },
+        )
+        .is_err()
+        {
+            stream_state.running.store(false, Ordering::Relaxed);
+            break;
+        }
+        seq = seq.saturating_add(1);
+    }
+    drop(input_stream);
 }
 
 fn quality_fps(value: &str) -> u64 {

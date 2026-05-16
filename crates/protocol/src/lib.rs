@@ -208,6 +208,12 @@ pub enum VideoSource {
     Camera,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AudioSource {
+    AudioListen,
+    VoiceChat,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandOutputStream {
     Stdout,
@@ -253,6 +259,30 @@ impl VideoSource {
             1 => Ok(Self::RemoteDesktop),
             2 => Ok(Self::Camera),
             _ => Err(ProtocolError::InvalidVideoSource),
+        }
+    }
+}
+
+impl AudioSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AudioListen => "audio_listen",
+            Self::VoiceChat => "voice_chat",
+        }
+    }
+
+    fn to_code(&self) -> u8 {
+        match self {
+            Self::AudioListen => 1,
+            Self::VoiceChat => 2,
+        }
+    }
+
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            1 => Ok(Self::AudioListen),
+            2 => Ok(Self::VoiceChat),
+            _ => Err(ProtocolError::InvalidAudioSource),
         }
     }
 }
@@ -622,6 +652,20 @@ pub enum Message {
         format: String,
         bytes: Vec<u8>,
     },
+    AudioControl {
+        target_id: String,
+        source: AudioSource,
+        payload: String,
+    },
+    AudioFrame {
+        client_id: String,
+        source: AudioSource,
+        seq: u64,
+        sample_rate: u32,
+        channels: u16,
+        format: String,
+        bytes: Vec<u8>,
+    },
     Error {
         detail: String,
     },
@@ -651,6 +695,8 @@ impl Message {
             Self::VideoFrame { .. } => 14,
             Self::CommandOutput { .. } => 15,
             Self::FileTransfer { .. } => 16,
+            Self::AudioControl { .. } => 17,
+            Self::AudioFrame { .. } => 18,
         }
     }
 
@@ -795,6 +841,32 @@ impl Message {
                 writer.string(format);
                 writer.byte_vec(bytes);
             }
+            Self::AudioControl {
+                target_id,
+                source,
+                payload,
+            } => {
+                writer.string(target_id);
+                writer.u8(source.to_code());
+                writer.string(payload);
+            }
+            Self::AudioFrame {
+                client_id,
+                source,
+                seq,
+                sample_rate,
+                channels,
+                format,
+                bytes,
+            } => {
+                writer.string(client_id);
+                writer.u8(source.to_code());
+                writer.u64(*seq);
+                writer.u32(*sample_rate);
+                writer.u16(*channels);
+                writer.string(format);
+                writer.byte_vec(bytes);
+            }
             Self::Error { detail } => writer.string(detail),
             Self::Session { token } => writer.string(token),
         }
@@ -902,6 +974,20 @@ impl Message {
                 offset: reader.u64()?,
                 bytes: reader.byte_vec()?,
                 message: reader.string()?,
+            },
+            17 => Self::AudioControl {
+                target_id: reader.string()?,
+                source: AudioSource::from_code(reader.u8()?)?,
+                payload: reader.string()?,
+            },
+            18 => Self::AudioFrame {
+                client_id: reader.string()?,
+                source: AudioSource::from_code(reader.u8()?)?,
+                seq: reader.u64()?,
+                sample_rate: reader.u32()?,
+                channels: reader.u16()?,
+                format: reader.string()?,
+                bytes: reader.byte_vec()?,
             },
             _ => return Err(ProtocolError::InvalidMessageKind(kind)),
         };
@@ -1117,6 +1203,7 @@ pub enum ProtocolError {
     InvalidRole,
     InvalidCommand,
     InvalidVideoSource,
+    InvalidAudioSource,
     InvalidCommandOutputStream,
     InvalidFileTransferDirection,
     InvalidFileTransferAction,
@@ -1140,6 +1227,7 @@ impl fmt::Display for ProtocolError {
             Self::InvalidRole => write!(f, "invalid role"),
             Self::InvalidCommand => write!(f, "invalid command"),
             Self::InvalidVideoSource => write!(f, "invalid video source"),
+            Self::InvalidAudioSource => write!(f, "invalid audio source"),
             Self::InvalidCommandOutputStream => write!(f, "invalid command output stream"),
             Self::InvalidFileTransferDirection => write!(f, "invalid file transfer direction"),
             Self::InvalidFileTransferAction => write!(f, "invalid file transfer action"),

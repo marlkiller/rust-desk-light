@@ -1,6 +1,8 @@
 use crate::live_control;
 use eframe::egui;
-use rdl_protocol::{ClientInfo, CommandKind, CommandOutputStream, Message, VideoSource};
+use rdl_protocol::{
+    AudioSource, ClientInfo, CommandKind, CommandOutputStream, Message, VideoSource,
+};
 use std::sync::{mpsc::Sender, Arc, Mutex};
 
 pub(super) enum AdminInput {
@@ -22,6 +24,20 @@ pub(super) enum AdminInput {
         target_id: String,
         source: VideoSource,
         payload: String,
+    },
+    AudioControl {
+        target_id: String,
+        source: AudioSource,
+        payload: String,
+    },
+    AudioFrame {
+        target_id: String,
+        source: AudioSource,
+        seq: u64,
+        sample_rate: u32,
+        channels: u16,
+        format: String,
+        bytes: Vec<u8>,
     },
     FileTransfer(Message),
     Reconnect {
@@ -71,6 +87,15 @@ pub(super) enum AdminEvent {
         source_height: u32,
         image_width: u32,
         image_height: u32,
+        format: String,
+        bytes: Vec<u8>,
+    },
+    AudioFrame {
+        client_id: String,
+        source: AudioSource,
+        seq: u64,
+        sample_rate: u32,
+        channels: u16,
         format: String,
         bytes: Vec<u8>,
     },

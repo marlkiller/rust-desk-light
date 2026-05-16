@@ -36,8 +36,8 @@ use crate::{
 };
 use eframe::egui;
 use rdl_protocol::{
-    ClientInfo, CommandKind, CommandOutputStream, FileTransferAction, FileTransferDirection,
-    Message, VideoSource,
+    AudioSource, ClientInfo, CommandKind, CommandOutputStream, FileTransferAction,
+    FileTransferDirection, Message, VideoSource,
 };
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -136,8 +136,10 @@ struct AdminApp {
     file_manager_windows: Vec<remote_management::file_manager::FileManagerWindow>,
     desktop_windows: Vec<live_control::remote_desktop::RemoteDesktopWindow>,
     camera_windows: Vec<live_control::camera::CameraWindow>,
+    audio_windows: Vec<live_control::audio_listen::AudioListenWindow>,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
+    voice_chat_windows: Vec<user_interaction::voice_chat::VoiceChatWindow>,
     interaction_command_windows: Vec<user_interaction::InteractionCommandWindow>,
     session_command_windows: Vec<crate::session::SessionCommandWindow>,
     execute_windows: Vec<crate::execute::ExecuteWindow>,
@@ -200,8 +202,10 @@ impl AdminApp {
             file_manager_windows: Vec::new(),
             desktop_windows: Vec::new(),
             camera_windows: Vec::new(),
+            audio_windows: Vec::new(),
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
+            voice_chat_windows: Vec::new(),
             interaction_command_windows: Vec::new(),
             session_command_windows: Vec::new(),
             execute_windows: Vec::new(),
@@ -307,6 +311,56 @@ impl AdminApp {
                     format,
                     bytes,
                 ),
+                AdminEvent::AudioFrame {
+                    client_id,
+                    source,
+                    seq,
+                    sample_rate,
+                    channels,
+                    format,
+                    bytes,
+                } => match source {
+                    AudioSource::AudioListen => {
+                        match live_control::audio_listen::decode_audio_frame(
+                            seq,
+                            sample_rate,
+                            channels,
+                            format,
+                            bytes,
+                        ) {
+                            Ok(frame) => live_control::audio_listen::handle_audio_frame(
+                                &mut self.audio_windows,
+                                &client_id,
+                                frame,
+                            ),
+                            Err(message) => self.handle_audio_ack(
+                                &client_id,
+                                true,
+                                format!("audio_listen_error\nmessage={message}"),
+                            ),
+                        }
+                    }
+                    AudioSource::VoiceChat => {
+                        match user_interaction::voice_chat::decode_audio_frame(
+                            seq,
+                            sample_rate,
+                            channels,
+                            format,
+                            bytes,
+                        ) {
+                            Ok(frame) => user_interaction::voice_chat::handle_audio_frame(
+                                &mut self.voice_chat_windows,
+                                &client_id,
+                                frame,
+                            ),
+                            Err(message) => self.handle_voice_chat_ack(
+                                &client_id,
+                                true,
+                                format!("voice_chat_error\nmessage={message}"),
+                            ),
+                        }
+                    }
+                },
                 AdminEvent::CommandOutput {
                     client_id,
                     command,
@@ -544,6 +598,10 @@ impl AdminApp {
             self.open_chat_window(client_id);
             return;
         }
+        if command == CommandKind::VoiceChat {
+            self.open_voice_chat_window(client_id);
+            return;
+        }
         if command == CommandKind::FileManager {
             self.open_file_manager_window(client_id);
             return;
@@ -558,6 +616,10 @@ impl AdminApp {
         }
         if command == CommandKind::Camera {
             self.open_camera_window(client_id);
+            return;
+        }
+        if command == CommandKind::AudioListen {
+            self.open_audio_window(client_id);
             return;
         }
         if matches!(
@@ -591,6 +653,16 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         user_interaction::text_chat::open_window(
             &mut self.chat_windows,
+            client_id,
+            hostname,
+            username,
+        );
+    }
+
+    fn open_voice_chat_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        user_interaction::voice_chat::open_window(
+            &mut self.voice_chat_windows,
             client_id,
             hostname,
             username,
@@ -631,6 +703,16 @@ impl AdminApp {
     fn open_camera_window(&mut self, client_id: &str) {
         let (hostname, username) = self.client_window_identity(client_id);
         live_control::camera::open_window(&mut self.camera_windows, client_id, hostname, username);
+    }
+
+    fn open_audio_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        live_control::audio_listen::open_window(
+            &mut self.audio_windows,
+            client_id,
+            hostname,
+            username,
+        );
     }
 
     fn open_session_command_window(&mut self, client_id: &str, command: CommandKind) {
@@ -755,6 +837,10 @@ impl AdminApp {
             self.handle_chat_ack(&client_id, accepted, detail);
             return;
         }
+        if command == CommandKind::VoiceChat {
+            self.handle_voice_chat_ack(&client_id, accepted, detail);
+            return;
+        }
         if command == CommandKind::FileManager {
             self.handle_file_manager_ack(&client_id, accepted, detail);
             return;
@@ -769,6 +855,10 @@ impl AdminApp {
         }
         if command == CommandKind::Camera {
             self.handle_camera_ack(&client_id, accepted, detail);
+            return;
+        }
+        if command == CommandKind::AudioListen {
+            self.handle_audio_ack(&client_id, accepted, detail);
             return;
         }
         if crate::execute::handle_ack(
@@ -898,6 +988,18 @@ impl AdminApp {
         );
     }
 
+    fn handle_voice_chat_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        user_interaction::voice_chat::handle_ack(
+            &mut self.voice_chat_windows,
+            client_id,
+            hostname,
+            username,
+            accepted,
+            detail,
+        );
+    }
+
     fn handle_file_manager_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
         let (hostname, username) = self.client_window_identity(client_id);
         remote_management::file_manager::handle_ack(
@@ -977,6 +1079,18 @@ impl AdminApp {
         let (hostname, username) = self.client_window_identity(client_id);
         live_control::camera::handle_ack(
             &mut self.camera_windows,
+            client_id,
+            hostname,
+            username,
+            accepted,
+            detail,
+        );
+    }
+
+    fn handle_audio_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        live_control::audio_listen::handle_ack(
+            &mut self.audio_windows,
             client_id,
             hostname,
             username,
@@ -1380,6 +1494,51 @@ impl AdminApp {
         }
     }
 
+    fn render_voice_chat_windows(&mut self, ctx: &egui::Context) {
+        for outbound in
+            user_interaction::voice_chat::render_windows(ctx, &mut self.voice_chat_windows)
+        {
+            match outbound {
+                user_interaction::voice_chat::OutboundCommand::Command { client_id, payload } => {
+                    let _ = self.input_tx.send(AdminInput::Command {
+                        target_id: client_id.clone(),
+                        command: CommandKind::VoiceChat,
+                        payload,
+                    });
+                    self.push_log(format!("sent voice_chat invite to {client_id}"));
+                }
+                user_interaction::voice_chat::OutboundCommand::AudioControl {
+                    client_id,
+                    payload,
+                } => {
+                    let _ = self.input_tx.send(AdminInput::AudioControl {
+                        target_id: client_id,
+                        source: AudioSource::VoiceChat,
+                        payload,
+                    });
+                }
+                user_interaction::voice_chat::OutboundCommand::AudioFrame {
+                    client_id,
+                    seq,
+                    sample_rate,
+                    channels,
+                    format,
+                    bytes,
+                } => {
+                    let _ = self.input_tx.send(AdminInput::AudioFrame {
+                        target_id: client_id,
+                        source: AudioSource::VoiceChat,
+                        seq,
+                        sample_rate,
+                        channels,
+                        format,
+                        bytes,
+                    });
+                }
+            }
+        }
+    }
+
     fn render_interaction_command_windows(&mut self, ctx: &egui::Context) {
         for outbound in user_interaction::render_windows(ctx, &mut self.interaction_command_windows)
         {
@@ -1647,6 +1806,25 @@ impl AdminApp {
         }
     }
 
+    fn render_audio_windows(&mut self, ctx: &egui::Context) {
+        for outbound in live_control::audio_listen::render_windows(ctx, &mut self.audio_windows) {
+            let message = if video_stream_payload(&outbound.payload) {
+                AdminInput::AudioControl {
+                    target_id: outbound.client_id.clone(),
+                    source: AudioSource::AudioListen,
+                    payload: outbound.payload,
+                }
+            } else {
+                AdminInput::Command {
+                    target_id: outbound.client_id.clone(),
+                    command: CommandKind::AudioListen,
+                    payload: outbound.payload,
+                }
+            };
+            let _ = self.input_tx.send(message);
+        }
+    }
+
     fn render_terminal_windows(&mut self, ctx: &egui::Context) {
         for outbound in
             remote_management::remote_terminal::render_windows(ctx, &mut self.terminal_windows)
@@ -1681,8 +1859,10 @@ impl eframe::App for AdminApp {
         self.render_file_manager_windows(ui.ctx());
         self.render_desktop_windows(ui.ctx());
         self.render_camera_windows(ui.ctx());
+        self.render_audio_windows(ui.ctx());
         self.render_terminal_windows(ui.ctx());
         self.render_chat_windows(ui.ctx());
+        self.render_voice_chat_windows(ui.ctx());
         self.render_interaction_command_windows(ui.ctx());
         self.render_session_command_windows(ui.ctx());
         self.render_execute_windows(ui.ctx());

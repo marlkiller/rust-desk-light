@@ -370,6 +370,7 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::DriverManager
             | CommandKind::RemoteDesktop
             | CommandKind::Camera
+            | CommandKind::AudioListen
             | CommandKind::MessageBox
             | CommandKind::BalloonTip
             | CommandKind::RemoteTerminal
@@ -377,6 +378,7 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::ActiveConnections
             | CommandKind::PerformanceMonitor
             | CommandKind::TextChat
+            | CommandKind::VoiceChat
             | CommandKind::OpenTextInNotepad
             | CommandKind::ExecuteFile
             | CommandKind::ExecuteCode

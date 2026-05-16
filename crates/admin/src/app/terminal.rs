@@ -103,6 +103,23 @@ pub(super) fn run_terminal(config: Config) -> io::Result<()> {
                     bytes.len()
                 );
             }
+            AdminEvent::AudioFrame {
+                client_id,
+                source,
+                bytes,
+                sample_rate,
+                channels,
+                ..
+            } => {
+                println!(
+                    "audio_frame client={} source={} rate={} channels={} bytes={}",
+                    client_id,
+                    source.as_str(),
+                    sample_rate,
+                    channels,
+                    bytes.len()
+                );
+            }
             AdminEvent::FileTransfer(message) => {
                 if let Message::FileTransfer {
                     target_id,

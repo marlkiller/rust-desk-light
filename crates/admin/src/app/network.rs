@@ -125,6 +125,42 @@ fn admin_connection_once(
                         payload,
                     },
                 ),
+                AdminInput::AudioControl {
+                    target_id,
+                    source,
+                    payload,
+                } => send(
+                    &mut stream,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::AudioControl {
+                        target_id,
+                        source,
+                        payload,
+                    },
+                ),
+                AdminInput::AudioFrame {
+                    target_id,
+                    source,
+                    seq,
+                    sample_rate,
+                    channels,
+                    format,
+                    bytes,
+                } => send(
+                    &mut stream,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::AudioFrame {
+                        client_id: target_id,
+                        source,
+                        seq,
+                        sample_rate,
+                        channels,
+                        format,
+                        bytes,
+                    },
+                ),
                 AdminInput::FileTransfer(message) => {
                     send(&mut stream, &mut next_message_id, &session_token, message)
                 }
@@ -219,6 +255,25 @@ fn admin_connection_once(
                     source_height,
                     image_width,
                     image_height,
+                    format,
+                    bytes,
+                });
+            }
+            Message::AudioFrame {
+                client_id,
+                source,
+                seq,
+                sample_rate,
+                channels,
+                format,
+                bytes,
+            } => {
+                event_sink.send(AdminEvent::AudioFrame {
+                    client_id,
+                    source,
+                    seq,
+                    sample_rate,
+                    channels,
                     format,
                     bytes,
                 });
