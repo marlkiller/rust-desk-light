@@ -18,6 +18,7 @@ const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const MAX_AUDIO_BUFFER_MS: usize = 500;
+const MIN_AUDIO_PREBUFFER_MS: usize = 80;
 
 pub(crate) struct VoiceChatWindow {
     pub(crate) client_id: String,
@@ -96,10 +97,17 @@ struct AudioInputStream {
 }
 
 struct AudioPlayer {
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
     output_sample_rate: u32,
     output_channels: u16,
     _stream: cpal::Stream,
+}
+
+struct AudioPlaybackState {
+    samples: VecDeque<f32>,
+    started: bool,
+    prebuffer_samples: usize,
+    max_samples: usize,
 }
 
 pub(crate) fn open_window(
@@ -600,7 +608,10 @@ impl AudioPlayer {
         let config = supported_config.config();
         let output_sample_rate = config.sample_rate.0;
         let output_channels = config.channels;
-        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let buffer = Arc::new(Mutex::new(AudioPlaybackState::new(
+            output_sample_rate,
+            output_channels,
+        )));
         let stream = match sample_format {
             cpal::SampleFormat::F32 => build_f32_output_stream(&device, &config, buffer.clone()),
             cpal::SampleFormat::I16 => build_i16_output_stream(&device, &config, buffer.clone()),
@@ -630,15 +641,44 @@ impl AudioPlayer {
             self.output_sample_rate,
             self.output_channels,
         );
-        let max_samples =
-            self.output_sample_rate as usize * self.output_channels as usize * MAX_AUDIO_BUFFER_MS
-                / 1000;
         if let Ok(mut buffer) = self.buffer.lock() {
-            for sample in converted {
-                buffer.push_back(sample);
+            buffer.push_samples(converted);
+        }
+    }
+}
+
+impl AudioPlaybackState {
+    fn new(sample_rate: u32, channels: u16) -> Self {
+        let samples_per_ms = sample_rate as usize * channels.max(1) as usize;
+        Self {
+            samples: VecDeque::new(),
+            started: false,
+            prebuffer_samples: (samples_per_ms * MIN_AUDIO_PREBUFFER_MS / 1000).max(1),
+            max_samples: (samples_per_ms * MAX_AUDIO_BUFFER_MS / 1000).max(1),
+        }
+    }
+
+    fn push_samples(&mut self, samples: Vec<f32>) {
+        self.samples.extend(samples);
+        while self.samples.len() > self.max_samples {
+            let _ = self.samples.pop_front();
+            self.started = true;
+        }
+    }
+
+    fn next_sample(&mut self) -> f32 {
+        if !self.started {
+            if self.samples.len() >= self.prebuffer_samples {
+                self.started = true;
+            } else {
+                return 0.0;
             }
-            while buffer.len() > max_samples {
-                let _ = buffer.pop_front();
+        }
+        match self.samples.pop_front() {
+            Some(sample) => sample,
+            None => {
+                self.started = false;
+                0.0
             }
         }
     }
@@ -647,7 +687,7 @@ impl AudioPlayer {
 fn build_f32_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
@@ -662,7 +702,7 @@ fn build_f32_output_stream(
 fn build_i16_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
@@ -677,7 +717,7 @@ fn build_i16_output_stream(
 fn build_u16_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
@@ -695,6 +735,9 @@ fn send_frame(
     channels: u16,
     bytes: Vec<u8>,
 ) {
+    if bytes.is_empty() {
+        return;
+    }
     let _ = frame_tx.try_send(CapturedAudioFrame {
         sample_rate,
         channels,
@@ -729,20 +772,20 @@ fn u16_to_pcm_s16(data: &[u16]) -> Vec<u8> {
     bytes
 }
 
-fn fill_f32_output(data: &mut [f32], buffer: &Arc<Mutex<VecDeque<f32>>>) {
+fn fill_f32_output(data: &mut [f32], buffer: &Arc<Mutex<AudioPlaybackState>>) {
     if let Ok(mut buffer) = buffer.lock() {
         for sample in data {
-            *sample = buffer.pop_front().unwrap_or(0.0);
+            *sample = buffer.next_sample();
         }
     } else {
         data.fill(0.0);
     }
 }
 
-fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
+fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
     if let Ok(mut buffer) = buffer.lock() {
         for sample in data {
-            let value = buffer.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let value = buffer.next_sample().clamp(-1.0, 1.0);
             *sample = (value * i16::MAX as f32).round() as i16;
         }
     } else {
@@ -750,10 +793,10 @@ fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
     }
 }
 
-fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
+fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
     if let Ok(mut buffer) = buffer.lock() {
         for sample in data {
-            let value = buffer.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let value = buffer.next_sample().clamp(-1.0, 1.0);
             *sample =
                 ((value * i16::MAX as f32).round() as i32 + 32768).clamp(0, u16::MAX as i32) as u16;
         }
@@ -765,7 +808,7 @@ fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
 fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / i16::MAX as f32)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
         .collect()
 }
 
@@ -787,15 +830,14 @@ fn resample_and_map_channels(
     let mut output = Vec::with_capacity(output_frames * output_channels);
     let rate_ratio = input_rate as f64 / output_rate as f64;
     for output_frame in 0..output_frames {
-        let input_frame =
-            ((output_frame as f64 * rate_ratio).floor() as usize).min(input_frames - 1);
+        let source_pos = output_frame as f64 * rate_ratio;
+        let input_frame = (source_pos.floor() as usize).min(input_frames - 1);
+        let next_frame = input_frame.saturating_add(1).min(input_frames - 1);
+        let mix = (source_pos - input_frame as f64) as f32;
         for output_channel in 0..output_channels {
-            output.push(mapped_channel_sample(
-                input,
-                input_frame,
-                input_channels,
-                output_channel,
-            ));
+            let current = mapped_channel_sample(input, input_frame, input_channels, output_channel);
+            let next = mapped_channel_sample(input, next_frame, input_channels, output_channel);
+            output.push(current + (next - current) * mix);
         }
     }
     output

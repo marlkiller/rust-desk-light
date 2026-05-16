@@ -253,7 +253,7 @@ fn client_connection_once(
                             );
                             event_sink.send(ClientEvent::VoiceChatConnected);
                             let worker_tx = out_tx.clone();
-                            let worker_realtime_tx = bulk_out_tx.clone();
+                            let worker_realtime_tx = out_tx.clone();
                             let worker_token = session_token.clone();
                             let stream_state = voice_chat_stream.clone();
                             let mic_muted = voice_chat_mic_muted.clone();
@@ -662,7 +662,7 @@ fn client_connection_once(
                         thread::sleep(Duration::from_millis(5));
                         audio_stream.running.store(true, Ordering::Relaxed);
                         let worker_tx = out_tx.clone();
-                        let worker_realtime_tx = bulk_out_tx.clone();
+                        let worker_realtime_tx = out_tx.clone();
                         let worker_token = session_token.clone();
                         let stream_state = audio_stream.clone();
                         thread::spawn(move || {

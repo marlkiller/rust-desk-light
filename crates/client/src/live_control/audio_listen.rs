@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc::SyncSender, Arc, Mutex};
 
 const MAX_AUDIO_BUFFER_MS: usize = 500;
+const MIN_AUDIO_PREBUFFER_MS: usize = 80;
 
 pub(crate) struct CapturedAudioFrame {
     pub(crate) sample_rate: u32,
@@ -20,16 +21,23 @@ pub(crate) struct AudioInputStream {
 }
 
 pub(crate) struct AudioOutputPlayer {
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
     output_sample_rate: u32,
     output_channels: u16,
     _stream: cpal::Stream,
 }
 
+struct AudioPlaybackState {
+    samples: VecDeque<f32>,
+    started: bool,
+    prebuffer_samples: usize,
+    max_samples: usize,
+}
+
 pub fn handle(payload: &str) -> String {
     let request = AudioListenRequest::parse(payload);
     match request.action.as_str() {
-        "devices" => list_devices(),
+        "devices" => list_devices(request.scan_full),
         "stop" => "audio_listen_stopped\nmessage=stopped".to_string(),
         "start" | "" => {
             "audio_listen_ready\nmessage=use audio control stream to start listening".to_string()
@@ -44,24 +52,28 @@ pub fn handle(payload: &str) -> String {
 #[derive(Default)]
 struct AudioListenRequest {
     action: String,
+    scan_full: bool,
 }
 
 impl AudioListenRequest {
     fn parse(payload: &str) -> Self {
         let mut request = Self {
             action: "start".to_string(),
+            scan_full: false,
         };
         for line in payload.lines() {
             if let Some(rest) = line.strip_prefix("action=") {
                 request.action = rest.trim().to_ascii_lowercase();
+            } else if let Some(rest) = line.strip_prefix("scan=") {
+                request.scan_full = rest.trim().eq_ignore_ascii_case("full");
             }
         }
         request
     }
 }
 
-fn list_devices() -> String {
-    match enumerate_input_devices() {
+fn list_devices(scan_full: bool) -> String {
+    match enumerate_input_devices(scan_full) {
         Ok(devices) => {
             let mut text = String::from("audio_listen_devices");
             for device in devices {
@@ -127,7 +139,10 @@ impl AudioOutputPlayer {
         let config = supported_config.config();
         let output_sample_rate = config.sample_rate.0;
         let output_channels = config.channels;
-        let buffer = Arc::new(Mutex::new(VecDeque::new()));
+        let buffer = Arc::new(Mutex::new(AudioPlaybackState::new(
+            output_sample_rate,
+            output_channels,
+        )));
         let stream = match sample_format {
             cpal::SampleFormat::F32 => build_f32_output_stream(&device, &config, buffer.clone()),
             cpal::SampleFormat::I16 => build_i16_output_stream(&device, &config, buffer.clone()),
@@ -163,18 +178,47 @@ impl AudioOutputPlayer {
             self.output_sample_rate,
             self.output_channels,
         );
-        let max_samples =
-            self.output_sample_rate as usize * self.output_channels as usize * MAX_AUDIO_BUFFER_MS
-                / 1000;
         if let Ok(mut buffer) = self.buffer.lock() {
-            for sample in converted {
-                buffer.push_back(sample);
-            }
-            while buffer.len() > max_samples {
-                let _ = buffer.pop_front();
-            }
+            buffer.push_samples(converted);
         }
         Ok(())
+    }
+}
+
+impl AudioPlaybackState {
+    fn new(sample_rate: u32, channels: u16) -> Self {
+        let samples_per_ms = sample_rate as usize * channels.max(1) as usize;
+        Self {
+            samples: VecDeque::new(),
+            started: false,
+            prebuffer_samples: (samples_per_ms * MIN_AUDIO_PREBUFFER_MS / 1000).max(1),
+            max_samples: (samples_per_ms * MAX_AUDIO_BUFFER_MS / 1000).max(1),
+        }
+    }
+
+    fn push_samples(&mut self, samples: Vec<f32>) {
+        self.samples.extend(samples);
+        while self.samples.len() > self.max_samples {
+            let _ = self.samples.pop_front();
+            self.started = true;
+        }
+    }
+
+    fn next_sample(&mut self) -> f32 {
+        if !self.started {
+            if self.samples.len() >= self.prebuffer_samples {
+                self.started = true;
+            } else {
+                return 0.0;
+            }
+        }
+        match self.samples.pop_front() {
+            Some(sample) => sample,
+            None => {
+                self.started = false;
+                0.0
+            }
+        }
     }
 }
 
@@ -241,7 +285,7 @@ fn build_u16_input_stream(
 fn build_f32_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
@@ -256,7 +300,7 @@ fn build_f32_output_stream(
 fn build_i16_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
@@ -271,7 +315,7 @@ fn build_i16_output_stream(
 fn build_u16_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    buffer: Arc<Mutex<VecDeque<f32>>>,
+    buffer: Arc<Mutex<AudioPlaybackState>>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
@@ -283,20 +327,20 @@ fn build_u16_output_stream(
         .map_err(|error| format!("build output stream failed: {error}"))
 }
 
-fn fill_f32_output(data: &mut [f32], buffer: &Arc<Mutex<VecDeque<f32>>>) {
+fn fill_f32_output(data: &mut [f32], buffer: &Arc<Mutex<AudioPlaybackState>>) {
     if let Ok(mut buffer) = buffer.lock() {
         for sample in data {
-            *sample = buffer.pop_front().unwrap_or(0.0);
+            *sample = buffer.next_sample();
         }
     } else {
         data.fill(0.0);
     }
 }
 
-fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
+fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
     if let Ok(mut buffer) = buffer.lock() {
         for sample in data {
-            let value = buffer.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let value = buffer.next_sample().clamp(-1.0, 1.0);
             *sample = (value * i16::MAX as f32).round() as i16;
         }
     } else {
@@ -304,10 +348,10 @@ fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
     }
 }
 
-fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<VecDeque<f32>>>) {
+fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
     if let Ok(mut buffer) = buffer.lock() {
         for sample in data {
-            let value = buffer.pop_front().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let value = buffer.next_sample().clamp(-1.0, 1.0);
             *sample =
                 ((value * i16::MAX as f32).round() as i32 + 32768).clamp(0, u16::MAX as i32) as u16;
         }
@@ -362,7 +406,7 @@ fn u16_to_pcm_s16(data: &[u16]) -> Vec<u8> {
 fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / i16::MAX as f32)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
         .collect()
 }
 
@@ -384,15 +428,14 @@ fn resample_and_map_channels(
     let mut output = Vec::with_capacity(output_frames * output_channels);
     let rate_ratio = input_rate as f64 / output_rate as f64;
     for output_frame in 0..output_frames {
-        let input_frame =
-            ((output_frame as f64 * rate_ratio).floor() as usize).min(input_frames - 1);
+        let source_pos = output_frame as f64 * rate_ratio;
+        let input_frame = (source_pos.floor() as usize).min(input_frames - 1);
+        let next_frame = input_frame.saturating_add(1).min(input_frames - 1);
+        let mix = (source_pos - input_frame as f64) as f32;
         for output_channel in 0..output_channels {
-            output.push(mapped_channel_sample(
-                input,
-                input_frame,
-                input_channels,
-                output_channel,
-            ));
+            let current = mapped_channel_sample(input, input_frame, input_channels, output_channel);
+            let next = mapped_channel_sample(input, next_frame, input_channels, output_channel);
+            output.push(current + (next - current) * mix);
         }
     }
     output
@@ -422,31 +465,40 @@ struct AudioDeviceInfo {
     description: String,
 }
 
-fn enumerate_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
+fn enumerate_input_devices(scan_full: bool) -> Result<Vec<AudioDeviceInfo>, String> {
     let host = cpal::default_host();
-    let default_name = host
-        .default_input_device()
+    let default_device = host.default_input_device();
+    let default_name = default_device
+        .as_ref()
         .and_then(|device| device.name().ok());
+    let mut output = Vec::new();
+    if let Some(device) = default_device {
+        let name = default_name
+            .clone()
+            .unwrap_or_else(|| "Default input device".to_string());
+        output.push(AudioDeviceInfo {
+            index: 0,
+            name,
+            description: default_audio_config_label(&device, true),
+        });
+    }
+    if default_device_fast_path(scan_full) && !output.is_empty() {
+        return Ok(output);
+    }
     let devices = host
         .input_devices()
         .map_err(|error| format!("list audio input devices failed: {error}"))?;
-    let mut output = Vec::new();
-    for (index, device) in devices.enumerate() {
+    for (device_number, device) in devices.enumerate() {
         let name = device
             .name()
-            .unwrap_or_else(|_| format!("Input device {index}"));
-        let mut description = default_audio_config_label(&device);
+            .unwrap_or_else(|_| format!("Input device {device_number}"));
         if default_name.as_deref() == Some(name.as_str()) {
-            description = if description.is_empty() {
-                "default".to_string()
-            } else {
-                format!("default, {description}")
-            };
+            continue;
         }
         output.push(AudioDeviceInfo {
-            index,
+            index: output.len(),
             name,
-            description,
+            description: default_audio_config_label(&device, false),
         });
     }
     if output.is_empty() {
@@ -455,26 +507,60 @@ fn enumerate_input_devices() -> Result<Vec<AudioDeviceInfo>, String> {
     Ok(output)
 }
 
+#[cfg(target_os = "macos")]
+fn default_device_fast_path(scan_full: bool) -> bool {
+    !scan_full
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_device_fast_path(_scan_full: bool) -> bool {
+    false
+}
+
 fn input_device(device_index: usize) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
-    let mut devices = host
+    let default_device = host.default_input_device();
+    let has_default_device = default_device.is_some();
+    let default_name = default_device
+        .as_ref()
+        .and_then(|device| device.name().ok());
+    if device_index == 0 {
+        if let Some(device) = default_device {
+            return Ok(device);
+        }
+    }
+    let devices = host
         .input_devices()
         .map_err(|error| format!("list audio input devices failed: {error}"))?;
-    if let Some(device) = devices.nth(device_index) {
-        return Ok(device);
-    }
-    if device_index == 0 {
-        return host
-            .default_input_device()
-            .ok_or_else(|| "no default audio input device found".to_string());
+    let mut index = if has_default_device { 1 } else { 0 };
+    for device in devices {
+        if let Ok(name) = device.name() {
+            if default_name.as_deref() == Some(name.as_str()) {
+                continue;
+            }
+        }
+        if index == device_index {
+            return Ok(device);
+        }
+        index += 1;
     }
     Err(format!(
         "audio input device index {device_index} is not available"
     ))
 }
 
-fn default_audio_config_label(device: &cpal::Device) -> String {
-    device
+#[cfg(target_os = "macos")]
+fn default_audio_config_label(_device: &cpal::Device, is_default: bool) -> String {
+    if is_default {
+        "default".to_string()
+    } else {
+        "input".to_string()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn default_audio_config_label(device: &cpal::Device, is_default: bool) -> String {
+    let label = device
         .default_input_config()
         .map(|config| {
             format!(
@@ -484,7 +570,16 @@ fn default_audio_config_label(device: &cpal::Device) -> String {
                 config.sample_format()
             )
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if is_default {
+        if label.is_empty() {
+            "default".to_string()
+        } else {
+            format!("default, {label}")
+        }
+    } else {
+        label
+    }
 }
 
 fn sanitize_field(value: &str) -> String {

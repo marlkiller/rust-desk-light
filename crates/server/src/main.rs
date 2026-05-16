@@ -13,7 +13,8 @@ const HEARTBEAT_INTERVAL_MS: u128 = 10_000;
 const STALE_PEER_MS: u128 = 45_000;
 const MAINTENANCE_TICK_MS: u64 = 100;
 const WRITER_BULK_POLL_MS: u64 = 2;
-const WRITER_REALTIME_QUEUE_CAPACITY: usize = 4;
+const WRITER_AUDIO_QUEUE_CAPACITY: usize = 24;
+const WRITER_VIDEO_QUEUE_CAPACITY: usize = 4;
 
 #[derive(Debug)]
 enum ServerEvent {
@@ -42,22 +43,32 @@ enum ServerEvent {
 #[derive(Clone, Debug)]
 struct PeerSender {
     high: Sender<Message>,
-    realtime: SyncSender<Message>,
+    audio: SyncSender<Message>,
+    video: SyncSender<Message>,
     bulk: Sender<Message>,
 }
 
 impl PeerSender {
     fn send(&self, message: Message) -> Result<(), mpsc::SendError<Message>> {
-        if server_message_is_realtime(&message) {
-            match self.realtime.try_send(message) {
-                Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
-                Err(TrySendError::Disconnected(message)) => Err(mpsc::SendError(message)),
-            }
+        if server_message_is_audio_realtime(&message) {
+            try_send_lossy(&self.audio, message)
+        } else if server_message_is_video_realtime(&message) {
+            try_send_lossy(&self.video, message)
         } else if server_message_is_bulk(&message) {
             self.bulk.send(message)
         } else {
             self.high.send(message)
         }
+    }
+}
+
+fn try_send_lossy(
+    tx: &SyncSender<Message>,
+    message: Message,
+) -> Result<(), mpsc::SendError<Message>> {
+    match tx.try_send(message) {
+        Ok(()) | Err(TrySendError::Full(_)) => Ok(()),
+        Err(TrySendError::Disconnected(message)) => Err(mpsc::SendError(message)),
     }
 }
 
@@ -116,14 +127,16 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
         eprintln!("peer {peer_id} set TCP_NODELAY failed: {error}");
     }
     let (high_tx, high_rx) = mpsc::channel::<Message>();
-    let (realtime_tx, realtime_rx) = mpsc::sync_channel::<Message>(WRITER_REALTIME_QUEUE_CAPACITY);
+    let (audio_tx, audio_rx) = mpsc::sync_channel::<Message>(WRITER_AUDIO_QUEUE_CAPACITY);
+    let (video_tx, video_rx) = mpsc::sync_channel::<Message>(WRITER_VIDEO_QUEUE_CAPACITY);
     let (bulk_tx, bulk_rx) = mpsc::channel::<Message>();
     if events_tx
         .send(ServerEvent::Connected {
             peer_id,
             sender: PeerSender {
                 high: high_tx,
-                realtime: realtime_tx,
+                audio: audio_tx,
+                video: video_tx,
                 bulk: bulk_tx,
             },
             peer_addr,
@@ -141,7 +154,7 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
         }
     };
 
-    thread::spawn(move || writer_loop(peer_id, writer, high_rx, realtime_rx, bulk_rx));
+    thread::spawn(move || writer_loop(peer_id, writer, high_rx, audio_rx, video_rx, bulk_rx));
 
     let mut reader = stream;
     loop {
@@ -203,14 +216,16 @@ fn writer_loop(
     peer_id: usize,
     mut writer: TcpStream,
     high_rx: Receiver<Message>,
-    realtime_rx: Receiver<Message>,
+    audio_rx: Receiver<Message>,
+    video_rx: Receiver<Message>,
     bulk_rx: Receiver<Message>,
 ) {
     let mut next_message_id = 1u64;
     let mut high_open = true;
-    let mut realtime_open = true;
+    let mut audio_open = true;
+    let mut video_open = true;
     let mut bulk_open = true;
-    while high_open || realtime_open || bulk_open {
+    while high_open || audio_open || video_open || bulk_open {
         loop {
             match high_rx.try_recv() {
                 Ok(message) => {
@@ -227,7 +242,7 @@ fn writer_loop(
         }
 
         loop {
-            match realtime_rx.try_recv() {
+            match audio_rx.try_recv() {
                 Ok(message) => {
                     if !write_server_message(peer_id, &mut writer, &mut next_message_id, message) {
                         return;
@@ -235,7 +250,22 @@ fn writer_loop(
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    realtime_open = false;
+                    audio_open = false;
+                    break;
+                }
+            }
+        }
+
+        loop {
+            match video_rx.try_recv() {
+                Ok(message) => {
+                    if !write_server_message(peer_id, &mut writer, &mut next_message_id, message) {
+                        return;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    video_open = false;
                     break;
                 }
             }
@@ -253,7 +283,7 @@ fn writer_loop(
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                if !high_open && !realtime_open && !bulk_open {
+                if !high_open && !audio_open && !video_open && !bulk_open {
                     break;
                 }
             }
@@ -277,11 +307,12 @@ fn write_server_message(
     true
 }
 
-fn server_message_is_realtime(message: &Message) -> bool {
-    matches!(
-        message,
-        Message::VideoFrame { .. } | Message::AudioFrame { .. }
-    )
+fn server_message_is_audio_realtime(message: &Message) -> bool {
+    matches!(message, Message::AudioFrame { .. })
+}
+
+fn server_message_is_video_realtime(message: &Message) -> bool {
+    matches!(message, Message::VideoFrame { .. })
 }
 
 fn server_message_is_bulk(message: &Message) -> bool {
