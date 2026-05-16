@@ -305,12 +305,14 @@ fn render_controls(
         VoiceChatStatus::Connecting | VoiceChatStatus::Live => {
             ui.horizontal(|ui| {
                 let mut mic = mic_muted.load(Ordering::Relaxed);
-                if ui.checkbox(&mut mic, "Mute").changed() {
+                let mic_label = mic_label(mic);
+                if ui.checkbox(&mut mic, mic_label).changed() {
                     mic_muted.store(mic, Ordering::Relaxed);
                     mic_changed.store(true, Ordering::Relaxed);
                 }
                 let mut speaker = speaker_muted.load(Ordering::Relaxed);
-                if ui.checkbox(&mut speaker, "Speaker off").changed() {
+                let speaker_label = speaker_label(speaker);
+                if ui.checkbox(&mut speaker, speaker_label).changed() {
                     speaker_muted.store(speaker, Ordering::Relaxed);
                     speaker_changed.store(true, Ordering::Relaxed);
                 }
@@ -323,6 +325,22 @@ fn render_controls(
         VoiceChatStatus::Ended | VoiceChatStatus::Failed => {
             ui.label(egui::RichText::new("Closed").color(COLOR_MUTED));
         }
+    }
+}
+
+fn mic_label(muted: bool) -> &'static str {
+    if muted {
+        "Mic off"
+    } else {
+        "Mic on"
+    }
+}
+
+fn speaker_label(muted: bool) -> &'static str {
+    if muted {
+        "Speaker off"
+    } else {
+        "Speaker on"
     }
 }
 
