@@ -118,36 +118,35 @@ fn macos_window_manager() -> String {
         &[
             "-lc",
             r#"
-output="$(osascript <<'OSA' 2>/dev/null
-set output to "PID	Process	Title	Visible	Path"
-tell application "System Events"
-  repeat with p in (processes whose background only is false)
-    set processName to name of p
-    set processPid to unix id of p
-    set processVisible to visible of p
-    set processPath to "-"
-    try
-      set processPath to POSIX path of application file of p
-    end try
-    set windowCount to count of windows of p
-    if windowCount is 0 then
-      set output to output & linefeed & processPid & tab & processName & tab & "-" & tab & processVisible & tab & processPath
-    else
-      repeat with w in windows of p
-        set windowName to "-"
-        try
-          set windowName to name of w
-        end try
-        set output to output & linefeed & processPid & tab & processName & tab & windowName & tab & processVisible & tab & processPath
-      end repeat
-    end if
-  end repeat
-end tell
-return output
-OSA
-)" && [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -gt 1 ] || output="PID	Process	Title	Visible	Path
-0	Info	Window listing requires Accessibility permission or no GUI windows were found	-	-"
-printf '%s\n' "$output"
+printf 'PID\tProcess\tTitle\tVisible\tPath\n'
+if command -v lsappinfo >/dev/null 2>&1; then
+  rows="$(lsappinfo visibleProcessList 2>/dev/null | grep -Eo 'ASN:0x[0-9a-fA-F]+-0x[0-9a-fA-F]+' | while read -r asn; do
+    info="$(lsappinfo info -only pid,name,bundlepath "$asn" 2>/dev/null)"
+    pid="$(printf '%s\n' "$info" | sed -n 's/^"pid"=//p' | head -n 1)"
+    name="$(printf '%s\n' "$info" | sed -n 's/^"LSDisplayName"="\(.*\)"/\1/p' | head -n 1 | tr '\t\r\n' '   ')"
+    path="$(printf '%s\n' "$info" | sed -n 's/^"LSBundlePath"="\(.*\)"/\1/p' | head -n 1 | tr '\t\r\n' '   ')"
+    [ -n "$pid" ] || continue
+    [ -n "$name" ] || name="-"
+    [ -n "$path" ] || path="-"
+    printf '%s\t%s\t-\ttrue\t%s\n' "$pid" "$name" "$path"
+  done)"
+  if [ -n "$rows" ]; then
+    printf '%s\n' "$rows"
+    exit 0
+  fi
+fi
+output="$(osascript -e 'tell application "System Events" to get the unix id & tab & name of every process whose background only is false' 2>/dev/null || true)"
+if [ -n "$output" ]; then
+  printf '%s\n' "$output" | tr ',' '\n' | while IFS="$(printf '\t')" read -r pid name; do
+    pid="$(printf '%s' "$pid" | tr -dc '0-9')"
+    name="$(printf '%s' "$name" | sed 's/^ *//; s/ *$//' | tr '\t\r\n' '   ')"
+    [ -n "$pid" ] || continue
+    [ -n "$name" ] || name="-"
+    printf '%s\t%s\t-\ttrue\t-\n' "$pid" "$name"
+  done
+  exit 0
+fi
+printf '0\tInfo\tFast window listing returned no visible apps\t-\t-\n'
 "#,
         ],
         300,

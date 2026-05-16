@@ -1224,6 +1224,7 @@ impl AdminApp {
             ));
             if accepted && kill_target_process_succeeded(&detail) {
                 self.refresh_process_window(&client_id);
+                self.refresh_window_manager_window(&client_id);
             }
             return;
         }
@@ -1357,21 +1358,48 @@ impl AdminApp {
     }
 
     fn refresh_process_window(&mut self, client_id: &str) {
-        let Some(window) = self.command_windows.iter_mut().rev().find(|window| {
-            window.client_id == client_id && window.command == CommandKind::ProcessManager
-        }) else {
+        self.refresh_command_result_window(
+            client_id,
+            CommandKind::ProcessManager,
+            "Refreshing process list...",
+        );
+    }
+
+    fn refresh_window_manager_window(&mut self, client_id: &str) {
+        self.refresh_command_result_window(
+            client_id,
+            CommandKind::WindowManager,
+            "Refreshing window list...",
+        );
+    }
+
+    fn refresh_command_result_window(
+        &mut self,
+        client_id: &str,
+        command: CommandKind,
+        pending_detail: &str,
+    ) {
+        let Some(window) = self
+            .command_windows
+            .iter_mut()
+            .rev()
+            .find(|window| window.client_id == client_id && window.command == command)
+        else {
             return;
         };
 
         let _ = self.input_tx.send(AdminInput::Command {
             target_id: client_id.to_string(),
-            command: CommandKind::ProcessManager,
+            command: command.clone(),
             payload: String::new(),
         });
         window.status = CommandResultStatus::Pending;
-        window.detail = "Refreshing process list...".to_string();
+        window.detail = pending_detail.to_string();
         window.open = true;
-        self.push_log(format!("refresh command=process_manager to {client_id}"));
+        self.push_log(format!(
+            "refresh command={} to {client_id}",
+            command.as_str()
+        ));
     }
 
     fn render_menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -3178,14 +3206,17 @@ fn table_row(
 }
 
 fn process_row_pid(command: &CommandKind, headers: &[String], row: &[String]) -> Option<String> {
-    if *command != CommandKind::ProcessManager {
+    if !matches!(
+        command,
+        CommandKind::ProcessManager | CommandKind::WindowManager
+    ) {
         return None;
     }
     let pid_index = headers
         .iter()
         .position(|header| header.eq_ignore_ascii_case("pid"))?;
     let pid = row.get(pid_index)?.trim();
-    if pid.chars().all(|ch| ch.is_ascii_digit()) {
+    if pid != "0" && pid.chars().all(|ch| ch.is_ascii_digit()) {
         Some(pid.to_string())
     } else {
         None
@@ -3504,6 +3535,26 @@ mod tests {
         let unique = keys.iter().collect::<std::collections::HashSet<_>>();
 
         assert_eq!(keys.len(), unique.len());
+    }
+
+    #[test]
+    fn window_manager_rows_can_request_process_kill() {
+        let headers = strings(["PID", "Process", "Title"]);
+        let row = strings(["1234", "Terminal", "shell"]);
+
+        assert_eq!(
+            process_row_pid(&CommandKind::WindowManager, &headers, &row).as_deref(),
+            Some("1234")
+        );
+    }
+
+    #[test]
+    fn process_kill_action_ignores_pid_zero_rows() {
+        let headers = strings(["PID", "Process", "Title"]);
+        let row = strings(["0", "Info", "No windows"]);
+
+        assert!(process_row_pid(&CommandKind::WindowManager, &headers, &row).is_none());
+        assert!(process_row_pid(&CommandKind::ProcessManager, &headers, &row).is_none());
     }
 
     #[test]
