@@ -2,12 +2,13 @@
 
 Lightweight Rust remote administration toolkit with GUI-based device management, remote desktop, file transfer, terminal access, camera viewing, and local-first control features.
 
-`rust-desk-light` is organized as three small binaries plus a shared protocol crate:
+`rust-desk-light` is organized as three small binaries plus shared protocol/assets crates:
 
 - `rdl-server`: presence, session registration, routing, and relay.
 - `rdl-client`: endpoint agent with GUI status, terminal fallback, and local capability handlers.
 - `rdl-admin`: operator GUI for client discovery, commands, live control, and result viewing.
 - `rdl_protocol`: shared binary transport and command model.
+- `rust-desk-light-assets`: shared embedded GUI resources such as the app icon.
 
 The project is intentionally compact. It focuses on practical remote assistance workflows, simple deployment, and a readable Rust codebase rather than a large enterprise remote management stack.
 
@@ -17,35 +18,24 @@ TODO: Screenshots will be added later.
 
 ## Features
 
-- Native Rust workspace with `server`, `client`, `admin`, and shared protocol crates.
-- Versioned binary TCP protocol with session tokens and typed payloads.
-- Admin GUI with online client table, search/filter, activity log, and right-click command menu.
-- Client GUI with connection status, identity details, and timestamped activity log.
-- Persistent client/admin identity files.
-- Confirmed session lifecycle commands for client restart/update, uninstall, process stop, shutdown, reboot, and client deletion.
-- Command result windows with compact tables, filtering, sorting, copy actions, and row-wide context menus.
-- System information, process/window/startup/driver lists, Windows registry snapshot, process kill, performance snapshot, active connections, and event log summary.
-- Clipboard read/write commands.
-- File manager with directory listing, chunked large file and directory upload/download, progress table, stop/delete transfer actions, delete, rename, new folder, path jump, and parent navigation.
-- Remote terminal with streaming output, cancellation, command history, cwd prompt, copy, and clear actions.
-- Execute file, code, and static command workflows with target runtime detection for code execution.
-- Remote desktop viewing with screen selection, quality options, frame coalescing, and binary video frame transport.
-- Remote mouse movement, mouse click, and text input where supported.
-- Camera live view with device selection, quality selection, save-current-frame, and binary video frame transport.
-- Audio listen with input device selection, client-side approval, live peak meter, and binary PCM frame transport.
-- Text chat between admin and client.
-- Voice chat with incoming-call approval, call timer, mute controls, live audio meters, and duplex PCM frame transport.
-- User interaction commands for message boxes, system notifications / balloon tips, and opening text in Notepad or the platform editor.
-- Terminal fallback mode for smoke tests, headless recovery, and protocol checks.
-- GitHub Actions release workflow for Linux, macOS, and Windows artifacts.
+- Lightweight Rust admin/client/server workspace with a shared binary protocol and embedded GUI assets.
+- TCP control channel with session tokens, typed messages, reconnect, heartbeat, and server-side client routing.
+- UDP audio relay for low-latency audio listen and duplex voice chat.
+- Admin console with online clients, search/filter, activity log, command menu, and rich result windows.
+- Session actions: update, uninstall, kill client process, shutdown, reboot, and delete offline clients.
+- Remote management tools: file manager, streaming terminal, process/window/startup/driver managers, registry snapshot, event log, active connections, and performance monitor.
+- System tools: computer information, clipboard read/write, execute file, execute code, and reusable static commands.
+- Live control: remote desktop, mouse/keyboard input, camera view, audio listen, and voice chat.
+- User interaction: message boxes, system notifications, text chat, and opening text in the platform editor.
+- Cross-platform GUI/terminal fallback builds for Windows, Linux, and macOS, with GitHub Actions release artifacts.
 
 ## Supported Platforms
 
 | Binary | Windows | Linux | macOS | Notes |
 | --- | --- | --- | --- | --- |
-| `rdl-server` | Supported | Supported | Supported | TCP relay and presence server. |
-| `rdl-client` | Supported | Supported | Supported | GUI when available; terminal fallback with `RDL_FORCE_TERMINAL=1`. |
-| `rdl-admin` | Supported | Supported | Supported | GUI operator console; terminal mode is mainly for smoke tests. |
+| `rdl-server` | ✅ | ✅ | ✅ | Terminal server. |
+| `rdl-client` | ✅ | ✅ | ✅ | GUI client; terminal fallback with `RDL_FORCE_TERMINAL=1`. |
+| `rdl-admin` | ✅ | ✅ | ✅ | GUI admin console; terminal mode for smoke tests. |
 
 Platform-specific capability notes:
 
@@ -136,6 +126,8 @@ Run the server manually:
 cargo run -p rust-desk-light-server -- --ip 0.0.0.0 --port 5169
 ```
 
+The server uses the configured port for both TCP control/video/file traffic and UDP audio relay traffic. If you run across machines, allow both TCP and UDP on that port.
+
 Run a client:
 
 ```sh
@@ -146,6 +138,12 @@ Run the admin GUI:
 
 ```sh
 cargo run -p rust-desk-light-admin -- --ip 127.0.0.1 --port 5169
+```
+
+For release-mode manual testing, put Cargo flags before the `--` separator and app flags after it:
+
+```sh
+cargo run --release -p rust-desk-light-admin -- --ip 127.0.0.1 --port 5169
 ```
 
 Useful environment variables:
@@ -197,7 +195,11 @@ xattr -cr ./rdl-server
 
 The transport is a custom versioned binary protocol over TCP. Frames use `RDL1` magic bytes, protocol version, length, role, message kind, session token, and typed payloads. Client and admin peers register first, then the server issues a session token required by follow-up messages.
 
-Live desktop and camera frames use binary `VideoFrame` messages. Audio listen and voice chat use source-tagged binary `AudioFrame` messages with PCM payloads rather than local base64 encode/decode paths. Command result compatibility paths remain text-based where appropriate.
+Live desktop and camera frames use binary `VideoFrame` messages over TCP. This keeps large JPEG frames reliable; the current UDP relay is intentionally not used for remote desktop or camera because high-quality desktop frames can split into hundreds of UDP packets, where one lost packet drops the whole frame without a proper video codec, retransmission, FEC, or QUIC/WebRTC-style transport.
+
+Audio listen and voice chat use a separate lightweight UDP packet format with `RDU1` magic bytes. The receiver registers a stream id with the server's UDP relay, and the sender emits small PCM `pcm_s16le` packets with sequence numbers, capture timestamps, sample rate, and channel count. Audio listen uses one client-to-admin stream. Voice chat uses two streams, one admin-to-client and one client-to-admin. The audio path is UDP-only by design so it does not build up seconds of TCP head-of-line delay under interactive use.
+
+Command result compatibility paths remain text-based where appropriate.
 
 ## Roadmap
 

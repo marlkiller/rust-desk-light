@@ -1,11 +1,12 @@
 # ROADMAP
 
-This project is a lightweight Rust remote assistance tool with three small parts:
+This project is a lightweight Rust remote assistance tool with three small binaries plus shared crates:
 
-- `rdl-server`: presence, routing, and relay.
+- `rdl-server`: presence, routing, TCP message relay, and UDP audio relay.
 - `rdl-client`: endpoint agent with GUI status and terminal fallback.
 - `rdl-admin`: operator GUI for listing clients and sending commands.
 - `rdl_protocol`: shared wire protocol and command model.
+- `rust-desk-light-assets`: shared embedded GUI resources.
 
 ## Principles
 
@@ -14,12 +15,13 @@ This project is a lightweight Rust remote assistance tool with three small parts
 - Keep GUI lightweight with `egui/eframe`.
 - Keep headless/terminal mode working for smoke checks and recovery.
 - Add risky capabilities gradually, with explicit user-visible behavior.
+- Keep UDP scoped to small low-latency media packets unless a larger transport has retransmission, FEC, or codec-level recovery.
 - Prefer small, verifiable milestones over a large professional remote-desktop stack.
 
 ## Milestone 0: Workspace Foundation
 
 - [x] Create Rust workspace.
-- [x] Add `server`, `client`, `admin`, and shared `protocol` crates.
+- [x] Add `server`, `client`, `admin`, shared `protocol`, and shared `assets` crates.
 - [x] Add `--ip` and `--port` startup arguments.
 - [x] Add terminal server.
 - [x] Add GUI startup with terminal fallback.
@@ -156,6 +158,7 @@ Build view-only remote desktop before input control.
 - [x] Improve admin remote desktop frame handling by coalescing frames and decoding off the UI thread.
 - [x] Move live video frames to binary `VideoFrame` transport instead of command/ack base64 payloads.
 - [x] Keep live remote desktop capture on direct binary bytes across Windows/Linux/macOS.
+- [x] Try UDP remote desktop transport and revert it to TCP after high-quality JPEG frames split into too many UDP packets for a no-recovery relay.
 
 Reference direction:
 
@@ -189,12 +192,34 @@ macOS note:
 - [x] Linux/macOS lightweight snapshot fallback through local camera tools.
 - [x] Use shared binary `VideoFrame` transport for camera capture frames.
 - [x] Keep live camera capture on direct binary bytes instead of local base64 encode/decode.
+- [x] Keep camera frames on TCP `VideoFrame`; the UDP relay is scoped to audio until video has proper packet recovery or a real-time video codec.
+
+## Milestone 8.6: Low-Latency Audio And Voice
+
+- [x] Audio listen command routing through live control.
+- [x] Admin audio listen window with device selection, start/stop capture, live meter, and playback status.
+- [x] Client-side audio listen approval before microphone capture starts.
+- [x] Add shared `RDU1` UDP audio packet format with register, unregister, stream id, sequence number, capture timestamp, sample rate, channel count, format, and PCM payload.
+- [x] Add server UDP audio relay on the same configured IP/port as the TCP server.
+- [x] Move audio listen from TCP `AudioFrame` delivery to UDP client-to-admin audio streaming.
+- [x] Add voice chat invite/accept/end flow.
+- [x] Add duplex voice chat over two UDP streams: admin-to-client and client-to-admin.
+- [x] Add mic mute and speaker mute controls on both sides.
+- [x] Packetize PCM into small UDP payloads to avoid the multi-second queueing seen with TCP audio.
+- [x] Keep the audio path UDP-only; no TCP fallback path is kept for audio listen or voice chat.
+- [x] Gate verbose media debug logs so release builds do not spam normal output.
+
+Notes:
+
+- Remote desktop and camera remain on TCP `VideoFrame` transport because the frames are much larger than audio packets.
+- If video needs UDP later, revisit it as a real video transport problem: codec, MTU-aware packetization, jitter buffer, retransmission/NACK, FEC, or QUIC/WebRTC-style behavior.
 
 ## Milestone 9: Packaging And Runtime
 
 - [x] Persistent client/admin identity config files.
 - [x] Avoid repeated macOS hostname `scutil` calls by caching hostname and using `gethostname` first.
 - [x] Automatically ad-hoc sign macOS debug builds for `rdl-client`, `rdl-admin`, and `rdl-server`.
+- [x] Embed shared app icon assets for the admin and client GUI windows.
 - [ ] General persistent config files beyond identity.
 - [ ] Server config file.
 - [x] Windows build artifact.
@@ -213,7 +238,8 @@ These are useful in a professional product but too heavy for the current lightwe
 - Enterprise audit database.
 - Multi-tenant server.
 - NAT traversal optimization.
-- Microphone streaming and full A/V session streaming.
+- Full multi-party/conferencing A/V stack.
+- UDP remote desktop without packet recovery or a real-time video codec.
 - Auto-update system.
 - Signed plugin loading.
 - Complex task scheduler.
