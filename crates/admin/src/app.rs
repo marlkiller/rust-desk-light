@@ -87,9 +87,17 @@ fn run_gui(config: Config) -> eframe::Result {
     let audio_playback_registry = live_control::audio_listen::AudioPlaybackRegistry::default();
     let network_audio_playback_registry = audio_playback_registry.clone();
     let voice_udp_senders = Arc::new(Mutex::new(HashMap::new()));
+    let voice_udp_endpoints = Arc::new(Mutex::new(HashMap::new()));
     let voice_audio_udp_senders = voice_udp_senders.clone();
+    let voice_audio_udp_endpoints = voice_udp_endpoints.clone();
 
-    thread::spawn(move || voice_audio_forward_loop(voice_audio_rx, voice_audio_udp_senders));
+    thread::spawn(move || {
+        voice_audio_forward_loop(
+            voice_audio_rx,
+            voice_audio_udp_senders,
+            voice_audio_udp_endpoints,
+        )
+    });
 
     thread::spawn(move || {
         let event_sink = AdminEventSink::new(
@@ -130,6 +138,7 @@ fn run_gui(config: Config) -> eframe::Result {
                 audio_playback_registry,
                 voice_audio_tx,
                 voice_udp_senders,
+                voice_udp_endpoints,
             )))
         }),
     )
@@ -138,6 +147,7 @@ fn run_gui(config: Config) -> eframe::Result {
 fn voice_audio_forward_loop(
     voice_audio_rx: Receiver<user_interaction::voice_chat::OutboundCommand>,
     voice_udp_senders: Arc<Mutex<HashMap<String, AudioUdpSender>>>,
+    voice_udp_endpoints: Arc<Mutex<HashMap<String, AudioUdpEndpoint>>>,
 ) {
     let mut missing_senders = HashMap::<String, (u64, Instant)>::new();
     while let Ok(command) = voice_audio_rx.recv() {
@@ -153,7 +163,30 @@ fn voice_audio_forward_loop(
             continue;
         };
         let mut remove_sender = false;
+        let endpoint = voice_udp_endpoints
+            .lock()
+            .ok()
+            .and_then(|endpoints| endpoints.get(&client_id).cloned());
         if let Ok(mut senders) = voice_udp_senders.lock() {
+            if !senders.contains_key(&client_id) {
+                if let Some(endpoint) = endpoint.as_ref() {
+                    match AudioUdpSender::connect(endpoint) {
+                        Ok(sender) => {
+                            eprintln!(
+                                "debug event=voice_chat_udp_sender_recovered client={} stream={}",
+                                client_id, endpoint.stream_id
+                            );
+                            senders.insert(client_id.clone(), sender);
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "debug event=voice_chat_udp_sender_recover_failed client={} error={}",
+                                client_id, error
+                            );
+                        }
+                    }
+                }
+            }
             if let Some(sender) = senders.get_mut(&client_id) {
                 missing_senders.remove(&client_id);
                 if let Err(error) =
@@ -292,6 +325,7 @@ struct AdminApp {
     execute_windows: Vec<crate::execute::ExecuteWindow>,
     voice_udp_sessions: HashMap<String, AudioUdpSession>,
     voice_udp_senders: Arc<Mutex<HashMap<String, AudioUdpSender>>>,
+    voice_udp_endpoints: Arc<Mutex<HashMap<String, AudioUdpEndpoint>>>,
     file_transfer_cancel_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
@@ -487,6 +521,7 @@ impl AdminApp {
         audio_playback_registry: live_control::audio_listen::AudioPlaybackRegistry,
         voice_audio_tx: SyncSender<user_interaction::voice_chat::OutboundCommand>,
         voice_udp_senders: Arc<Mutex<HashMap<String, AudioUdpSender>>>,
+        voice_udp_endpoints: Arc<Mutex<HashMap<String, AudioUdpEndpoint>>>,
     ) -> Self {
         apply_admin_theme(&cc.egui_ctx);
         if let Ok(mut handle) = repaint_handle.lock() {
@@ -519,6 +554,7 @@ impl AdminApp {
             execute_windows: Vec::new(),
             voice_udp_sessions: HashMap::new(),
             voice_udp_senders,
+            voice_udp_endpoints,
             file_transfer_cancel_flags: Arc::new(Mutex::new(HashMap::new())),
             ignored_file_transfers,
             log_lines: vec![timestamped_log(format!(
@@ -1195,9 +1231,14 @@ impl AdminApp {
         endpoint: &AudioUdpEndpoint,
     ) -> Result<(), String> {
         let sender = AudioUdpSender::connect(endpoint)?;
-        if let Ok(mut senders) = self.voice_udp_senders.lock() {
-            senders.insert(client_id.to_string(), sender);
-        }
+        self.voice_udp_endpoints
+            .lock()
+            .map_err(|_| "voice udp endpoint map is poisoned".to_string())?
+            .insert(client_id.to_string(), endpoint.clone());
+        self.voice_udp_senders
+            .lock()
+            .map_err(|_| "voice udp sender map is poisoned".to_string())?
+            .insert(client_id.to_string(), sender);
         self.push_log(format!(
             "voice udp sender ready client={client_id} stream={} relay={}:{}",
             endpoint.stream_id, endpoint.host, endpoint.port
@@ -1209,11 +1250,17 @@ impl AdminApp {
         if let Ok(mut senders) = self.voice_udp_senders.lock() {
             senders.remove(client_id);
         }
+        if let Ok(mut endpoints) = self.voice_udp_endpoints.lock() {
+            endpoints.remove(client_id);
+        }
     }
 
     fn clear_voice_udp_senders(&mut self) {
         if let Ok(mut senders) = self.voice_udp_senders.lock() {
             senders.clear();
+        }
+        if let Ok(mut endpoints) = self.voice_udp_endpoints.lock() {
+            endpoints.clear();
         }
     }
 
