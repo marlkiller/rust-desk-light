@@ -35,6 +35,7 @@ const AUDIO_STREAM_STOP_SETTLE_MS: u64 = 180;
 const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
 const AUDIO_UDP_REGISTER_INTERVAL_MS: u64 = 250;
 const AUDIO_UDP_RECV_TIMEOUT_MS: u64 = 20;
+const AUDIO_UDP_MAX_PAYLOAD_BYTES: usize = 1_200;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -1346,7 +1347,13 @@ impl AudioFramePacketizer {
 fn audio_capture_frame_bytes(sample_rate: u32, channels: u16) -> usize {
     let samples_per_channel =
         ((sample_rate.max(1) as u64 * AUDIO_CAPTURE_FRAME_MS as u64) / 1000).max(1) as usize;
-    samples_per_channel * channels.max(1) as usize * 2
+    let target_bytes = samples_per_channel * channels.max(1) as usize * 2;
+    target_bytes.min(max_pcm_s16le_udp_payload_bytes(channels))
+}
+
+fn max_pcm_s16le_udp_payload_bytes(channels: u16) -> usize {
+    let sample_frame_bytes = channels.max(1) as usize * 2;
+    (AUDIO_UDP_MAX_PAYLOAD_BYTES / sample_frame_bytes).max(1) * sample_frame_bytes
 }
 
 struct AudioUdpSender {

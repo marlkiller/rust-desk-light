@@ -27,6 +27,7 @@ const CAPTURE_OUTPUT_CHANNELS: u16 = 1;
 const CAPTURE_FRAME_MS: u32 = 10;
 const VOICE_CHAT_REPAINT_MS: u64 = 20;
 const VOICE_CHAT_CAPTURE_REPORT_MS: u64 = 1_000;
+const VOICE_CHAT_UDP_MAX_PAYLOAD_BYTES: usize = 1_200;
 
 pub(crate) struct VoiceChatWindow {
     pub(crate) client_id: String,
@@ -949,7 +950,13 @@ fn captured_frame_duration_ms(frame: &CapturedAudioFrame) -> u64 {
 fn capture_frame_bytes(sample_rate: u32, channels: u16) -> usize {
     let samples_per_channel =
         ((sample_rate.max(1) as u64 * CAPTURE_FRAME_MS as u64) / 1000).max(1) as usize;
-    samples_per_channel * channels.max(1) as usize * 2
+    let target_bytes = samples_per_channel * channels.max(1) as usize * 2;
+    target_bytes.min(max_pcm_s16le_udp_payload_bytes(channels))
+}
+
+fn max_pcm_s16le_udp_payload_bytes(channels: u16) -> usize {
+    let sample_frame_bytes = channels.max(1) as usize * 2;
+    (VOICE_CHAT_UDP_MAX_PAYLOAD_BYTES / sample_frame_bytes).max(1) * sample_frame_bytes
 }
 
 fn f32_to_mono_pcm_s16(data: &[f32], channels: usize) -> Vec<u8> {

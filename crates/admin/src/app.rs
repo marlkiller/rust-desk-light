@@ -150,6 +150,7 @@ fn voice_audio_forward_loop(
     voice_udp_endpoints: Arc<Mutex<HashMap<String, AudioUdpEndpoint>>>,
 ) {
     let mut missing_senders = HashMap::<String, (u64, Instant)>::new();
+    let mut send_failures = HashMap::<String, (u64, Instant, String)>::new();
     while let Ok(command) = voice_audio_rx.recv() {
         let user_interaction::voice_chat::OutboundCommand::AudioFrame {
             client_id,
@@ -192,11 +193,10 @@ fn voice_audio_forward_loop(
                 if let Err(error) =
                     sender.send_frame(&client_id, seq, sample_rate, channels, &format, &bytes)
                 {
-                    eprintln!(
-                        "debug event=voice_chat_udp_send_failed client={} error={}",
-                        client_id, error
-                    );
-                    remove_sender = true;
+                    report_voice_udp_send_failure(&mut send_failures, &client_id, &error);
+                    remove_sender = error.kind() != io::ErrorKind::InvalidInput;
+                } else {
+                    send_failures.remove(&client_id);
                 }
             }
             if remove_sender {
@@ -215,6 +215,37 @@ fn voice_audio_forward_loop(
                 }
             }
         }
+    }
+}
+
+fn report_voice_udp_send_failure(
+    send_failures: &mut HashMap<String, (u64, Instant, String)>,
+    client_id: &str,
+    error: &io::Error,
+) {
+    let error_text = error.to_string();
+    let entry = send_failures
+        .entry(client_id.to_string())
+        .or_insert_with(|| {
+            (
+                0,
+                Instant::now() - Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS),
+                error_text.clone(),
+            )
+        });
+    if entry.2 != error_text {
+        entry.0 = 0;
+        entry.1 = Instant::now() - Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS);
+        entry.2 = error_text;
+    }
+    entry.0 = entry.0.saturating_add(1);
+    if entry.1.elapsed() >= Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS) {
+        eprintln!(
+            "debug event=voice_chat_udp_send_failed client={} count={} error={}",
+            client_id, entry.0, entry.2
+        );
+        entry.0 = 0;
+        entry.1 = Instant::now();
     }
 }
 
