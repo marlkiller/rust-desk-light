@@ -17,8 +17,8 @@ const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
-const MAX_AUDIO_BUFFER_MS: usize = 500;
-const MIN_AUDIO_PREBUFFER_MS: usize = 80;
+const MAX_AUDIO_BUFFER_MS: usize = 1_200;
+const MIN_AUDIO_PREBUFFER_MS: usize = 180;
 const AUDIO_STREAM_RELEASE_SETTLE_MS: u64 = 40;
 
 pub(crate) struct AudioListenWindow {
@@ -63,6 +63,9 @@ struct AudioStats {
     channels: u16,
     format: String,
     peak: f32,
+    missing_frames: u64,
+    buffered_ms: u64,
+    underflows: u64,
     last_frame_at: Option<Instant>,
 }
 
@@ -126,9 +129,22 @@ pub(crate) fn handle_audio_frame(
     if frame.seq <= window.last_incoming_seq {
         return;
     }
+    if window.last_incoming_seq != 0 && frame.seq > window.last_incoming_seq.saturating_add(1) {
+        window.stats.missing_frames = window
+            .stats
+            .missing_frames
+            .saturating_add(frame.seq - window.last_incoming_seq - 1);
+    }
     window.last_incoming_seq = frame.seq;
-    if let Some(player) = &window.player {
+    let playback = if let Some(player) = &window.player {
         player.push_frame(&frame);
+        player.snapshot()
+    } else {
+        None
+    };
+    if let Some(playback) = playback {
+        window.stats.buffered_ms = playback.buffered_ms;
+        window.stats.underflows = playback.underflows;
     }
     handle_frame(window, frame);
 }
@@ -518,6 +534,14 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
                     stats.sample_rate, stats.channels, stats.format, stats.encoded_bytes
                 )
             };
+            let meta = if stats.sample_rate == 0 {
+                meta
+            } else {
+                format!(
+                    "{meta} | buf {} ms | gaps {} | uf {}",
+                    stats.buffered_ms, stats.missing_frames, stats.underflows
+                )
+            };
             ui.label(egui::RichText::new(meta).size(12.0).color(COLOR_MUTED));
         });
     });
@@ -563,7 +587,7 @@ fn stop_listen(window: &mut AudioListenWindow, notice: &str) {
     window.player = None;
     window.inbound_generation = None;
     window.last_incoming_seq = 0;
-    window.stats.peak = 0.0;
+    window.stats = AudioStats::default();
     window.status = AudioStatus::Ready;
     window.notice = notice.to_string();
 }
@@ -580,6 +604,15 @@ struct AudioPlaybackState {
     started: bool,
     prebuffer_samples: usize,
     max_samples: usize,
+    sample_rate: u32,
+    channels: u16,
+    underflows: u64,
+}
+
+#[derive(Clone, Copy)]
+struct AudioPlaybackSnapshot {
+    buffered_ms: u64,
+    underflows: u64,
 }
 
 impl AudioPlayer {
@@ -629,6 +662,10 @@ impl AudioPlayer {
             buffer.push_samples(converted);
         }
     }
+
+    fn snapshot(&self) -> Option<AudioPlaybackSnapshot> {
+        self.buffer.lock().ok().map(|buffer| buffer.snapshot())
+    }
 }
 
 impl Drop for AudioPlayer {
@@ -646,6 +683,9 @@ impl AudioPlaybackState {
             started: false,
             prebuffer_samples: (samples_per_ms * MIN_AUDIO_PREBUFFER_MS / 1000).max(1),
             max_samples: (samples_per_ms * MAX_AUDIO_BUFFER_MS / 1000).max(1),
+            sample_rate,
+            channels,
+            underflows: 0,
         }
     }
 
@@ -669,9 +709,23 @@ impl AudioPlaybackState {
             Some(sample) => sample,
             None => {
                 self.started = false;
+                self.underflows = self.underflows.saturating_add(1);
                 0.0
             }
         }
+    }
+
+    fn snapshot(&self) -> AudioPlaybackSnapshot {
+        AudioPlaybackSnapshot {
+            buffered_ms: self.buffered_ms(),
+            underflows: self.underflows,
+        }
+    }
+
+    fn buffered_ms(&self) -> u64 {
+        let channels = self.channels.max(1) as usize;
+        let frames = self.samples.len() / channels;
+        frames as u64 * 1000 / self.sample_rate.max(1) as u64
     }
 }
 

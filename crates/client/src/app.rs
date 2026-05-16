@@ -19,7 +19,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const INITIAL_RECONNECT_DELAY_MS: u64 = 500;
 const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
@@ -32,6 +32,7 @@ const CLIENT_BULK_POLL_MS: u64 = 2;
 const AUDIO_CAPTURE_FRAME_MS: u32 = 10;
 const AUDIO_CAPTURE_RECV_TIMEOUT_MS: u64 = 20;
 const AUDIO_STREAM_STOP_SETTLE_MS: u64 = 180;
+const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -1590,31 +1591,37 @@ fn audio_stream_loop(
 
     let mut seq = stream_sequence_base(generation);
     let mut packetizer = AudioFramePacketizer::default();
+    let mut sent_packets = 0_u64;
+    let mut sent_bytes = 0_u64;
+    let mut queue_drops = 0_u64;
+    let mut last_report = Instant::now();
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
-        let frame =
-            match frame_rx.recv_timeout(Duration::from_millis(AUDIO_CAPTURE_RECV_TIMEOUT_MS)) {
-                Ok(frame) => frame,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = queue_message(
+        let frame = match frame_rx
+            .recv_timeout(Duration::from_millis(AUDIO_CAPTURE_RECV_TIMEOUT_MS))
+        {
+            Ok(frame) => frame,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let detail = "audio_listen_error\nmessage=audio input stream stopped unexpectedly"
+                    .to_string();
+                let _ = queue_message(
                     &out_tx,
                     &session_token,
                     Message::CommandAck {
                         client_id: client_id.clone(),
                         command: CommandKind::AudioListen,
                         accepted: false,
-                        detail:
-                            "audio_listen_error\nmessage=audio input stream stopped unexpectedly"
-                                .to_string(),
+                        detail,
                     },
                 );
-                    break;
-                }
-            };
+                break;
+            }
+        };
         for frame in packetizer.push(frame) {
-            if try_queue_realtime_message(
+            let frame_bytes = frame.bytes.len() as u64;
+            match try_queue_realtime_message_observed(
                 &realtime_tx,
                 &session_token,
                 Message::AudioFrame {
@@ -1626,13 +1633,32 @@ fn audio_stream_loop(
                     format: frame.format,
                     bytes: frame.bytes,
                 },
-            )
-            .is_err()
-            {
-                stream_state.running.store(false, Ordering::Relaxed);
-                break;
+            ) {
+                Ok(true) => {
+                    sent_packets = sent_packets.saturating_add(1);
+                    sent_bytes = sent_bytes.saturating_add(frame_bytes);
+                }
+                Ok(false) => {
+                    queue_drops = queue_drops.saturating_add(1);
+                }
+                Err(_) => {
+                    stream_state.running.store(false, Ordering::Relaxed);
+                    break;
+                }
             }
             seq = seq.saturating_add(1);
+        }
+        if last_report.elapsed() >= Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS) {
+            eprintln!(
+                "debug event=audio_listen_tx client={} packets={} bytes={} queue_drops={} capture_drops={} pending_bytes={}",
+                client_id,
+                sent_packets,
+                sent_bytes,
+                queue_drops,
+                input_stream.dropped_callbacks.load(Ordering::Relaxed),
+                packetizer.pending.len()
+            );
+            last_report = Instant::now();
         }
     }
     drop(input_stream);
@@ -1784,11 +1810,20 @@ fn try_queue_realtime_message(
     session_token: &str,
     message: Message,
 ) -> io::Result<()> {
+    try_queue_realtime_message_observed(out_tx, session_token, message).map(|_| ())
+}
+
+fn try_queue_realtime_message_observed(
+    out_tx: &SyncSender<ClientOutbound>,
+    session_token: &str,
+    message: Message,
+) -> io::Result<bool> {
     match out_tx.try_send(ClientOutbound {
         session_token: session_token.to_string(),
         message,
     }) {
-        Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
+        Ok(()) => Ok(true),
+        Err(mpsc::TrySendError::Full(_)) => Ok(false),
         Err(mpsc::TrySendError::Disconnected(_)) => Err(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "outbound queue disconnected",

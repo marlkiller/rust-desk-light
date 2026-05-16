@@ -1,7 +1,11 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
 use std::process::{Command, Stdio};
-use std::sync::{mpsc::SyncSender, Arc, Mutex, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    mpsc::SyncSender,
+    Arc, Mutex, OnceLock,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -25,6 +29,7 @@ pub(crate) struct AudioInputStream {
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
     pub(crate) format: String,
+    pub(crate) dropped_callbacks: Arc<AtomicU64>,
     _stream: cpal::Stream,
 }
 
@@ -119,10 +124,17 @@ pub(crate) fn start_input_stream(
     let config = supported_config.config();
     let sample_rate = config.sample_rate.0;
     let format = "pcm_s16le".to_string();
+    let dropped_callbacks = Arc::new(AtomicU64::new(0));
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => build_f32_input_stream(&device, &config, frame_tx),
-        cpal::SampleFormat::I16 => build_i16_input_stream(&device, &config, frame_tx),
-        cpal::SampleFormat::U16 => build_u16_input_stream(&device, &config, frame_tx),
+        cpal::SampleFormat::F32 => {
+            build_f32_input_stream(&device, &config, frame_tx, dropped_callbacks.clone())
+        }
+        cpal::SampleFormat::I16 => {
+            build_i16_input_stream(&device, &config, frame_tx, dropped_callbacks.clone())
+        }
+        cpal::SampleFormat::U16 => {
+            build_u16_input_stream(&device, &config, frame_tx, dropped_callbacks.clone())
+        }
         other => Err(format!("unsupported input sample format: {other:?}")),
     }?;
     stream
@@ -132,6 +144,7 @@ pub(crate) fn start_input_stream(
         sample_rate,
         channels: CAPTURE_OUTPUT_CHANNELS,
         format,
+        dropped_callbacks,
         _stream: stream,
     })
 }
@@ -248,6 +261,7 @@ fn build_f32_input_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     frame_tx: SyncSender<CapturedAudioFrame>,
+    dropped_callbacks: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
     let input_channels = config.channels.max(1) as usize;
@@ -256,7 +270,13 @@ fn build_f32_input_stream(
             config,
             move |data: &[f32], _| {
                 let bytes = f32_to_mono_pcm_s16(data, input_channels);
-                send_frame(&frame_tx, sample_rate, CAPTURE_OUTPUT_CHANNELS, bytes);
+                send_frame(
+                    &frame_tx,
+                    &dropped_callbacks,
+                    sample_rate,
+                    CAPTURE_OUTPUT_CHANNELS,
+                    bytes,
+                );
             },
             |error| eprintln!("audio input stream error: {error}"),
             None,
@@ -268,6 +288,7 @@ fn build_i16_input_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     frame_tx: SyncSender<CapturedAudioFrame>,
+    dropped_callbacks: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
     let input_channels = config.channels.max(1) as usize;
@@ -276,7 +297,13 @@ fn build_i16_input_stream(
             config,
             move |data: &[i16], _| {
                 let bytes = i16_to_mono_pcm_s16(data, input_channels);
-                send_frame(&frame_tx, sample_rate, CAPTURE_OUTPUT_CHANNELS, bytes);
+                send_frame(
+                    &frame_tx,
+                    &dropped_callbacks,
+                    sample_rate,
+                    CAPTURE_OUTPUT_CHANNELS,
+                    bytes,
+                );
             },
             |error| eprintln!("audio input stream error: {error}"),
             None,
@@ -288,6 +315,7 @@ fn build_u16_input_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     frame_tx: SyncSender<CapturedAudioFrame>,
+    dropped_callbacks: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
     let input_channels = config.channels.max(1) as usize;
@@ -296,7 +324,13 @@ fn build_u16_input_stream(
             config,
             move |data: &[u16], _| {
                 let bytes = u16_to_mono_pcm_s16(data, input_channels);
-                send_frame(&frame_tx, sample_rate, CAPTURE_OUTPUT_CHANNELS, bytes);
+                send_frame(
+                    &frame_tx,
+                    &dropped_callbacks,
+                    sample_rate,
+                    CAPTURE_OUTPUT_CHANNELS,
+                    bytes,
+                );
             },
             |error| eprintln!("audio input stream error: {error}"),
             None,
@@ -384,6 +418,7 @@ fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
 
 fn send_frame(
     frame_tx: &SyncSender<CapturedAudioFrame>,
+    dropped_callbacks: &AtomicU64,
     sample_rate: u32,
     channels: u16,
     bytes: Vec<u8>,
@@ -391,20 +426,24 @@ fn send_frame(
     if bytes.is_empty() {
         return;
     }
-    let _ = frame_tx.try_send(CapturedAudioFrame {
-        sample_rate,
-        channels,
-        format: "pcm_s16le".to_string(),
-        bytes,
-    });
+    if frame_tx
+        .try_send(CapturedAudioFrame {
+            sample_rate,
+            channels,
+            format: "pcm_s16le".to_string(),
+            bytes,
+        })
+        .is_err()
+    {
+        dropped_callbacks.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 fn f32_to_mono_pcm_s16(data: &[f32], channels: usize) -> Vec<u8> {
     let channels = channels.max(1);
-    let channel = dominant_f32_channel(data, channels);
     let mut bytes = Vec::with_capacity((data.len() / channels) * 2);
     for frame in data.chunks_exact(channels) {
-        let sample = frame[channel];
+        let sample = frame.iter().copied().sum::<f32>() / channels as f32;
         let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
@@ -413,10 +452,10 @@ fn f32_to_mono_pcm_s16(data: &[f32], channels: usize) -> Vec<u8> {
 
 fn i16_to_mono_pcm_s16(data: &[i16], channels: usize) -> Vec<u8> {
     let channels = channels.max(1);
-    let channel = dominant_i16_channel(data, channels);
     let mut bytes = Vec::with_capacity((data.len() / channels) * 2);
     for frame in data.chunks_exact(channels) {
-        let sample = frame[channel];
+        let sum: i64 = frame.iter().map(|sample| *sample as i64).sum();
+        let sample = (sum / channels as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
@@ -424,54 +463,13 @@ fn i16_to_mono_pcm_s16(data: &[i16], channels: usize) -> Vec<u8> {
 
 fn u16_to_mono_pcm_s16(data: &[u16], channels: usize) -> Vec<u8> {
     let channels = channels.max(1);
-    let channel = dominant_u16_channel(data, channels);
     let mut bytes = Vec::with_capacity((data.len() / channels) * 2);
     for frame in data.chunks_exact(channels) {
-        let sample = (frame[channel] as i32 - 32768).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let sum: i64 = frame.iter().map(|sample| *sample as i64 - 32768).sum();
+        let sample = (sum / channels as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
-}
-
-fn dominant_f32_channel(data: &[f32], channels: usize) -> usize {
-    dominant_channel(channels, data.chunks_exact(channels), |frame, channel| {
-        frame[channel].abs() as f64
-    })
-}
-
-fn dominant_i16_channel(data: &[i16], channels: usize) -> usize {
-    dominant_channel(channels, data.chunks_exact(channels), |frame, channel| {
-        frame[channel].unsigned_abs() as f64
-    })
-}
-
-fn dominant_u16_channel(data: &[u16], channels: usize) -> usize {
-    dominant_channel(channels, data.chunks_exact(channels), |frame, channel| {
-        (frame[channel] as i32 - 32768).unsigned_abs() as f64
-    })
-}
-
-fn dominant_channel<'a, T: 'a>(
-    channels: usize,
-    frames: impl Iterator<Item = &'a [T]>,
-    sample_energy: impl Fn(&[T], usize) -> f64,
-) -> usize {
-    if channels <= 1 {
-        return 0;
-    }
-    let mut energies = vec![0.0_f64; channels];
-    for frame in frames {
-        for (channel, energy) in energies.iter_mut().enumerate() {
-            *energy += sample_energy(frame, channel);
-        }
-    }
-    let mut best_channel = 0;
-    for channel in 1..channels {
-        if energies[channel] > energies[best_channel] {
-            best_channel = channel;
-        }
-    }
-    best_channel
 }
 
 fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
