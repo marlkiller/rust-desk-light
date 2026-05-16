@@ -81,6 +81,13 @@ pub(crate) fn shutdown_requested() -> bool {
 
 #[cfg(target_family = "unix")]
 extern "C" fn handle_shutdown_signal(_signal: c_int) {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        // AppKit can throw from Touch Bar KVO teardown during window close on Ctrl+C.
+        _exit(0);
+    }
+
+    #[cfg(not(target_os = "macos"))]
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
 }
 
@@ -93,6 +100,11 @@ use std::os::raw::c_int;
 #[cfg(target_family = "unix")]
 extern "C" {
     fn signal(signum: c_int, handler: SignalHandler) -> SignalHandler;
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn _exit(status: c_int) -> !;
 }
 
 pub(crate) fn hostname() -> String {
