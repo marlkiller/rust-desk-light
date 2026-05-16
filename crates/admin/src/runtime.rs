@@ -2,6 +2,16 @@ use rdl_protocol::{DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Once;
+
+#[cfg(target_family = "unix")]
+const SIGINT: c_int = 2;
+#[cfg(target_family = "unix")]
+const SIGTERM: c_int = 15;
+
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
+static INSTALL_SIGNAL_HANDLERS: Once = Once::new();
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -53,6 +63,36 @@ pub(crate) struct LocalIdentity {
 
 pub(crate) fn terminal_mode() -> bool {
     std::env::var_os("RDL_FORCE_TERMINAL").is_some()
+}
+
+pub(crate) fn install_gui_shutdown_signal_handlers() {
+    INSTALL_SIGNAL_HANDLERS.call_once(|| {
+        #[cfg(target_family = "unix")]
+        unsafe {
+            signal(SIGINT, handle_shutdown_signal);
+            signal(SIGTERM, handle_shutdown_signal);
+        }
+    });
+}
+
+pub(crate) fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::Relaxed)
+}
+
+#[cfg(target_family = "unix")]
+extern "C" fn handle_shutdown_signal(_signal: c_int) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+#[cfg(target_family = "unix")]
+type SignalHandler = extern "C" fn(c_int);
+
+#[cfg(target_family = "unix")]
+use std::os::raw::c_int;
+
+#[cfg(target_family = "unix")]
+extern "C" {
+    fn signal(signum: c_int, handler: SignalHandler) -> SignalHandler;
 }
 
 pub(crate) fn hostname() -> String {

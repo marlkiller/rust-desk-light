@@ -1,7 +1,8 @@
 use crate::{
     commands,
     runtime::{
-        gui_available, hostname, load_client_identity, os_label, username, Config, LocalIdentity,
+        gui_available, hostname, install_gui_shutdown_signal_handlers, load_client_identity,
+        os_label, shutdown_requested, username, Config, LocalIdentity,
     },
     user_interaction,
 };
@@ -41,6 +42,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_gui(config: Config) -> eframe::Result {
     disable_macos_automatic_window_tabbing();
+    install_gui_shutdown_signal_handlers();
 
     let identity = load_client_identity();
     let (event_tx, event_rx) = mpsc::channel();
@@ -938,6 +940,11 @@ impl ClientApp {
 
 impl eframe::App for ClientApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if shutdown_requested() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         let changed = self.drain_events();
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);

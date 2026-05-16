@@ -31,7 +31,7 @@ use self::{
 };
 use crate::{
     command_menu, live_control, remote_management,
-    runtime::{terminal_mode, Config},
+    runtime::{install_gui_shutdown_signal_handlers, shutdown_requested, terminal_mode, Config},
     user_interaction, windowing,
 };
 use eframe::egui;
@@ -65,6 +65,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_gui(config: Config) -> eframe::Result {
     disable_macos_automatic_window_tabbing();
+    install_gui_shutdown_signal_handlers();
 
     let (input_tx, input_rx) = mpsc::sync_channel(ADMIN_INPUT_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
@@ -1861,6 +1862,11 @@ impl AdminApp {
 
 impl eframe::App for AdminApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if shutdown_requested() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+
         let changed = self.drain_events();
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
