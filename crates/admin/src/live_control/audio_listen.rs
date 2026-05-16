@@ -17,9 +17,9 @@ const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
-const MAX_AUDIO_BUFFER_MS: usize = 200;
+const MAX_AUDIO_BUFFER_MS: usize = 300;
 const MIN_AUDIO_PREBUFFER_MS: usize = 40;
-const MAX_AUDIO_PREBUFFER_MS: usize = 120;
+const MAX_AUDIO_PREBUFFER_MS: usize = 180;
 const PREBUFFER_ADJUST_STEP_MS: usize = 10;
 const PREBUFFER_DECAY_AFTER_MS: usize = 2_000;
 const PLAYBACK_TARGET_EXTRA_MS: usize = 20;
@@ -88,6 +88,7 @@ struct AudioStats {
     buffered_ms: u64,
     underflows: u64,
     dropped_ms: u64,
+    concealed_ms: u64,
     prebuffer_ms: u64,
     stretch_ppm: i32,
     output_misses: u64,
@@ -166,6 +167,7 @@ pub(crate) fn handle_audio_frame(
         window.stats.buffered_ms = playback.buffered_ms;
         window.stats.underflows = playback.underflows;
         window.stats.dropped_ms = playback.dropped_ms;
+        window.stats.concealed_ms = playback.concealed_ms;
         window.stats.prebuffer_ms = playback.prebuffer_ms;
         window.stats.stretch_ppm = playback.stretch_ppm;
         window.stats.output_misses = playback.output_misses;
@@ -571,10 +573,9 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
                 "no audio".to_string()
             } else {
                 format!(
-                    "{}Hz {}ch {} {}B",
-                    stats.sample_rate,
+                    "{} {}ch {}B",
+                    compact_sample_rate(stats.sample_rate),
                     stats.channels,
-                    compact_audio_format(&stats.format),
                     stats.encoded_bytes
                 )
             };
@@ -582,10 +583,11 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
                 meta
             } else {
                 format!(
-                    "{meta} | buf{}ms pb{}ms drift{} drop{}ms gaps{} uf{} miss{}",
+                    "{meta} buf{} pb{} dr{} plc{} drop{} gap{} uf{} m{}",
                     stats.buffered_ms,
                     stats.prebuffer_ms,
                     format_drift(stats.stretch_ppm),
+                    stats.concealed_ms,
                     stats.dropped_ms,
                     stats.missing_frames,
                     stats.underflows,
@@ -616,16 +618,17 @@ fn status_pill(ui: &mut egui::Ui, status: AudioStatus) {
 
 fn format_drift(stretch_ppm: i32) -> String {
     if stretch_ppm == 0 {
-        "0.0%".to_string()
+        "0".to_string()
     } else {
-        format!("{:+.1}%", stretch_ppm as f32 / 10_000.0)
+        format!("{:+.1}", stretch_ppm as f32 / 10_000.0)
     }
 }
 
-fn compact_audio_format(format: &str) -> &str {
-    match format {
-        "pcm_s16le" => "pcm16",
-        other => other,
+fn compact_sample_rate(sample_rate: u32) -> String {
+    if sample_rate >= 1000 && sample_rate % 1000 == 0 {
+        format!("{}k", sample_rate / 1000)
+    } else {
+        format!("{sample_rate}Hz")
     }
 }
 
@@ -680,7 +683,9 @@ struct AudioPlaybackState {
     channels: u16,
     underflows: u64,
     dropped_samples: u64,
+    concealed_samples: u64,
     stretch_ppm: i32,
+    last_output_frame: Vec<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -688,6 +693,7 @@ struct AudioPlaybackSnapshot {
     buffered_ms: u64,
     underflows: u64,
     dropped_ms: u64,
+    concealed_ms: u64,
     prebuffer_ms: u64,
     stretch_ppm: i32,
     output_misses: u64,
@@ -706,7 +712,7 @@ impl AudioPlaybackRegistry {
         if format != "pcm_s16le" {
             return;
         }
-        let Some(sink) = self.active_sink(client_id, seq) else {
+        let Some((sink, missing_packets)) = self.active_sink(client_id, seq) else {
             return;
         };
         let samples = pcm_s16le_to_f32(bytes);
@@ -715,6 +721,7 @@ impl AudioPlaybackRegistry {
             .lock()
             .map(|mut buffer| buffer.playback_stretch_ratio())
             .unwrap_or(1.0);
+        let input_frame_count = samples.len() / channels.max(1) as usize;
         let converted = resample_and_map_channels(
             &samples,
             sample_rate,
@@ -725,6 +732,15 @@ impl AudioPlaybackRegistry {
         );
         let buffer_arc = sink.buffer.clone();
         if let Ok(mut buffer) = buffer_arc.lock() {
+            if missing_packets > 0 {
+                let concealed_frames = concealed_output_frames(
+                    missing_packets,
+                    input_frame_count,
+                    sample_rate,
+                    sink.output_sample_rate,
+                );
+                buffer.push_concealment_frames(concealed_frames);
+            }
             buffer.push_samples(converted);
         };
     }
@@ -759,7 +775,7 @@ impl AudioPlaybackRegistry {
         }
     }
 
-    fn active_sink(&self, client_id: &str, seq: u64) -> Option<AudioPlaybackSink> {
+    fn active_sink(&self, client_id: &str, seq: u64) -> Option<(AudioPlaybackSink, u64)> {
         let mut sinks = self.sinks.lock().ok()?;
         let sink = sinks.get_mut(client_id)?;
         if let Some(generation) = sink.generation {
@@ -770,8 +786,13 @@ impl AudioPlaybackRegistry {
         if seq <= sink.last_seq {
             return None;
         }
+        let missing_packets = if sink.last_seq == 0 {
+            0
+        } else {
+            seq.saturating_sub(sink.last_seq.saturating_add(1))
+        };
         sink.last_seq = seq;
-        Some(sink.clone())
+        Some((sink.clone(), missing_packets))
     }
 }
 
@@ -852,7 +873,9 @@ impl AudioPlaybackState {
             channels,
             underflows: 0,
             dropped_samples: 0,
+            concealed_samples: 0,
             stretch_ppm: 0,
+            last_output_frame: vec![0.0; channels.max(1) as usize],
         }
     }
 
@@ -871,6 +894,7 @@ impl AudioPlaybackState {
     }
 
     fn push_samples(&mut self, samples: Vec<f32>) {
+        self.remember_last_frame(&samples);
         self.samples.extend(samples);
         let excess = self.samples.len().saturating_sub(self.max_samples);
         if excess > 0 {
@@ -878,6 +902,42 @@ impl AudioPlaybackState {
             self.dropped_samples = self.dropped_samples.saturating_add(excess as u64);
             self.started = true;
         }
+    }
+
+    fn push_concealment_frames(&mut self, frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        let channels = self.channels.max(1) as usize;
+        if self.last_output_frame.len() != channels {
+            self.last_output_frame.resize(channels, 0.0);
+        }
+        for frame in 0..frames {
+            let gain = 1.0 - (frame as f32 + 1.0) / frames as f32;
+            for channel in 0..channels {
+                self.samples
+                    .push_back(self.last_output_frame[channel] * gain.max(0.0));
+            }
+        }
+        self.last_output_frame.fill(0.0);
+        let added = frames.saturating_mul(channels);
+        self.concealed_samples = self.concealed_samples.saturating_add(added as u64);
+        let excess = self.samples.len().saturating_sub(self.max_samples);
+        if excess > 0 {
+            self.samples.drain(..excess);
+            self.dropped_samples = self.dropped_samples.saturating_add(excess as u64);
+            self.started = true;
+        }
+    }
+
+    fn remember_last_frame(&mut self, samples: &[f32]) {
+        let channels = self.channels.max(1) as usize;
+        if samples.len() < channels {
+            return;
+        }
+        self.last_output_frame.clear();
+        self.last_output_frame
+            .extend_from_slice(&samples[samples.len() - channels..]);
     }
 
     fn next_sample(&mut self) -> f32 {
@@ -925,6 +985,7 @@ impl AudioPlaybackState {
             buffered_ms: self.buffered_ms(),
             underflows: self.underflows,
             dropped_ms: self.dropped_ms(),
+            concealed_ms: self.concealed_ms(),
             prebuffer_ms: self.prebuffer_ms(),
             stretch_ppm: self.stretch_ppm,
             output_misses,
@@ -946,6 +1007,12 @@ impl AudioPlaybackState {
     fn dropped_ms(&self) -> u64 {
         let channels = self.channels.max(1) as u64;
         let frames = self.dropped_samples / channels;
+        frames * 1000 / self.sample_rate.max(1) as u64
+    }
+
+    fn concealed_ms(&self) -> u64 {
+        let channels = self.channels.max(1) as u64;
+        let frames = self.concealed_samples / channels;
         frames * 1000 / self.sample_rate.max(1) as u64
     }
 }
@@ -1053,6 +1120,20 @@ fn pcm_s16le_to_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+fn concealed_output_frames(
+    missing_packets: u64,
+    input_frames: usize,
+    input_rate: u32,
+    output_rate: u32,
+) -> usize {
+    if missing_packets == 0 || input_frames == 0 || input_rate == 0 || output_rate == 0 {
+        return 0;
+    }
+    let frames_per_packet =
+        ((input_frames as f64 * output_rate as f64) / input_rate as f64).round() as usize;
+    frames_per_packet.saturating_mul(missing_packets as usize)
+}
+
 fn resample_and_map_channels(
     input: &[f32],
     input_rate: u32,
@@ -1072,7 +1153,11 @@ fn resample_and_map_channels(
         .round()
         .max(1.0) as usize;
     let mut output = Vec::with_capacity(output_frames * output_channels);
-    let rate_ratio = input_frames as f64 / output_frames as f64;
+    let rate_ratio = if output_frames > 1 && input_frames > 1 {
+        (input_frames - 1) as f64 / (output_frames - 1) as f64
+    } else {
+        1.0
+    };
     for output_frame in 0..output_frames {
         let source_pos = output_frame as f64 * rate_ratio;
         let input_frame = (source_pos.floor() as usize).min(input_frames - 1);
