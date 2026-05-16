@@ -13,6 +13,7 @@ const MAX_RECONNECT_DELAY_MS: u64 = 8_000;
 const NETWORK_POLL_INTERVAL_MS: u64 = 16;
 const NETWORK_IDLE_SLEEP_MS: u64 = 4;
 const MAX_INPUTS_PER_NETWORK_POLL: usize = 64;
+const MAX_MESSAGES_PER_NETWORK_POLL: usize = 512;
 
 pub(super) fn admin_network_loop(
     config: Config,
@@ -185,49 +186,41 @@ fn admin_connection_once(
             }
         }
 
-        let Some(message) = (match decoder.read_next(&mut stream) {
-            Ok(Some(envelope)) => Some(envelope.message),
-            Ok(None) => {
-                thread::sleep(Duration::from_millis(NETWORK_IDLE_SLEEP_MS));
-                continue;
-            }
-            Err(error) => {
-                event_sink.send(AdminEvent::Log(format!("network read failed: {error}")));
-                return Ok(AdminConnectionExit::Disconnected);
-            }
-        }) else {
-            continue;
-        };
+        let mut processed_messages = 0usize;
+        while processed_messages < MAX_MESSAGES_PER_NETWORK_POLL {
+            let message = match decoder.read_next(&mut stream) {
+                Ok(Some(envelope)) => envelope.message,
+                Ok(None) => {
+                    if processed_messages == 0 {
+                        thread::sleep(Duration::from_millis(NETWORK_IDLE_SLEEP_MS));
+                    }
+                    break;
+                }
+                Err(error) => {
+                    event_sink.send(AdminEvent::Log(format!("network read failed: {error}")));
+                    return Ok(AdminConnectionExit::Disconnected);
+                }
+            };
+            processed_messages += 1;
 
-        match message {
-            Message::Clients(clients) => {
-                event_sink.send(AdminEvent::Clients(clients));
-            }
-            Message::CommandAck {
-                client_id,
-                command,
-                accepted,
-                detail,
-            } => {
-                event_sink.send(AdminEvent::Ack {
+            match message {
+                Message::Clients(clients) => {
+                    event_sink.send(AdminEvent::Clients(clients));
+                }
+                Message::CommandAck {
                     client_id,
                     command,
                     accepted,
                     detail,
-                });
-            }
-            Message::CommandOutput {
-                client_id,
-                command,
-                stream_id,
-                sequence,
-                stream,
-                chunk,
-                current_dir,
-                finished,
-                success,
-            } => {
-                event_sink.send(AdminEvent::CommandOutput {
+                } => {
+                    event_sink.send(AdminEvent::Ack {
+                        client_id,
+                        command,
+                        accepted,
+                        detail,
+                    });
+                }
+                Message::CommandOutput {
                     client_id,
                     command,
                     stream_id,
@@ -237,23 +230,23 @@ fn admin_connection_once(
                     current_dir,
                     finished,
                     success,
-                });
-            }
-            Message::DesktopFrame { client_id, payload } => {
-                event_sink.send(AdminEvent::DesktopFrame { client_id, payload });
-            }
-            Message::VideoFrame {
-                client_id,
-                source,
-                seq,
-                source_width,
-                source_height,
-                image_width,
-                image_height,
-                format,
-                bytes,
-            } => {
-                event_sink.send(AdminEvent::VideoFrame {
+                } => {
+                    event_sink.send(AdminEvent::CommandOutput {
+                        client_id,
+                        command,
+                        stream_id,
+                        sequence,
+                        stream,
+                        chunk,
+                        current_dir,
+                        finished,
+                        success,
+                    });
+                }
+                Message::DesktopFrame { client_id, payload } => {
+                    event_sink.send(AdminEvent::DesktopFrame { client_id, payload });
+                }
+                Message::VideoFrame {
                     client_id,
                     source,
                     seq,
@@ -263,18 +256,20 @@ fn admin_connection_once(
                     image_height,
                     format,
                     bytes,
-                });
-            }
-            Message::AudioFrame {
-                client_id,
-                source,
-                seq,
-                sample_rate,
-                channels,
-                format,
-                bytes,
-            } => {
-                event_sink.send(AdminEvent::AudioFrame {
+                } => {
+                    event_sink.send(AdminEvent::VideoFrame {
+                        client_id,
+                        source,
+                        seq,
+                        source_width,
+                        source_height,
+                        image_width,
+                        image_height,
+                        format,
+                        bytes,
+                    });
+                }
+                Message::AudioFrame {
                     client_id,
                     source,
                     seq,
@@ -282,35 +277,45 @@ fn admin_connection_once(
                     channels,
                     format,
                     bytes,
-                });
-            }
-            message @ Message::FileTransfer { .. } => {
-                if let Message::FileTransfer {
-                    target_id,
-                    transfer_id,
-                    action,
-                    ..
-                } = &message
-                {
-                    if admin_network_should_ignore_file_transfer(
-                        ignored_file_transfers,
-                        target_id,
-                        *transfer_id,
-                        *action,
-                    ) {
-                        continue;
-                    }
+                } => {
+                    event_sink.send(AdminEvent::AudioFrame {
+                        client_id,
+                        source,
+                        seq,
+                        sample_rate,
+                        channels,
+                        format,
+                        bytes,
+                    });
                 }
-                event_sink.send(AdminEvent::FileTransfer(message));
-            }
-            Message::Ping => send(
-                &mut stream,
-                &mut next_message_id,
-                &session_token,
-                Message::Pong,
-            )?,
-            other => {
-                event_sink.send(AdminEvent::Log(format!("server: {other:?}")));
+                message @ Message::FileTransfer { .. } => {
+                    if let Message::FileTransfer {
+                        target_id,
+                        transfer_id,
+                        action,
+                        ..
+                    } = &message
+                    {
+                        if admin_network_should_ignore_file_transfer(
+                            ignored_file_transfers,
+                            target_id,
+                            *transfer_id,
+                            *action,
+                        ) {
+                            continue;
+                        }
+                    }
+                    event_sink.send(AdminEvent::FileTransfer(message));
+                }
+                Message::Ping => send(
+                    &mut stream,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::Pong,
+                )?,
+                other => {
+                    event_sink.send(AdminEvent::Log(format!("server: {other:?}")));
+                }
             }
         }
     }
