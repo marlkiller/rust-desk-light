@@ -1,6 +1,9 @@
 use crate::windowing;
 use eframe::egui;
-use rdl_protocol::{CommandOutputStream, REMOTE_TERMINAL_CANCEL};
+use rdl_protocol::{
+    default_static_command_preset_id, static_command_preset_label, static_command_presets,
+    static_command_script_for_os, CommandOutputStream, REMOTE_TERMINAL_CANCEL,
+};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -20,12 +23,14 @@ pub(crate) struct TerminalWindow {
     pub(crate) client_id: String,
     hostname: String,
     username: String,
+    os: String,
     lines: Arc<Mutex<Vec<String>>>,
     status: Arc<Mutex<TerminalStatus>>,
     current_dir: Arc<Mutex<String>>,
     draft: Arc<Mutex<String>>,
     history: Arc<Mutex<Vec<String>>>,
     history_cursor: Arc<Mutex<Option<usize>>>,
+    preset_command: Arc<Mutex<String>>,
     outbound: Arc<Mutex<Vec<TerminalOutbound>>>,
     copy_requested: Arc<AtomicBool>,
     clear_requested: Arc<AtomicBool>,
@@ -56,6 +61,7 @@ pub(crate) fn open_window(
     client_id: &str,
     hostname: String,
     username: String,
+    os: String,
 ) {
     if let Some(window) = windows
         .iter_mut()
@@ -64,6 +70,7 @@ pub(crate) fn open_window(
         window.open = true;
         window.hostname = hostname;
         window.username = username;
+        window.os = os;
         window.close_requested.store(false, Ordering::Relaxed);
         if window
             .current_dir
@@ -80,12 +87,14 @@ pub(crate) fn open_window(
         client_id: client_id.to_string(),
         hostname,
         username,
+        os,
         lines: Arc::new(Mutex::new(Vec::new())),
         status: Arc::new(Mutex::new(TerminalStatus::Ready)),
         current_dir: Arc::new(Mutex::new(String::new())),
         draft: Arc::new(Mutex::new(String::new())),
         history: Arc::new(Mutex::new(Vec::new())),
         history_cursor: Arc::new(Mutex::new(None)),
+        preset_command: Arc::new(Mutex::new(default_static_command_preset_id().to_string())),
         outbound: Arc::new(Mutex::new(Vec::new())),
         copy_requested: Arc::new(AtomicBool::new(false)),
         clear_requested: Arc::new(AtomicBool::new(false)),
@@ -101,6 +110,7 @@ pub(crate) fn handle_ack(
     client_id: &str,
     hostname: String,
     username: String,
+    os: String,
     accepted: bool,
     detail: String,
 ) {
@@ -115,6 +125,7 @@ pub(crate) fn handle_ack(
     }
     window.hostname = hostname;
     window.username = username;
+    window.os = os;
 
     let (current_dir, output) = parse_terminal_detail(&detail);
     if let Some(current_dir) = current_dir {
@@ -145,6 +156,7 @@ pub(crate) fn handle_output(
     client_id: &str,
     hostname: String,
     username: String,
+    os: String,
     _stream_id: u64,
     _sequence: u64,
     stream: CommandOutputStream,
@@ -164,6 +176,7 @@ pub(crate) fn handle_output(
     }
     window.hostname = hostname;
     window.username = username;
+    window.os = os;
 
     if !current_dir.trim().is_empty() {
         if let Ok(mut value) = window.current_dir.lock() {
@@ -219,11 +232,13 @@ pub(crate) fn render_windows(
         let draft = window.draft.clone();
         let history = window.history.clone();
         let history_cursor = window.history_cursor.clone();
+        let preset_command = window.preset_command.clone();
         let outbound_queue = window.outbound.clone();
         let copy_requested = window.copy_requested.clone();
         let clear_requested = window.clear_requested.clone();
         let close_requested = window.close_requested.clone();
         let history_id = client_id.clone();
+        let target_os = window.os.clone();
 
         ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
             if ui.ctx().input(|input| input.viewport().close_requested()) {
@@ -237,6 +252,8 @@ pub(crate) fn render_windows(
                         ui,
                         &lines,
                         &status,
+                        &target_os,
+                        &preset_command,
                         &outbound_queue,
                         &copy_requested,
                         &clear_requested,
@@ -337,6 +354,8 @@ fn render_toolbar(
     ui: &mut egui::Ui,
     lines: &Arc<Mutex<Vec<String>>>,
     status: &Arc<Mutex<TerminalStatus>>,
+    target_os: &str,
+    preset_command: &Arc<Mutex<String>>,
     outbound: &Arc<Mutex<Vec<TerminalOutbound>>>,
     copy_requested: &Arc<AtomicBool>,
     clear_requested: &Arc<AtomicBool>,
@@ -364,6 +383,9 @@ fn render_toolbar(
                 );
             }
         }
+        ui.separator();
+        render_preset_shortcut(ui, running, target_os, preset_command, outbound);
+        ui.separator();
         if ui.button("Copy All").clicked() {
             if let Ok(lines) = lines.lock() {
                 ui.ctx().copy_text(lines.join("\n"));
@@ -374,6 +396,53 @@ fn render_toolbar(
             clear_requested.store(true, Ordering::Relaxed);
         }
     });
+}
+
+fn render_preset_shortcut(
+    ui: &mut egui::Ui,
+    running: bool,
+    target_os: &str,
+    preset_command: &Arc<Mutex<String>>,
+    outbound: &Arc<Mutex<Vec<TerminalOutbound>>>,
+) {
+    let mut selected = preset_command
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_else(|_| default_static_command_preset_id().to_string());
+    egui::ComboBox::from_id_salt("remote_terminal_preset_command")
+        .width(150.0)
+        .selected_text(static_command_preset_label(&selected))
+        .show_ui(ui, |ui| {
+            for preset in static_command_presets() {
+                if ui
+                    .selectable_label(selected == preset.id, preset.label)
+                    .clicked()
+                {
+                    selected = preset.id.to_string();
+                    if let Ok(mut value) = preset_command.lock() {
+                        *value = selected.clone();
+                    }
+                }
+            }
+        });
+    if ui
+        .add_enabled(!running, egui::Button::new("Run Preset"))
+        .clicked()
+    {
+        if let Some(command) = static_command_script_for_os(&selected, target_os) {
+            if let Ok(mut queue) = outbound.lock() {
+                queue.insert(
+                    0,
+                    TerminalOutbound {
+                        command: command.to_string(),
+                        visible: true,
+                    },
+                );
+            }
+            ui.ctx().request_repaint();
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+        }
+    }
 }
 
 fn terminal_is_running(status: &Arc<Mutex<TerminalStatus>>) -> bool {

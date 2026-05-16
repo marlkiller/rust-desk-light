@@ -12,6 +12,113 @@ pub const REMOTE_TERMINAL_CANCEL: &str = "__rdl_terminal_cancel";
 const HEADER_LEN: usize = 10;
 const ENVELOPE_FIXED_LEN: usize = 27;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StaticCommandPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub windows: &'static str,
+    pub unix: &'static str,
+}
+
+pub const STATIC_COMMAND_PRESETS: &[StaticCommandPreset] = &[
+    StaticCommandPreset {
+        id: "whoami",
+        label: "Who Am I",
+        windows: "whoami",
+        unix: "whoami",
+    },
+    StaticCommandPreset {
+        id: "hostname",
+        label: "Hostname",
+        windows: "hostname",
+        unix: "hostname",
+    },
+    StaticCommandPreset {
+        id: "uptime",
+        label: "Uptime",
+        windows: "Get-CimInstance Win32_OperatingSystem | Select-Object LastBootUpTime,LocalDateTime | Format-List",
+        unix: "uptime",
+    },
+    StaticCommandPreset {
+        id: "disk_usage",
+        label: "Disk Usage",
+        windows: "Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free,Root | Format-Table -AutoSize",
+        unix: "df -h",
+    },
+    StaticCommandPreset {
+        id: "network_config",
+        label: "Network Config",
+        windows: "ipconfig",
+        unix: "ifconfig 2>/dev/null || ip addr",
+    },
+    StaticCommandPreset {
+        id: "environment",
+        label: "Environment",
+        windows: "Get-ChildItem Env: | Sort-Object Name | Format-Table -AutoSize",
+        unix: "env | sort",
+    },
+];
+
+pub fn static_command_presets() -> &'static [StaticCommandPreset] {
+    STATIC_COMMAND_PRESETS
+}
+
+pub fn default_static_command_preset_id() -> &'static str {
+    "whoami"
+}
+
+pub fn static_command_preset(id: &str) -> Option<&'static StaticCommandPreset> {
+    STATIC_COMMAND_PRESETS.iter().find(|preset| preset.id == id)
+}
+
+pub fn static_command_preset_label(id: &str) -> &'static str {
+    static_command_preset(id)
+        .map(|preset| preset.label)
+        .unwrap_or("Who Am I")
+}
+
+pub fn static_command_script_for_os(id: &str, os_label: &str) -> Option<&'static str> {
+    static_command_preset(id).map(|preset| {
+        if os_label.to_ascii_lowercase().contains("windows") {
+            preset.windows
+        } else {
+            preset.unix
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_static_command_preset_id, static_command_presets, static_command_script_for_os,
+    };
+
+    #[test]
+    fn static_command_presets_include_defaults() {
+        let ids = static_command_presets()
+            .iter()
+            .map(|preset| preset.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(default_static_command_preset_id(), "whoami");
+        assert!(ids.contains(&"whoami"));
+        assert!(ids.contains(&"hostname"));
+        assert!(ids.contains(&"disk_usage"));
+    }
+
+    #[test]
+    fn static_command_script_selects_target_os() {
+        assert_eq!(
+            static_command_script_for_os("disk_usage", "windows x86_64"),
+            Some("Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free,Root | Format-Table -AutoSize")
+        );
+        assert_eq!(
+            static_command_script_for_os("disk_usage", "macos aarch64"),
+            Some("df -h")
+        );
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Role {
     Client,

@@ -1040,12 +1040,13 @@ impl AdminApp {
     }
 
     fn open_terminal_window(&mut self, client_id: &str) {
-        let (hostname, username) = self.client_window_identity(client_id);
+        let (hostname, username, os) = self.client_window_environment(client_id);
         remote_management::remote_terminal::open_window(
             &mut self.terminal_windows,
             client_id,
             hostname,
             username,
+            os,
         );
     }
 
@@ -1136,6 +1137,26 @@ impl AdminApp {
             .unwrap_or_else(|| ("unknown-host".to_string(), "unknown-user".to_string()))
     }
 
+    fn client_window_environment(&self, client_id: &str) -> (String, String, String) {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| {
+                (
+                    row.info.hostname.clone(),
+                    row.info.username.clone(),
+                    row.info.os.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "unknown-host".to_string(),
+                    "unknown-user".to_string(),
+                    "unknown-os".to_string(),
+                )
+            })
+    }
+
     fn handle_command_ack(
         &mut self,
         client_id: String,
@@ -1174,9 +1195,13 @@ impl AdminApp {
             self.handle_camera_ack(&client_id, accepted, detail);
             return;
         }
-        if command == CommandKind::ExecuteCode
-            && crate::execute::handle_ack(&mut self.execute_windows, &client_id, &detail)
-        {
+        if crate::execute::handle_ack(
+            &mut self.execute_windows,
+            &client_id,
+            &command,
+            accepted,
+            &detail,
+        ) {
             return;
         }
         if session_command_requires_confirmation(&command) {
@@ -1310,12 +1335,13 @@ impl AdminApp {
     }
 
     fn handle_terminal_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
-        let (hostname, username) = self.client_window_identity(client_id);
+        let (hostname, username, os) = self.client_window_environment(client_id);
         remote_management::remote_terminal::handle_ack(
             &mut self.terminal_windows,
             client_id,
             hostname,
             username,
+            os,
             accepted,
             detail,
         );
@@ -1342,12 +1368,13 @@ impl AdminApp {
             ));
             return;
         }
-        let (hostname, username) = self.client_window_identity(&client_id);
+        let (hostname, username, os) = self.client_window_environment(&client_id);
         remote_management::remote_terminal::handle_output(
             &mut self.terminal_windows,
             &client_id,
             hostname,
             username,
+            os,
             stream_id,
             sequence,
             stream,
@@ -1804,9 +1831,6 @@ impl AdminApp {
 
     fn render_execute_windows(&mut self, ctx: &egui::Context) {
         for outbound in crate::execute::render_windows(ctx, &mut self.execute_windows) {
-            if outbound.open_result_window {
-                self.open_command_window(&outbound.client_id, outbound.command.clone());
-            }
             let _ = self.input_tx.send(AdminInput::Command {
                 target_id: outbound.client_id.clone(),
                 command: outbound.command.clone(),

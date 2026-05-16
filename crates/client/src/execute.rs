@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use rdl_protocol::CommandKind;
+use rdl_protocol::{static_command_preset, CommandKind};
 use std::fs;
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -121,13 +121,19 @@ fn run_code(payload: &str) -> String {
 }
 
 fn execute_static_command(payload: &str) -> String {
+    if let Some(script) = custom_static_command(payload) {
+        let output = run_shell(&script);
+        return format!(
+            "execute_static_command\nmode=custom\ncommand={}\n{}",
+            clean_value(&script),
+            output
+        );
+    }
+
     let preset_id = payload_field(payload, "preset")
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "whoami".to_string());
-    let Some(preset) = static_commands()
-        .into_iter()
-        .find(|preset| preset.id == preset_id)
-    else {
+    let Some(preset) = static_command_preset(&preset_id) else {
         return format!(
             "execute_static_command\nstatus=failed\npreset={}\nmessage=unknown preset",
             clean_value(&preset_id)
@@ -145,6 +151,14 @@ fn execute_static_command(payload: &str) -> String {
         clean_value(preset.label),
         output
     )
+}
+
+fn custom_static_command(payload: &str) -> Option<String> {
+    payload_field(payload, "command_b64")
+        .and_then(|value| STANDARD.decode(value).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .or_else(|| payload_field(payload, "command"))
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[derive(Clone, Copy)]
@@ -204,55 +218,6 @@ fn runtime_args(runtime: &LanguageRuntime, path: &str) -> Vec<String> {
         ];
     }
     vec![path.to_string()]
-}
-
-#[derive(Clone, Copy)]
-struct StaticCommand {
-    id: &'static str,
-    label: &'static str,
-    windows: &'static str,
-    unix: &'static str,
-}
-
-fn static_commands() -> Vec<StaticCommand> {
-    vec![
-        StaticCommand {
-            id: "whoami",
-            label: "Who Am I",
-            windows: "whoami",
-            unix: "whoami",
-        },
-        StaticCommand {
-            id: "hostname",
-            label: "Hostname",
-            windows: "hostname",
-            unix: "hostname",
-        },
-        StaticCommand {
-            id: "uptime",
-            label: "Uptime",
-            windows: "Get-CimInstance Win32_OperatingSystem | Select-Object LastBootUpTime,LocalDateTime | Format-List",
-            unix: "uptime",
-        },
-        StaticCommand {
-            id: "disk_usage",
-            label: "Disk Usage",
-            windows: "Get-PSDrive -PSProvider FileSystem | Select-Object Name,Used,Free,Root | Format-Table -AutoSize",
-            unix: "df -h",
-        },
-        StaticCommand {
-            id: "network_config",
-            label: "Network Config",
-            windows: "ipconfig",
-            unix: "ifconfig 2>/dev/null || ip addr",
-        },
-        StaticCommand {
-            id: "environment",
-            label: "Environment",
-            windows: "Get-ChildItem Env: | Sort-Object Name | Format-Table -AutoSize",
-            unix: "env | sort",
-        },
-    ]
 }
 
 fn run_shell(script: &str) -> String {
@@ -450,7 +415,9 @@ fn truncate_lines(value: &str, max_lines: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{split_args, static_commands};
+    use super::{custom_static_command, split_args};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use rdl_protocol::static_command_presets;
 
     #[test]
     fn split_args_handles_quotes() {
@@ -462,13 +429,23 @@ mod tests {
 
     #[test]
     fn static_commands_include_requested_basics() {
-        let ids = static_commands()
-            .into_iter()
+        let ids = static_command_presets()
+            .iter()
             .map(|command| command.id)
             .collect::<Vec<_>>();
 
         assert!(ids.contains(&"whoami"));
         assert!(ids.contains(&"hostname"));
         assert!(ids.contains(&"disk_usage"));
+    }
+
+    #[test]
+    fn custom_static_command_accepts_base64_command() {
+        let payload = format!("mode=custom\ncommand_b64={}", STANDARD.encode("echo hello"));
+
+        assert_eq!(
+            custom_static_command(&payload).as_deref(),
+            Some("echo hello")
+        );
     }
 }
