@@ -139,6 +139,7 @@ fn voice_audio_forward_loop(
     voice_audio_rx: Receiver<user_interaction::voice_chat::OutboundCommand>,
     voice_udp_senders: Arc<Mutex<HashMap<String, AudioUdpSender>>>,
 ) {
+    let mut missing_senders = HashMap::<String, (u64, Instant)>::new();
     while let Ok(command) = voice_audio_rx.recv() {
         let user_interaction::voice_chat::OutboundCommand::AudioFrame {
             client_id,
@@ -154,6 +155,7 @@ fn voice_audio_forward_loop(
         let mut remove_sender = false;
         if let Ok(mut senders) = voice_udp_senders.lock() {
             if let Some(sender) = senders.get_mut(&client_id) {
+                missing_senders.remove(&client_id);
                 if let Err(error) =
                     sender.send_frame(&client_id, seq, sample_rate, channels, &format, &bytes)
                 {
@@ -166,6 +168,18 @@ fn voice_audio_forward_loop(
             }
             if remove_sender {
                 senders.remove(&client_id);
+            } else if !senders.contains_key(&client_id) {
+                let entry = missing_senders
+                    .entry(client_id.clone())
+                    .or_insert((0, Instant::now()));
+                entry.0 = entry.0.saturating_add(1);
+                if entry.1.elapsed() >= Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS) {
+                    eprintln!(
+                        "debug event=voice_chat_udp_missing_sender client={} frames={}",
+                        client_id, entry.0
+                    );
+                    entry.1 = Instant::now();
+                }
             }
         }
     }

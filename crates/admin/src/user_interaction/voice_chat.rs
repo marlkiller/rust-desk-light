@@ -26,6 +26,7 @@ const CAPTURE_QUEUE_CAPACITY: usize = 64;
 const CAPTURE_OUTPUT_CHANNELS: u16 = 1;
 const CAPTURE_FRAME_MS: u32 = 10;
 const VOICE_CHAT_REPAINT_MS: u64 = 20;
+const VOICE_CHAT_CAPTURE_REPORT_MS: u64 = 1_000;
 
 pub(crate) struct VoiceChatWindow {
     pub(crate) client_id: String,
@@ -361,6 +362,8 @@ pub(crate) fn render_windows(
         if window.call_requested.swap(false, Ordering::Relaxed) {
             window.status = VoiceChatStatus::Ringing;
             window.notice = "Calling client".to_string();
+            window.mic_muted.store(false, Ordering::Relaxed);
+            window.speaker_muted.store(false, Ordering::Relaxed);
             window.call_generation = window.call_generation.saturating_add(1).max(1);
             window.seq = stream_sequence_base(window.call_generation);
             window.inbound_generation = None;
@@ -615,6 +618,11 @@ fn voice_capture_loop(
 ) {
     let mut pending = VecDeque::new();
     let mut packetizer = AudioFramePacketizer::default();
+    let mut queued_packets = 0_u64;
+    let mut queued_bytes = 0_u64;
+    let mut muted_frames = 0_u64;
+    let mut queue_drops = 0_u64;
+    let mut last_report = Instant::now();
     while running.load(Ordering::Relaxed)
         && capture_state.load(Ordering::Relaxed) == capture_generation
     {
@@ -628,10 +636,12 @@ fn voice_capture_loop(
         }
         for frame in pending.drain(..) {
             if mic_muted.load(Ordering::Relaxed) {
+                muted_frames = muted_frames.saturating_add(1);
                 packetizer.clear_pending();
                 continue;
             }
             for frame in packetizer.push(frame) {
+                let frame_bytes = frame.bytes.len() as u64;
                 let command = OutboundCommand::AudioFrame {
                     client_id: client_id.clone(),
                     seq,
@@ -640,9 +650,30 @@ fn voice_capture_loop(
                     format: frame.format,
                     bytes: frame.bytes,
                 };
-                let _ = audio_tx.try_send(command);
+                match audio_tx.try_send(command) {
+                    Ok(()) => {
+                        queued_packets = queued_packets.saturating_add(1);
+                        queued_bytes = queued_bytes.saturating_add(frame_bytes);
+                    }
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        queue_drops = queue_drops.saturating_add(1);
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => return,
+                }
                 seq = seq.saturating_add(1);
             }
+        }
+        if last_report.elapsed() >= Duration::from_millis(VOICE_CHAT_CAPTURE_REPORT_MS) {
+            eprintln!(
+                "debug event=voice_chat_capture client={} packets={} bytes={} muted_frames={} queue_drops={} pending_frames={}",
+                client_id,
+                queued_packets,
+                queued_bytes,
+                muted_frames,
+                queue_drops,
+                pending.len()
+            );
+            last_report = Instant::now();
         }
     }
 }
