@@ -23,6 +23,8 @@ const MIN_AUDIO_PREBUFFER_MS: usize = 60;
 const MAX_CAPTURE_QUEUE_MS: u64 = 240;
 const MAX_CAPTURE_QUEUE_FRAMES: usize = 24;
 const CAPTURE_QUEUE_CAPACITY: usize = 64;
+const CAPTURE_OUTPUT_CHANNELS: u16 = 1;
+const CAPTURE_FRAME_MS: u32 = 10;
 const VOICE_CHAT_REPAINT_MS: u64 = 20;
 
 pub(crate) struct VoiceChatWindow {
@@ -117,6 +119,50 @@ struct AudioPlaybackState {
     started: bool,
     prebuffer_samples: usize,
     max_samples: usize,
+}
+
+#[derive(Default)]
+struct AudioFramePacketizer {
+    sample_rate: u32,
+    channels: u16,
+    format: String,
+    frame_bytes: usize,
+    pending: Vec<u8>,
+}
+
+impl AudioFramePacketizer {
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
+    fn push(&mut self, frame: CapturedAudioFrame) -> Vec<CapturedAudioFrame> {
+        if frame.bytes.is_empty() {
+            return Vec::new();
+        }
+        if self.sample_rate != frame.sample_rate
+            || self.channels != frame.channels
+            || self.format != frame.format
+        {
+            self.sample_rate = frame.sample_rate;
+            self.channels = frame.channels;
+            self.format = frame.format.clone();
+            self.frame_bytes = capture_frame_bytes(frame.sample_rate, frame.channels);
+            self.pending.clear();
+        }
+        self.pending.extend(frame.bytes);
+
+        let mut frames = Vec::new();
+        while self.pending.len() >= self.frame_bytes {
+            let bytes: Vec<u8> = self.pending.drain(..self.frame_bytes).collect();
+            frames.push(CapturedAudioFrame {
+                sample_rate: self.sample_rate,
+                channels: self.channels,
+                format: self.format.clone(),
+                bytes,
+            });
+        }
+        frames
+    }
 }
 
 pub(crate) fn open_window(
@@ -568,6 +614,7 @@ fn voice_capture_loop(
     mut seq: u64,
 ) {
     let mut pending = VecDeque::new();
+    let mut packetizer = AudioFramePacketizer::default();
     while running.load(Ordering::Relaxed)
         && capture_state.load(Ordering::Relaxed) == capture_generation
     {
@@ -581,18 +628,21 @@ fn voice_capture_loop(
         }
         for frame in pending.drain(..) {
             if mic_muted.load(Ordering::Relaxed) {
+                packetizer.clear_pending();
                 continue;
             }
-            let command = OutboundCommand::AudioFrame {
-                client_id: client_id.clone(),
-                seq,
-                sample_rate: frame.sample_rate,
-                channels: frame.channels,
-                format: frame.format,
-                bytes: frame.bytes,
-            };
-            let _ = audio_tx.try_send(command);
-            seq = seq.saturating_add(1);
+            for frame in packetizer.push(frame) {
+                let command = OutboundCommand::AudioFrame {
+                    client_id: client_id.clone(),
+                    seq,
+                    sample_rate: frame.sample_rate,
+                    channels: frame.channels,
+                    format: frame.format,
+                    bytes: frame.bytes,
+                };
+                let _ = audio_tx.try_send(command);
+                seq = seq.saturating_add(1);
+            }
         }
     }
 }
@@ -626,12 +676,17 @@ fn build_f32_input_stream(
     frame_tx: SyncSender<CapturedAudioFrame>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
+    let input_channels = config.channels.max(1) as usize;
     device
         .build_input_stream(
             config,
             move |data: &[f32], _| {
-                send_frame(&frame_tx, sample_rate, channels, f32_to_pcm_s16(data))
+                send_frame(
+                    &frame_tx,
+                    sample_rate,
+                    CAPTURE_OUTPUT_CHANNELS,
+                    f32_to_mono_pcm_s16(data, input_channels),
+                )
             },
             |error| eprintln!("voice chat input stream error: {error}"),
             None,
@@ -645,12 +700,17 @@ fn build_i16_input_stream(
     frame_tx: SyncSender<CapturedAudioFrame>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
+    let input_channels = config.channels.max(1) as usize;
     device
         .build_input_stream(
             config,
             move |data: &[i16], _| {
-                send_frame(&frame_tx, sample_rate, channels, i16_to_pcm_s16(data))
+                send_frame(
+                    &frame_tx,
+                    sample_rate,
+                    CAPTURE_OUTPUT_CHANNELS,
+                    i16_to_mono_pcm_s16(data, input_channels),
+                )
             },
             |error| eprintln!("voice chat input stream error: {error}"),
             None,
@@ -664,12 +724,17 @@ fn build_u16_input_stream(
     frame_tx: SyncSender<CapturedAudioFrame>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
+    let input_channels = config.channels.max(1) as usize;
     device
         .build_input_stream(
             config,
             move |data: &[u16], _| {
-                send_frame(&frame_tx, sample_rate, channels, u16_to_pcm_s16(data))
+                send_frame(
+                    &frame_tx,
+                    sample_rate,
+                    CAPTURE_OUTPUT_CHANNELS,
+                    u16_to_mono_pcm_s16(data, input_channels),
+                )
             },
             |error| eprintln!("voice chat input stream error: {error}"),
             None,
@@ -850,28 +915,41 @@ fn captured_frame_duration_ms(frame: &CapturedAudioFrame) -> u64 {
     ((frames as u64 * 1000) / sample_rate).max(1)
 }
 
-fn f32_to_pcm_s16(data: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for sample in data {
+fn capture_frame_bytes(sample_rate: u32, channels: u16) -> usize {
+    let samples_per_channel =
+        ((sample_rate.max(1) as u64 * CAPTURE_FRAME_MS as u64) / 1000).max(1) as usize;
+    samples_per_channel * channels.max(1) as usize * 2
+}
+
+fn f32_to_mono_pcm_s16(data: &[f32], channels: usize) -> Vec<u8> {
+    let channels = channels.max(1);
+    let mut bytes = Vec::with_capacity((data.len() / channels) * 2);
+    for frame in data.chunks_exact(channels) {
+        let sample = frame.iter().copied().sum::<f32>() / channels as f32;
         let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
 }
 
-fn i16_to_pcm_s16(data: &[i16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for sample in data {
+fn i16_to_mono_pcm_s16(data: &[i16], channels: usize) -> Vec<u8> {
+    let channels = channels.max(1);
+    let mut bytes = Vec::with_capacity((data.len() / channels) * 2);
+    for frame in data.chunks_exact(channels) {
+        let sum: i64 = frame.iter().map(|sample| *sample as i64).sum();
+        let sample = (sum / channels as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
 }
 
-fn u16_to_pcm_s16(data: &[u16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for sample in data {
-        let centered = (*sample as i32 - 32768).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        bytes.extend_from_slice(&centered.to_le_bytes());
+fn u16_to_mono_pcm_s16(data: &[u16], channels: usize) -> Vec<u8> {
+    let channels = channels.max(1);
+    let mut bytes = Vec::with_capacity((data.len() / channels) * 2);
+    for frame in data.chunks_exact(channels) {
+        let sum: i64 = frame.iter().map(|sample| *sample as i64 - 32768).sum();
+        let sample = (sum / channels as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
 }

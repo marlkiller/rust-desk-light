@@ -29,6 +29,7 @@ const NETWORK_IDLE_SLEEP_MS: u64 = 4;
 const CLIENT_OUTBOUND_QUEUE_CAPACITY: usize = 32;
 const CLIENT_BULK_OUTBOUND_QUEUE_CAPACITY: usize = 2;
 const CLIENT_BULK_POLL_MS: u64 = 2;
+const AUDIO_CAPTURE_FRAME_MS: u32 = 10;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -1189,6 +1190,59 @@ struct DesktopStreamState {
     generation: std::sync::atomic::AtomicU64,
 }
 
+#[derive(Default)]
+struct AudioFramePacketizer {
+    sample_rate: u32,
+    channels: u16,
+    format: String,
+    frame_bytes: usize,
+    pending: Vec<u8>,
+}
+
+impl AudioFramePacketizer {
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
+    fn push(
+        &mut self,
+        frame: crate::live_control::CapturedAudioFrame,
+    ) -> Vec<crate::live_control::CapturedAudioFrame> {
+        if frame.bytes.is_empty() {
+            return Vec::new();
+        }
+        if self.sample_rate != frame.sample_rate
+            || self.channels != frame.channels
+            || self.format != frame.format
+        {
+            self.sample_rate = frame.sample_rate;
+            self.channels = frame.channels;
+            self.format = frame.format.clone();
+            self.frame_bytes = audio_capture_frame_bytes(frame.sample_rate, frame.channels);
+            self.pending.clear();
+        }
+        self.pending.extend(frame.bytes);
+
+        let mut frames = Vec::new();
+        while self.pending.len() >= self.frame_bytes {
+            let bytes: Vec<u8> = self.pending.drain(..self.frame_bytes).collect();
+            frames.push(crate::live_control::CapturedAudioFrame {
+                sample_rate: self.sample_rate,
+                channels: self.channels,
+                format: self.format.clone(),
+                bytes,
+            });
+        }
+        frames
+    }
+}
+
+fn audio_capture_frame_bytes(sample_rate: u32, channels: u16) -> usize {
+    let samples_per_channel =
+        ((sample_rate.max(1) as u64 * AUDIO_CAPTURE_FRAME_MS as u64) / 1000).max(1) as usize;
+    samples_per_channel * channels.max(1) as usize * 2
+}
+
 fn client_writer_loop(
     mut writer: TcpStream,
     out_rx: Receiver<ClientOutbound>,
@@ -1532,6 +1586,7 @@ fn audio_stream_loop(
     );
 
     let mut seq = stream_sequence_base(generation);
+    let mut packetizer = AudioFramePacketizer::default();
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
@@ -1554,25 +1609,27 @@ fn audio_stream_loop(
                 break;
             }
         };
-        if try_queue_realtime_message(
-            &realtime_tx,
-            &session_token,
-            Message::AudioFrame {
-                client_id: client_id.clone(),
-                source: AudioSource::AudioListen,
-                seq,
-                sample_rate: frame.sample_rate,
-                channels: frame.channels,
-                format: frame.format,
-                bytes: frame.bytes,
-            },
-        )
-        .is_err()
-        {
-            stream_state.running.store(false, Ordering::Relaxed);
-            break;
+        for frame in packetizer.push(frame) {
+            if try_queue_realtime_message(
+                &realtime_tx,
+                &session_token,
+                Message::AudioFrame {
+                    client_id: client_id.clone(),
+                    source: AudioSource::AudioListen,
+                    seq,
+                    sample_rate: frame.sample_rate,
+                    channels: frame.channels,
+                    format: frame.format,
+                    bytes: frame.bytes,
+                },
+            )
+            .is_err()
+            {
+                stream_state.running.store(false, Ordering::Relaxed);
+                break;
+            }
+            seq = seq.saturating_add(1);
         }
-        seq = seq.saturating_add(1);
     }
     drop(input_stream);
 }
@@ -1606,6 +1663,7 @@ fn voice_chat_capture_loop(
     };
 
     let mut seq = stream_sequence_base(generation);
+    let mut packetizer = AudioFramePacketizer::default();
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
@@ -1628,27 +1686,30 @@ fn voice_chat_capture_loop(
             }
         };
         if mic_muted.load(Ordering::Relaxed) {
+            packetizer.clear_pending();
             continue;
         }
-        if try_queue_realtime_message(
-            &realtime_tx,
-            &session_token,
-            Message::AudioFrame {
-                client_id: client_id.clone(),
-                source: AudioSource::VoiceChat,
-                seq,
-                sample_rate: frame.sample_rate,
-                channels: frame.channels,
-                format: frame.format,
-                bytes: frame.bytes,
-            },
-        )
-        .is_err()
-        {
-            stream_state.running.store(false, Ordering::Relaxed);
-            break;
+        for frame in packetizer.push(frame) {
+            if try_queue_realtime_message(
+                &realtime_tx,
+                &session_token,
+                Message::AudioFrame {
+                    client_id: client_id.clone(),
+                    source: AudioSource::VoiceChat,
+                    seq,
+                    sample_rate: frame.sample_rate,
+                    channels: frame.channels,
+                    format: frame.format,
+                    bytes: frame.bytes,
+                },
+            )
+            .is_err()
+            {
+                stream_state.running.store(false, Ordering::Relaxed);
+                break;
+            }
+            seq = seq.saturating_add(1);
         }
-        seq = seq.saturating_add(1);
     }
     drop(input_stream);
 }

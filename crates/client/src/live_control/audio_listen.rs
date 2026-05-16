@@ -5,6 +5,7 @@ use std::sync::{mpsc::SyncSender, Arc, Mutex};
 
 const MAX_AUDIO_BUFFER_MS: usize = 300;
 const MIN_AUDIO_PREBUFFER_MS: usize = 60;
+const CAPTURE_OUTPUT_CHANNELS: u16 = 1;
 
 pub(crate) struct CapturedAudioFrame {
     pub(crate) sample_rate: u32,
@@ -107,7 +108,6 @@ pub(crate) fn start_input_stream(
     let sample_format = supported_config.sample_format();
     let config = supported_config.config();
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
     let format = "pcm_s16le".to_string();
     let stream = match sample_format {
         cpal::SampleFormat::F32 => build_f32_input_stream(&device, &config, frame_tx),
@@ -120,7 +120,7 @@ pub(crate) fn start_input_stream(
         .map_err(|error| format!("start input stream failed: {error}"))?;
     Ok(AudioInputStream {
         sample_rate,
-        channels,
+        channels: CAPTURE_OUTPUT_CHANNELS,
         format,
         _stream: stream,
     })
@@ -228,13 +228,13 @@ fn build_f32_input_stream(
     frame_tx: SyncSender<CapturedAudioFrame>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
+    let input_channels = config.channels.max(1) as usize;
     device
         .build_input_stream(
             config,
             move |data: &[f32], _| {
-                let bytes = f32_to_pcm_s16(data);
-                send_frame(&frame_tx, sample_rate, channels, bytes);
+                let bytes = f32_to_mono_pcm_s16(data, input_channels);
+                send_frame(&frame_tx, sample_rate, CAPTURE_OUTPUT_CHANNELS, bytes);
             },
             |error| eprintln!("audio input stream error: {error}"),
             None,
@@ -248,13 +248,13 @@ fn build_i16_input_stream(
     frame_tx: SyncSender<CapturedAudioFrame>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
+    let input_channels = config.channels.max(1) as usize;
     device
         .build_input_stream(
             config,
             move |data: &[i16], _| {
-                let bytes = i16_to_pcm_s16(data);
-                send_frame(&frame_tx, sample_rate, channels, bytes);
+                let bytes = i16_to_mono_pcm_s16(data, input_channels);
+                send_frame(&frame_tx, sample_rate, CAPTURE_OUTPUT_CHANNELS, bytes);
             },
             |error| eprintln!("audio input stream error: {error}"),
             None,
@@ -268,13 +268,13 @@ fn build_u16_input_stream(
     frame_tx: SyncSender<CapturedAudioFrame>,
 ) -> Result<cpal::Stream, String> {
     let sample_rate = config.sample_rate.0;
-    let channels = config.channels;
+    let input_channels = config.channels.max(1) as usize;
     device
         .build_input_stream(
             config,
             move |data: &[u16], _| {
-                let bytes = u16_to_pcm_s16(data);
-                send_frame(&frame_tx, sample_rate, channels, bytes);
+                let bytes = u16_to_mono_pcm_s16(data, input_channels);
+                send_frame(&frame_tx, sample_rate, CAPTURE_OUTPUT_CHANNELS, bytes);
             },
             |error| eprintln!("audio input stream error: {error}"),
             None,
@@ -377,28 +377,32 @@ fn send_frame(
     });
 }
 
-fn f32_to_pcm_s16(data: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for sample in data {
+fn f32_to_mono_pcm_s16(data: &[f32], channels: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity((data.len() / channels.max(1)) * 2);
+    for frame in data.chunks_exact(channels.max(1)) {
+        let sample = frame.iter().copied().sum::<f32>() / channels.max(1) as f32;
         let sample = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
 }
 
-fn i16_to_pcm_s16(data: &[i16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for sample in data {
+fn i16_to_mono_pcm_s16(data: &[i16], channels: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity((data.len() / channels.max(1)) * 2);
+    for frame in data.chunks_exact(channels.max(1)) {
+        let sum: i64 = frame.iter().map(|sample| *sample as i64).sum();
+        let sample = (sum / channels.max(1) as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
 }
 
-fn u16_to_pcm_s16(data: &[u16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 2);
-    for sample in data {
-        let centered = (*sample as i32 - 32768).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        bytes.extend_from_slice(&centered.to_le_bytes());
+fn u16_to_mono_pcm_s16(data: &[u16], channels: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity((data.len() / channels.max(1)) * 2);
+    for frame in data.chunks_exact(channels.max(1)) {
+        let sum: i64 = frame.iter().map(|sample| *sample as i64 - 32768).sum();
+        let sample = (sum / channels.max(1) as i64).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        bytes.extend_from_slice(&sample.to_le_bytes());
     }
     bytes
 }
