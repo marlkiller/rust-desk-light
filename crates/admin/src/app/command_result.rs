@@ -88,8 +88,13 @@ pub(super) fn refresh_command_window(
         command: window.command.clone(),
         payload: String::new(),
     });
+    let keep_existing_performance_detail = window.command == CommandKind::PerformanceMonitor
+        && !window.detail.trim().is_empty()
+        && !performance_monitor_pending_detail(&window.detail);
     window.status = CommandResultStatus::Pending;
-    window.detail = detail.to_string();
+    if !keep_existing_performance_detail {
+        window.detail = detail.to_string();
+    }
     window.open = true;
     if window.command == CommandKind::PerformanceMonitor {
         window.last_auto_refresh_at = Some(now);
@@ -286,7 +291,7 @@ pub(super) fn render_command_result(
             refresh_in_flight,
         );
         ui.add_space(8.0);
-        render_performance_monitor_detail(ui, detail);
+        render_performance_monitor_detail(ui, detail, refresh_in_flight);
         return;
     }
     if matches!(command, CommandKind::Camera) {
@@ -326,13 +331,29 @@ struct PerformanceMetric {
     color: egui::Color32,
 }
 
-fn render_performance_monitor_detail(ui: &mut egui::Ui, detail: &mut String) {
+fn render_performance_monitor_detail(
+    ui: &mut egui::Ui,
+    detail: &mut String,
+    refresh_in_flight: bool,
+) {
     let metrics = parse_performance_metrics(detail);
     if !metrics.is_empty() {
         render_performance_metric_bars(ui, &metrics);
         ui.add_space(10.0);
     }
+    if refresh_in_flight && performance_monitor_pending_detail(detail) {
+        return;
+    }
     render_plain_command_detail(ui, detail);
+}
+
+fn performance_monitor_pending_detail(detail: &str) -> bool {
+    matches!(
+        detail.trim(),
+        "Waiting for client result..."
+            | "Refreshing command result..."
+            | "Auto refreshing performance monitor..."
+    )
 }
 
 fn render_performance_metric_bars(ui: &mut egui::Ui, metrics: &PerformanceMetrics) {
@@ -1423,6 +1444,51 @@ mod tests {
             &CommandKind::EventLog,
             "not a table"
         ));
+    }
+
+    #[test]
+    fn performance_monitor_keeps_result_detail_but_hides_pending_placeholders() {
+        assert!(command_allows_plain_detail(
+            &CommandKind::PerformanceMonitor,
+            "performance_snapshot:\ncpu_percent=12.5"
+        ));
+        assert!(performance_monitor_pending_detail(
+            "Auto refreshing performance monitor..."
+        ));
+        assert_eq!(
+            command_status_notice(
+                &CommandKind::PerformanceMonitor,
+                CommandResultStatus::Accepted,
+                "not metrics"
+            )
+            .as_deref(),
+            Some("Performance metrics could not be parsed")
+        );
+    }
+
+    #[test]
+    fn performance_refresh_preserves_existing_result_detail() {
+        let now = Instant::now();
+        let mut window = test_command_window(CommandKind::PerformanceMonitor);
+        window.detail = "performance_snapshot:\ncpu_percent=12.5".to_string();
+        let (input_tx, _input_rx) = std::sync::mpsc::sync_channel(1);
+        let mut pending_logs = Vec::new();
+
+        refresh_command_window(
+            &input_tx,
+            &mut window,
+            "Auto refreshing performance monitor...",
+            "auto_refresh",
+            now,
+            &mut pending_logs,
+        );
+
+        assert!(matches!(window.status, CommandResultStatus::Pending));
+        assert_eq!(
+            window.detail,
+            "performance_snapshot:\ncpu_percent=12.5".to_string()
+        );
+        assert_eq!(window.last_auto_refresh_at, Some(now));
     }
 
     #[test]

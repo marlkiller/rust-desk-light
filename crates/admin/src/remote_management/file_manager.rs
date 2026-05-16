@@ -307,14 +307,31 @@ pub(crate) fn handle_transfer(
                 set_status(window, FileStatus::Failed, &error);
                 return;
             }
+            let completed = total_bytes > 0 && transferred_bytes >= total_bytes;
+            let status = if completed {
+                FileTransferStatus::Done
+            } else {
+                FileTransferStatus::Running
+            };
+            let status_message = if completed && message.trim().is_empty() {
+                "download complete"
+            } else {
+                &message
+            };
             update_transfer_status(
                 &window.transfers,
                 transfer_id,
-                FileTransferStatus::Running,
+                status,
                 Some(total_bytes),
                 Some(transferred_bytes),
-                &message,
+                status_message,
             );
+            if completed {
+                refresh_local_entries(window);
+                if window.open {
+                    set_status(window, FileStatus::Done, "Download complete");
+                }
+            }
         }
         (_, FileTransferAction::Progress) => {
             let message_lower = message.to_ascii_lowercase();
@@ -2620,6 +2637,78 @@ mod tests {
     }
 
     #[test]
+    fn completed_download_chunk_marks_transfer_done_without_complete_event() {
+        let local_root = test_dir("rdl-admin-download-complete-chunk");
+        let local_root_text = local_root.display().to_string();
+        let destination = local_root.join("hello.txt");
+        let mut windows = Vec::new();
+        open_window(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+        );
+        {
+            let window = windows.first_mut().expect("window exists");
+            window.outbound.lock().unwrap().clear();
+            *window.local_path.lock().unwrap() = local_root_text.clone();
+            add_transfer_row(
+                &window.transfers,
+                FileTransferRow {
+                    transfer_id: 42,
+                    direction: FileTransferDirection::Download,
+                    name: "hello.txt".to_string(),
+                    source: "/remote/hello.txt".to_string(),
+                    destination: destination.display().to_string(),
+                    remote_path: "/remote/hello.txt".to_string(),
+                    local_root: local_root_text.clone(),
+                    total_bytes: 5,
+                    transferred_bytes: 0,
+                    status: FileTransferStatus::Running,
+                    message: "running".to_string(),
+                },
+            );
+        }
+
+        handle_transfer(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+            Message::FileTransfer {
+                target_id: "client-1".to_string(),
+                transfer_id: 42,
+                direction: FileTransferDirection::Download,
+                action: FileTransferAction::Chunk,
+                path: "/remote/hello.txt".to_string(),
+                relative_path: "hello.txt".to_string(),
+                total_bytes: 5,
+                transferred_bytes: 5,
+                file_size: 5,
+                offset: 0,
+                bytes: b"hello".to_vec(),
+                message: String::new(),
+            },
+        );
+
+        let row = windows[0].transfers.lock().unwrap()[0].clone();
+        assert!(matches!(row.status, FileTransferStatus::Done));
+        assert_eq!(row.transferred_bytes, 5);
+        assert_eq!(row.message, "download complete");
+        assert_eq!(fs::read(&destination).unwrap(), b"hello");
+        assert!(matches!(
+            *windows[0].status.lock().unwrap(),
+            FileStatus::Done
+        ));
+        assert_eq!(
+            windows[0].notice.lock().unwrap().as_str(),
+            "Download complete"
+        );
+
+        fs::remove_dir_all(local_root).unwrap();
+    }
+
+    #[test]
     fn transfer_event_for_deleted_row_is_ignored() {
         let mut windows = Vec::new();
         open_window(
@@ -2656,5 +2745,16 @@ mod tests {
         let notice = windows[0].notice.lock().unwrap().clone();
         assert_eq!(notice, "Ready");
         assert!(windows[0].transfers.lock().unwrap().is_empty());
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{name}-{}-{nanos}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

@@ -200,6 +200,7 @@ macOS note:
 - [x] Windows build artifact.
 - [x] Linux build artifact.
 - [x] macOS release artifact.
+- [ ] Admin-side client builder: select a client template binary, enter the target server IP/port and bootstrap options, then generate a configured client artifact that uses those embedded settings on startup.
 - [ ] Optional service/daemon mode.
 - [x] Basic GitHub Actions release workflow.
 

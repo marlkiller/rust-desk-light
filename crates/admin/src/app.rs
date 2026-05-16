@@ -527,6 +527,15 @@ impl AdminApp {
     }
 
     fn send_command(&mut self, client_id: &str, command: CommandKind) {
+        if command.requires_client_gui() && !self.client_gui_available(client_id) {
+            self.push_log(format!(
+                "blocked command={} to {}: client has no GUI session",
+                command.as_str(),
+                client_id
+            ));
+            return;
+        }
+
         if session_command_requires_confirmation(&command) {
             self.open_session_command_window(client_id, command);
             return;
@@ -694,6 +703,14 @@ impl AdminApp {
             .find(|row| row.info.id == client_id)
             .map(|row| (row.info.hostname.clone(), row.info.username.clone()))
             .unwrap_or_else(|| ("unknown-host".to_string(), "unknown-user".to_string()))
+    }
+
+    fn client_gui_available(&self, client_id: &str) -> bool {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| row.info.gui_available)
+            .unwrap_or(false)
     }
 
     fn client_window_environment(&self, client_id: &str) -> (String, String, String) {
@@ -1019,9 +1036,15 @@ impl AdminApp {
                 section_title(ui, "Commands");
                 ui.separator();
                 if let Some(client_id) = self.selected_client_id.clone() {
-                    command_menu::render_context_menu(ui, &client_id, &mut |client_id, command| {
-                        self.send_command(client_id, command);
-                    });
+                    let gui_available = self.client_gui_available(&client_id);
+                    command_menu::render_context_menu(
+                        ui,
+                        &client_id,
+                        gui_available,
+                        &mut |client_id, command| {
+                            self.send_command(client_id, command);
+                        },
+                    );
                 } else {
                     ui.label(
                         egui::RichText::new("Select a client to enable command menus")
@@ -1195,6 +1218,7 @@ impl AdminApp {
                                     command_menu::render_context_menu(
                                         ui,
                                         &client.id,
+                                        client.gui_available,
                                         &mut |client_id, command| {
                                             self.send_command(client_id, command);
                                         },

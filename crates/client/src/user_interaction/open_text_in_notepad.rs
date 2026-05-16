@@ -5,22 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub(crate) fn handle(payload: &str, gui_mode: bool) -> String {
+    if !gui_mode {
+        return super::disabled_detail(&rdl_protocol::CommandKind::OpenTextInNotepad);
+    }
+
     let payload =
         ParsedInteractionPayload::parse(payload, "rdl-note.txt", String::new(), "text_b64");
     let file_name = safe_text_file_name(&payload.title);
-    if !gui_mode {
-        return match write_text_file(&file_name, &payload.body) {
-            Ok(path) => format!(
-                "open_text_in_notepad\nstatus=written_terminal_mode\npath={}\nbytes={}",
-                clean_result_value(&path.display().to_string()),
-                payload.body.len()
-            ),
-            Err(error) => format!(
-                "open_text_in_notepad_error\nmessage={}",
-                clean_result_value(&error.to_string())
-            ),
-        };
-    }
     match write_text_file(&file_name, &payload.body)
         .and_then(|path| open_text_file(&path).map(|open_status| (path, open_status)))
     {

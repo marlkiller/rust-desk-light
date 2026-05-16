@@ -4,12 +4,13 @@ use rdl_protocol::CommandKind;
 pub fn render_context_menu(
     ui: &mut egui::Ui,
     client_id: &str,
+    gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     render_session(ui, client_id, send_command);
     render_remote_management(ui, client_id, send_command);
-    render_live_control(ui, client_id, send_command);
-    render_user_interaction(ui, client_id, send_command);
+    render_live_control(ui, client_id, gui_available, send_command);
+    render_user_interaction(ui, client_id, gui_available, send_command);
     render_system_info(ui, client_id, send_command);
     render_execute(ui, client_id, send_command);
     render_plugins(ui, client_id, send_command);
@@ -160,72 +161,88 @@ fn render_remote_management(
 fn render_live_control(
     ui: &mut egui::Ui,
     client_id: &str,
+    gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("Live Control", |ui| {
-        menu_command(
-            ui,
-            client_id,
-            "Remote Desktop",
-            CommandKind::RemoteDesktop,
-            send_command,
-        );
-        ui.separator();
-        menu_command(ui, client_id, "Camera", CommandKind::Camera, send_command);
-        menu_command(
-            ui,
-            client_id,
-            "Audio Listen",
-            CommandKind::AudioListen,
-            send_command,
-        );
-    });
+    let response = ui
+        .add_enabled_ui(gui_available, |ui| {
+            ui.menu_button("Live Control", |ui| {
+                menu_command(
+                    ui,
+                    client_id,
+                    "Remote Desktop",
+                    CommandKind::RemoteDesktop,
+                    send_command,
+                );
+                ui.separator();
+                menu_command(ui, client_id, "Camera", CommandKind::Camera, send_command);
+                menu_command(
+                    ui,
+                    client_id,
+                    "Audio Listen",
+                    CommandKind::AudioListen,
+                    send_command,
+                );
+            });
+        })
+        .response;
+    if !gui_available {
+        response.on_hover_text("Disabled: selected client has no GUI session");
+    }
 }
 
 fn render_user_interaction(
     ui: &mut egui::Ui,
     client_id: &str,
+    gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("User Interaction", |ui| {
-        menu_command(
-            ui,
-            client_id,
-            "Message Box",
-            CommandKind::MessageBox,
-            send_command,
-        );
-        menu_command(
-            ui,
-            client_id,
-            "Balloon Tip",
-            CommandKind::BalloonTip,
-            send_command,
-        );
-        ui.separator();
-        menu_command(
-            ui,
-            client_id,
-            "Text Chat",
-            CommandKind::TextChat,
-            send_command,
-        );
-        menu_command(
-            ui,
-            client_id,
-            "Voice Chat",
-            CommandKind::VoiceChat,
-            send_command,
-        );
-        ui.separator();
-        menu_command(
-            ui,
-            client_id,
-            "Open Text In Notepad",
-            CommandKind::OpenTextInNotepad,
-            send_command,
-        );
-    });
+    let response = ui
+        .add_enabled_ui(gui_available, |ui| {
+            ui.menu_button("User Interaction", |ui| {
+                menu_command(
+                    ui,
+                    client_id,
+                    "Message Box",
+                    CommandKind::MessageBox,
+                    send_command,
+                );
+                menu_command(
+                    ui,
+                    client_id,
+                    "Balloon Tip",
+                    CommandKind::BalloonTip,
+                    send_command,
+                );
+                ui.separator();
+                menu_command(
+                    ui,
+                    client_id,
+                    "Text Chat",
+                    CommandKind::TextChat,
+                    send_command,
+                );
+                menu_command(
+                    ui,
+                    client_id,
+                    "Voice Chat",
+                    CommandKind::VoiceChat,
+                    send_command,
+                );
+                ui.separator();
+                menu_command(
+                    ui,
+                    client_id,
+                    "Open Text In Notepad",
+                    CommandKind::OpenTextInNotepad,
+                    send_command,
+                );
+            });
+        })
+        .response;
+    if !gui_available {
+        response.on_hover_text("Disabled: selected client has no GUI session");
+    }
 }
 
 fn render_system_info(
@@ -241,6 +258,7 @@ fn render_system_info(
             CommandKind::ComputerInfo,
             send_command,
         );
+        ui.separator();
         menu_command(
             ui,
             client_id,

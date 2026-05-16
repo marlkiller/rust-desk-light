@@ -1,20 +1,16 @@
 use super::payload::{clean_result_value, ParsedInteractionPayload};
 
 pub(crate) fn handle(payload: &str, gui_mode: bool) -> String {
+    if !gui_mode {
+        return super::disabled_detail(&rdl_protocol::CommandKind::MessageBox);
+    }
+
     let payload = ParsedInteractionPayload::parse(
         payload,
         "Rust Desk Light",
         "Message from admin.",
         "message_b64",
     );
-    if !gui_mode {
-        println!("admin message [{}]: {}", payload.title, payload.body);
-        return format!(
-            "message_box\nstatus=printed_to_client_log\ntitle={}\nmessage={}",
-            clean_result_value(&payload.title),
-            clean_result_value(&payload.body)
-        );
-    }
     match show_message_box(&payload.title, &payload.body, payload.kind.as_deref()) {
         Ok(()) => format!(
             "message_box\nstatus=shown\ntitle={}\nmessage={}",

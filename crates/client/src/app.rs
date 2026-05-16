@@ -295,15 +295,15 @@ fn client_connection_once(
                 let worker_tx = out_tx.clone();
                 let worker_token = session_token.clone();
                 thread::spawn(move || {
-                    let detail = commands::handle_command(&command, &payload, gui_mode);
+                    let reply = commands::handle_command(&command, &payload, gui_mode);
                     let _ = queue_message(
                         &worker_tx,
                         &worker_token,
                         Message::CommandAck {
                             client_id: target_id,
                             command,
-                            accepted: true,
-                            detail,
+                            accepted: reply.accepted,
+                            detail: reply.detail,
                         },
                     );
                 });
@@ -335,6 +335,22 @@ fn client_connection_once(
                 }
             }
             Message::DesktopControl { target_id, payload } => {
+                if !gui_mode {
+                    desktop_stream.running.store(false, Ordering::Relaxed);
+                    desktop_stream.generation.fetch_add(1, Ordering::Relaxed);
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::CommandAck {
+                            client_id: target_id,
+                            command: CommandKind::RemoteDesktop,
+                            accepted: false,
+                            detail: commands::gui_disabled_detail(&CommandKind::RemoteDesktop),
+                        },
+                    );
+                    continue;
+                }
+
                 match remote_desktop_action(&payload).as_deref() {
                     Some("start") => {
                         desktop_stream.running.store(false, Ordering::Relaxed);
@@ -389,6 +405,20 @@ fn client_connection_once(
                 }
             }
             Message::DesktopInput { target_id, payload } => {
+                if !gui_mode {
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::CommandAck {
+                            client_id: target_id,
+                            command: CommandKind::RemoteDesktop,
+                            accepted: false,
+                            detail: commands::gui_disabled_detail(&CommandKind::RemoteDesktop),
+                        },
+                    );
+                    continue;
+                }
+
                 let worker_tx = out_tx.clone();
                 let worker_token = session_token.clone();
                 thread::spawn(move || {
@@ -413,6 +443,25 @@ fn client_connection_once(
                 source,
                 payload,
             } => match video_control_action(&payload).as_deref() {
+                _ if !gui_mode => {
+                    let stream_state = match &source {
+                        VideoSource::RemoteDesktop => desktop_stream.clone(),
+                        VideoSource::Camera => camera_stream.clone(),
+                    };
+                    stream_state.running.store(false, Ordering::Relaxed);
+                    stream_state.generation.fetch_add(1, Ordering::Relaxed);
+                    let command = video_source_command(&source);
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::CommandAck {
+                            client_id: target_id,
+                            command: command.clone(),
+                            accepted: false,
+                            detail: commands::gui_disabled_detail(&command),
+                        },
+                    );
+                }
                 Some("start") => {
                     let stream_state = match &source {
                         VideoSource::RemoteDesktop => desktop_stream.clone(),

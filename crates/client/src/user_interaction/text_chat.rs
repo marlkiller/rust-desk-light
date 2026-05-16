@@ -16,7 +16,7 @@ pub(crate) fn handle(gui_mode: bool) -> String {
     if gui_mode {
         "chat_delivered".to_string()
     } else {
-        "text_chat requires client GUI".to_string()
+        super::disabled_detail(&rdl_protocol::CommandKind::TextChat)
     }
 }
 
