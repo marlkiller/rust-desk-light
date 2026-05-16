@@ -3,7 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread;
@@ -17,8 +17,11 @@ const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
 const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
-const MAX_AUDIO_BUFFER_MS: usize = 1_200;
-const MIN_AUDIO_PREBUFFER_MS: usize = 180;
+const MAX_AUDIO_BUFFER_MS: usize = 200;
+const MIN_AUDIO_PREBUFFER_MS: usize = 40;
+const MAX_AUDIO_PREBUFFER_MS: usize = 120;
+const PREBUFFER_ADJUST_STEP_MS: usize = 10;
+const PREBUFFER_DECAY_AFTER_MS: usize = 2_000;
 const AUDIO_STREAM_RELEASE_SETTLE_MS: u64 = 40;
 
 pub(crate) struct AudioListenWindow {
@@ -81,6 +84,9 @@ struct AudioStats {
     missing_frames: u64,
     buffered_ms: u64,
     underflows: u64,
+    dropped_ms: u64,
+    prebuffer_ms: u64,
+    output_misses: u64,
     last_frame_at: Option<Instant>,
 }
 
@@ -155,6 +161,9 @@ pub(crate) fn handle_audio_frame(
     if let Some(playback) = playback {
         window.stats.buffered_ms = playback.buffered_ms;
         window.stats.underflows = playback.underflows;
+        window.stats.dropped_ms = playback.dropped_ms;
+        window.stats.prebuffer_ms = playback.prebuffer_ms;
+        window.stats.output_misses = playback.output_misses;
     }
     handle_frame(window, frame);
 }
@@ -565,8 +574,13 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
                 meta
             } else {
                 format!(
-                    "{meta} | buf {} ms | gaps {} | uf {}",
-                    stats.buffered_ms, stats.missing_frames, stats.underflows
+                    "{meta} | buf {} ms | pb {} ms | drop {} ms | gaps {} | uf {} | miss {}",
+                    stats.buffered_ms,
+                    stats.prebuffer_ms,
+                    stats.dropped_ms,
+                    stats.missing_frames,
+                    stats.underflows,
+                    stats.output_misses
                 )
             };
             ui.label(egui::RichText::new(meta).size(12.0).color(COLOR_MUTED));
@@ -622,6 +636,7 @@ fn stop_listen(window: &mut AudioListenWindow, notice: &str) {
 
 struct AudioPlayer {
     buffer: Arc<Mutex<AudioPlaybackState>>,
+    output_misses: Arc<AtomicU64>,
     output_sample_rate: u32,
     output_channels: u16,
     _stream: cpal::Stream,
@@ -631,16 +646,25 @@ struct AudioPlaybackState {
     samples: VecDeque<f32>,
     started: bool,
     prebuffer_samples: usize,
+    min_prebuffer_samples: usize,
+    max_prebuffer_samples: usize,
+    prebuffer_step_samples: usize,
+    prebuffer_decay_samples: usize,
+    samples_since_underflow: usize,
     max_samples: usize,
     sample_rate: u32,
     channels: u16,
     underflows: u64,
+    dropped_samples: u64,
 }
 
 #[derive(Clone, Copy)]
 struct AudioPlaybackSnapshot {
     buffered_ms: u64,
     underflows: u64,
+    dropped_ms: u64,
+    prebuffer_ms: u64,
+    output_misses: u64,
 }
 
 impl AudioPlaybackRegistry {
@@ -686,6 +710,15 @@ impl AudioPlaybackRegistry {
                 },
             );
         }
+        eprintln!(
+            "debug event=audio_listen_playback client={} generation={} output_rate={} output_channels={} prebuffer_ms={} max_buffer_ms={}",
+            client_id,
+            generation.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string()),
+            player.output_sample_rate,
+            player.output_channels,
+            MIN_AUDIO_PREBUFFER_MS,
+            MAX_AUDIO_BUFFER_MS
+        );
     }
 
     fn stop(&self, client_id: &str) {
@@ -727,10 +760,17 @@ impl AudioPlayer {
             output_sample_rate,
             output_channels,
         )));
+        let output_misses = Arc::new(AtomicU64::new(0));
         let stream = match sample_format {
-            cpal::SampleFormat::F32 => build_f32_output_stream(&device, &config, buffer.clone()),
-            cpal::SampleFormat::I16 => build_i16_output_stream(&device, &config, buffer.clone()),
-            cpal::SampleFormat::U16 => build_u16_output_stream(&device, &config, buffer.clone()),
+            cpal::SampleFormat::F32 => {
+                build_f32_output_stream(&device, &config, buffer.clone(), output_misses.clone())
+            }
+            cpal::SampleFormat::I16 => {
+                build_i16_output_stream(&device, &config, buffer.clone(), output_misses.clone())
+            }
+            cpal::SampleFormat::U16 => {
+                build_u16_output_stream(&device, &config, buffer.clone(), output_misses.clone())
+            }
             other => Err(format!("unsupported output sample format: {other:?}")),
         }?;
         stream
@@ -738,6 +778,7 @@ impl AudioPlayer {
             .map_err(|error| format!("start output stream failed: {error}"))?;
         Ok(Self {
             buffer,
+            output_misses,
             output_sample_rate,
             output_channels,
             _stream: stream,
@@ -745,7 +786,10 @@ impl AudioPlayer {
     }
 
     fn snapshot(&self) -> Option<AudioPlaybackSnapshot> {
-        self.buffer.lock().ok().map(|buffer| buffer.snapshot())
+        self.buffer
+            .lock()
+            .ok()
+            .map(|buffer| buffer.snapshot(self.output_misses.load(Ordering::Relaxed)))
     }
 }
 
@@ -759,21 +803,32 @@ impl Drop for AudioPlayer {
 impl AudioPlaybackState {
     fn new(sample_rate: u32, channels: u16) -> Self {
         let samples_per_ms = sample_rate as usize * channels.max(1) as usize;
+        let min_prebuffer_samples = (samples_per_ms * MIN_AUDIO_PREBUFFER_MS / 1000).max(1);
+        let max_prebuffer_samples =
+            (samples_per_ms * MAX_AUDIO_PREBUFFER_MS / 1000).max(min_prebuffer_samples);
         Self {
             samples: VecDeque::new(),
             started: false,
-            prebuffer_samples: (samples_per_ms * MIN_AUDIO_PREBUFFER_MS / 1000).max(1),
+            prebuffer_samples: min_prebuffer_samples,
+            min_prebuffer_samples,
+            max_prebuffer_samples,
+            prebuffer_step_samples: (samples_per_ms * PREBUFFER_ADJUST_STEP_MS / 1000).max(1),
+            prebuffer_decay_samples: (samples_per_ms * PREBUFFER_DECAY_AFTER_MS / 1000).max(1),
+            samples_since_underflow: 0,
             max_samples: (samples_per_ms * MAX_AUDIO_BUFFER_MS / 1000).max(1),
             sample_rate,
             channels,
             underflows: 0,
+            dropped_samples: 0,
         }
     }
 
     fn push_samples(&mut self, samples: Vec<f32>) {
         self.samples.extend(samples);
-        while self.samples.len() > self.max_samples {
-            let _ = self.samples.pop_front();
+        let excess = self.samples.len().saturating_sub(self.max_samples);
+        if excess > 0 {
+            self.samples.drain(..excess);
+            self.dropped_samples = self.dropped_samples.saturating_add(excess as u64);
             self.started = true;
         }
     }
@@ -787,19 +842,44 @@ impl AudioPlaybackState {
             }
         }
         match self.samples.pop_front() {
-            Some(sample) => sample,
+            Some(sample) => {
+                self.record_played_sample();
+                sample
+            }
             None => {
                 self.started = false;
                 self.underflows = self.underflows.saturating_add(1);
+                self.samples_since_underflow = 0;
+                self.prebuffer_samples = self
+                    .prebuffer_samples
+                    .saturating_add(self.prebuffer_step_samples)
+                    .min(self.max_prebuffer_samples);
                 0.0
             }
         }
     }
 
-    fn snapshot(&self) -> AudioPlaybackSnapshot {
+    fn record_played_sample(&mut self) {
+        self.samples_since_underflow = self.samples_since_underflow.saturating_add(1);
+        if self.prebuffer_samples <= self.min_prebuffer_samples
+            || self.samples_since_underflow < self.prebuffer_decay_samples
+        {
+            return;
+        }
+        self.prebuffer_samples = self
+            .prebuffer_samples
+            .saturating_sub(self.prebuffer_step_samples)
+            .max(self.min_prebuffer_samples);
+        self.samples_since_underflow = 0;
+    }
+
+    fn snapshot(&self, output_misses: u64) -> AudioPlaybackSnapshot {
         AudioPlaybackSnapshot {
             buffered_ms: self.buffered_ms(),
             underflows: self.underflows,
+            dropped_ms: self.dropped_ms(),
+            prebuffer_ms: self.prebuffer_ms(),
+            output_misses,
         }
     }
 
@@ -808,17 +888,30 @@ impl AudioPlaybackState {
         let frames = self.samples.len() / channels;
         frames as u64 * 1000 / self.sample_rate.max(1) as u64
     }
+
+    fn prebuffer_ms(&self) -> u64 {
+        let channels = self.channels.max(1) as usize;
+        let frames = self.prebuffer_samples / channels;
+        frames as u64 * 1000 / self.sample_rate.max(1) as u64
+    }
+
+    fn dropped_ms(&self) -> u64 {
+        let channels = self.channels.max(1) as u64;
+        let frames = self.dropped_samples / channels;
+        frames * 1000 / self.sample_rate.max(1) as u64
+    }
 }
 
 fn build_f32_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     buffer: Arc<Mutex<AudioPlaybackState>>,
+    output_misses: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
             config,
-            move |data: &mut [f32], _| fill_f32_output(data, &buffer),
+            move |data: &mut [f32], _| fill_f32_output(data, &buffer, &output_misses),
             |error| eprintln!("audio output stream error: {error}"),
             None,
         )
@@ -829,11 +922,12 @@ fn build_i16_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     buffer: Arc<Mutex<AudioPlaybackState>>,
+    output_misses: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
             config,
-            move |data: &mut [i16], _| fill_i16_output(data, &buffer),
+            move |data: &mut [i16], _| fill_i16_output(data, &buffer, &output_misses),
             |error| eprintln!("audio output stream error: {error}"),
             None,
         )
@@ -844,46 +938,62 @@ fn build_u16_output_stream(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     buffer: Arc<Mutex<AudioPlaybackState>>,
+    output_misses: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, String> {
     device
         .build_output_stream(
             config,
-            move |data: &mut [u16], _| fill_u16_output(data, &buffer),
+            move |data: &mut [u16], _| fill_u16_output(data, &buffer, &output_misses),
             |error| eprintln!("audio output stream error: {error}"),
             None,
         )
         .map_err(|error| format!("build output stream failed: {error}"))
 }
 
-fn fill_f32_output(data: &mut [f32], buffer: &Arc<Mutex<AudioPlaybackState>>) {
-    if let Ok(mut buffer) = buffer.lock() {
+fn fill_f32_output(
+    data: &mut [f32],
+    buffer: &Arc<Mutex<AudioPlaybackState>>,
+    output_misses: &Arc<AtomicU64>,
+) {
+    if let Ok(mut buffer) = buffer.try_lock() {
         for sample in data {
             *sample = buffer.next_sample();
         }
     } else {
+        output_misses.fetch_add(1, Ordering::Relaxed);
         data.fill(0.0);
     }
 }
 
-fn fill_i16_output(data: &mut [i16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
-    if let Ok(mut buffer) = buffer.lock() {
+fn fill_i16_output(
+    data: &mut [i16],
+    buffer: &Arc<Mutex<AudioPlaybackState>>,
+    output_misses: &Arc<AtomicU64>,
+) {
+    if let Ok(mut buffer) = buffer.try_lock() {
         for sample in data {
             let value = buffer.next_sample().clamp(-1.0, 1.0);
             *sample = (value * i16::MAX as f32).round() as i16;
         }
     } else {
+        output_misses.fetch_add(1, Ordering::Relaxed);
         data.fill(0);
     }
 }
 
-fn fill_u16_output(data: &mut [u16], buffer: &Arc<Mutex<AudioPlaybackState>>) {
-    if let Ok(mut buffer) = buffer.lock() {
+fn fill_u16_output(
+    data: &mut [u16],
+    buffer: &Arc<Mutex<AudioPlaybackState>>,
+    output_misses: &Arc<AtomicU64>,
+) {
+    if let Ok(mut buffer) = buffer.try_lock() {
         for sample in data {
             let value = buffer.next_sample().clamp(-1.0, 1.0);
             *sample =
                 ((value * i16::MAX as f32).round() as i32 + 32768).clamp(0, u16::MAX as i32) as u16;
         }
     } else {
+        output_misses.fetch_add(1, Ordering::Relaxed);
         data.fill(32768);
     }
 }
