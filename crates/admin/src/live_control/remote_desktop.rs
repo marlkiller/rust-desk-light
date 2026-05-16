@@ -280,10 +280,6 @@ pub(crate) fn handle_ack(
                 "Select a screen and click Start".to_string()
             };
         }
-        DesktopResponse::Started(message) => {
-            window.status = DesktopStatus::Live;
-            window.notice = message;
-        }
         DesktopResponse::Frame(frame) => {
             handle_frame(window, frame, latency_ms);
         }
@@ -904,7 +900,6 @@ fn queue_ui_payload(queue: &Arc<Mutex<Vec<String>>>, payload: String) {
 
 enum DesktopResponse {
     Screens(Vec<RemoteScreen>),
-    Started(String),
     Frame(DesktopFrame),
     Input(String),
     Error(String),
@@ -916,14 +911,6 @@ impl DesktopResponse {
         let mut lines = detail.lines();
         match lines.next().unwrap_or_default().trim() {
             "remote_desktop_screens" => parse_screens(lines.collect::<Vec<_>>().as_slice()),
-            "remote_desktop_started" => {
-                let message = detail
-                    .lines()
-                    .find_map(|line| line.strip_prefix("message="))
-                    .unwrap_or("Streaming")
-                    .to_string();
-                Self::Started(message)
-            }
             "remote_desktop_frame" => parse_frame(lines.collect::<Vec<_>>().as_slice()),
             "remote_desktop_input" => {
                 let message = detail

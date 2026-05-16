@@ -157,199 +157,6 @@ pub mod audio_udp {
     }
 }
 
-pub mod video_udp {
-    pub const MAGIC: [u8; 4] = *b"RDV1";
-    pub const FORMAT_JPEG: u8 = 1;
-    pub const FORMAT_PNG: u8 = 2;
-    pub const MAX_PACKET_BYTES: usize = 1400;
-
-    const TYPE_REGISTER: u8 = 1;
-    const TYPE_UNREGISTER: u8 = 2;
-    const TYPE_CHUNK: u8 = 3;
-    const CONTROL_LEN: usize = 4 + 1 + 8;
-    const CHUNK_HEADER_LEN: usize = 4 + 1 + 8 + 8 + 8 + 1 + 4 + 4 + 4 + 4 + 1 + 4 + 2 + 2;
-
-    pub const MAX_CHUNK_BYTES: usize = MAX_PACKET_BYTES - CHUNK_HEADER_LEN;
-
-    #[derive(Debug)]
-    pub enum Packet<'a> {
-        Register {
-            stream_id: u64,
-        },
-        Unregister {
-            stream_id: u64,
-        },
-        Chunk {
-            stream_id: u64,
-            seq: u64,
-            capture_epoch_ms: u64,
-            source: u8,
-            source_width: u32,
-            source_height: u32,
-            image_width: u32,
-            image_height: u32,
-            format: &'static str,
-            frame_len: u32,
-            chunk_index: u16,
-            chunk_count: u16,
-            bytes: &'a [u8],
-        },
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_chunk(
-        stream_id: u64,
-        seq: u64,
-        capture_epoch_ms: u64,
-        source: u8,
-        source_width: u32,
-        source_height: u32,
-        image_width: u32,
-        image_height: u32,
-        format: &str,
-        frame_len: u32,
-        chunk_index: u16,
-        chunk_count: u16,
-        bytes: &[u8],
-        out: &mut Vec<u8>,
-    ) -> Result<(), &'static str> {
-        if format_code(format).is_none() {
-            return Err("unsupported video udp format");
-        }
-        if source == 0 {
-            return Err("invalid video udp source");
-        }
-        if frame_len == 0 {
-            return Err("invalid video udp frame length");
-        }
-        if chunk_count == 0 || chunk_index >= chunk_count {
-            return Err("invalid video udp chunk index");
-        }
-        if CHUNK_HEADER_LEN + bytes.len() > MAX_PACKET_BYTES {
-            return Err("video udp packet too large");
-        }
-        out.clear();
-        out.extend_from_slice(&MAGIC);
-        out.push(TYPE_CHUNK);
-        out.extend_from_slice(&stream_id.to_be_bytes());
-        out.extend_from_slice(&seq.to_be_bytes());
-        out.extend_from_slice(&capture_epoch_ms.to_be_bytes());
-        out.push(source);
-        out.extend_from_slice(&source_width.to_be_bytes());
-        out.extend_from_slice(&source_height.to_be_bytes());
-        out.extend_from_slice(&image_width.to_be_bytes());
-        out.extend_from_slice(&image_height.to_be_bytes());
-        out.push(format_code(format).unwrap_or(FORMAT_JPEG));
-        out.extend_from_slice(&frame_len.to_be_bytes());
-        out.extend_from_slice(&chunk_index.to_be_bytes());
-        out.extend_from_slice(&chunk_count.to_be_bytes());
-        out.extend_from_slice(bytes);
-        Ok(())
-    }
-
-    pub fn encode_register(stream_id: u64, out: &mut Vec<u8>) {
-        encode_control(TYPE_REGISTER, stream_id, out);
-    }
-
-    pub fn encode_unregister(stream_id: u64, out: &mut Vec<u8>) {
-        encode_control(TYPE_UNREGISTER, stream_id, out);
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Packet<'_>, &'static str> {
-        if bytes.len() < CONTROL_LEN || bytes[..4] != MAGIC {
-            return Err("invalid video udp packet");
-        }
-        let packet_type = bytes[4];
-        let stream_id = read_u64(bytes, 5)?;
-        match packet_type {
-            TYPE_REGISTER => Ok(Packet::Register { stream_id }),
-            TYPE_UNREGISTER => Ok(Packet::Unregister { stream_id }),
-            TYPE_CHUNK => {
-                if bytes.len() < CHUNK_HEADER_LEN {
-                    return Err("truncated video udp packet");
-                }
-                let seq = read_u64(bytes, 13)?;
-                let capture_epoch_ms = read_u64(bytes, 21)?;
-                let source = bytes.get(29).copied().ok_or("missing video udp source")?;
-                let source_width = read_u32(bytes, 30)?;
-                let source_height = read_u32(bytes, 34)?;
-                let image_width = read_u32(bytes, 38)?;
-                let image_height = read_u32(bytes, 42)?;
-                let format = format_name(bytes.get(46).copied().ok_or("missing video udp format")?)
-                    .ok_or("unsupported video udp format")?;
-                let frame_len = read_u32(bytes, 47)?;
-                let chunk_index = read_u16(bytes, 51)?;
-                let chunk_count = read_u16(bytes, 53)?;
-                if source == 0 || frame_len == 0 || chunk_count == 0 || chunk_index >= chunk_count {
-                    return Err("invalid video udp chunk metadata");
-                }
-                Ok(Packet::Chunk {
-                    stream_id,
-                    seq,
-                    capture_epoch_ms,
-                    source,
-                    source_width,
-                    source_height,
-                    image_width,
-                    image_height,
-                    format,
-                    frame_len,
-                    chunk_index,
-                    chunk_count,
-                    bytes: &bytes[CHUNK_HEADER_LEN..],
-                })
-            }
-            _ => Err("unknown video udp packet type"),
-        }
-    }
-
-    fn encode_control(packet_type: u8, stream_id: u64, out: &mut Vec<u8>) {
-        out.clear();
-        out.extend_from_slice(&MAGIC);
-        out.push(packet_type);
-        out.extend_from_slice(&stream_id.to_be_bytes());
-    }
-
-    fn format_code(format: &str) -> Option<u8> {
-        match format {
-            "jpeg" => Some(FORMAT_JPEG),
-            "png" => Some(FORMAT_PNG),
-            _ => None,
-        }
-    }
-
-    fn format_name(code: u8) -> Option<&'static str> {
-        match code {
-            FORMAT_JPEG => Some("jpeg"),
-            FORMAT_PNG => Some("png"),
-            _ => None,
-        }
-    }
-
-    fn read_u16(bytes: &[u8], start: usize) -> Result<u16, &'static str> {
-        let raw = bytes
-            .get(start..start + 2)
-            .ok_or("truncated video udp u16")?;
-        Ok(u16::from_be_bytes([raw[0], raw[1]]))
-    }
-
-    fn read_u32(bytes: &[u8], start: usize) -> Result<u32, &'static str> {
-        let raw = bytes
-            .get(start..start + 4)
-            .ok_or("truncated video udp u32")?;
-        Ok(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
-    }
-
-    fn read_u64(bytes: &[u8], start: usize) -> Result<u64, &'static str> {
-        let raw = bytes
-            .get(start..start + 8)
-            .ok_or("truncated video udp u64")?;
-        Ok(u64::from_be_bytes([
-            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-        ]))
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StaticCommandPreset {
     pub id: &'static str,
@@ -429,7 +236,7 @@ pub fn static_command_script_for_os(id: &str, os_label: &str) -> Option<&'static
 mod tests {
     use super::{
         audio_udp, default_static_command_preset_id, static_command_presets,
-        static_command_script_for_os, video_udp, VideoSource,
+        static_command_script_for_os,
     };
 
     #[test]
@@ -494,66 +301,6 @@ mod tests {
                 assert_eq!(channels, 1);
                 assert_eq!(format, "pcm_s16le");
                 assert_eq!(bytes, &[1, 2, 3, 4]);
-            }
-            other => panic!("unexpected packet: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn video_udp_roundtrips_register_and_chunk() {
-        let mut packet = Vec::new();
-        video_udp::encode_register(99, &mut packet);
-        assert!(matches!(
-            video_udp::decode(&packet),
-            Ok(video_udp::Packet::Register { stream_id: 99 })
-        ));
-
-        video_udp::encode_chunk(
-            99,
-            8,
-            5678,
-            VideoSource::RemoteDesktop.to_code(),
-            1920,
-            1080,
-            1280,
-            720,
-            "jpeg",
-            4,
-            0,
-            1,
-            &[9, 8, 7, 6],
-            &mut packet,
-        )
-        .unwrap();
-        match video_udp::decode(&packet).unwrap() {
-            video_udp::Packet::Chunk {
-                stream_id,
-                seq,
-                capture_epoch_ms,
-                source,
-                source_width,
-                source_height,
-                image_width,
-                image_height,
-                format,
-                frame_len,
-                chunk_index,
-                chunk_count,
-                bytes,
-            } => {
-                assert_eq!(stream_id, 99);
-                assert_eq!(seq, 8);
-                assert_eq!(capture_epoch_ms, 5678);
-                assert_eq!(source, VideoSource::RemoteDesktop.to_code());
-                assert_eq!(source_width, 1920);
-                assert_eq!(source_height, 1080);
-                assert_eq!(image_width, 1280);
-                assert_eq!(image_height, 720);
-                assert_eq!(format, "jpeg");
-                assert_eq!(frame_len, 4);
-                assert_eq!(chunk_index, 0);
-                assert_eq!(chunk_count, 1);
-                assert_eq!(bytes, &[9, 8, 7, 6]);
             }
             other => panic!("unexpected packet: {other:?}"),
         }
@@ -688,14 +435,14 @@ impl VideoSource {
         }
     }
 
-    pub fn to_code(&self) -> u8 {
+    fn to_code(&self) -> u8 {
         match self {
             Self::RemoteDesktop => 1,
             Self::Camera => 2,
         }
     }
 
-    pub fn from_code(value: u8) -> Result<Self, ProtocolError> {
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
         match value {
             1 => Ok(Self::RemoteDesktop),
             2 => Ok(Self::Camera),

@@ -1,5 +1,5 @@
 use rdl_protocol::{
-    audio_udp, now_epoch_ms, read_envelope, video_udp, write_envelope, AudioSource, ClientInfo,
+    audio_udp, now_epoch_ms, read_envelope, write_envelope, AudioSource, ClientInfo,
     FileTransferAction, FileTransferDirection, Message, Role,
 };
 use std::collections::{HashMap, HashSet};
@@ -97,54 +97,48 @@ fn main() -> io::Result<()> {
         "rust-desk-light server listening on {bind_addr} version={}",
         rdl_version::display_version()
     );
-    start_media_udp_relay(bind_addr.clone());
+    start_audio_udp_relay(bind_addr.clone());
     thread::spawn(move || accept_loop(listener, events_tx));
     event_loop(events_rx);
     Ok(())
 }
 
-fn start_media_udp_relay(bind_addr: String) {
+fn start_audio_udp_relay(bind_addr: String) {
     thread::spawn(move || match UdpSocket::bind(&bind_addr) {
         Ok(socket) => {
-            println!("media udp relay listening on {bind_addr}");
-            if let Err(error) = media_udp_relay_loop(socket) {
-                eprintln!("media udp relay stopped: {error}");
+            println!("audio udp relay listening on {bind_addr}");
+            if let Err(error) = audio_udp_relay_loop(socket) {
+                eprintln!("audio udp relay stopped: {error}");
             }
         }
-        Err(error) => eprintln!("media udp relay bind failed on {bind_addr}: {error}"),
+        Err(error) => eprintln!("audio udp relay bind failed on {bind_addr}: {error}"),
     });
 }
 
 #[derive(Clone, Copy)]
-struct MediaUdpRoute {
+struct AudioUdpRoute {
     receiver_addr: SocketAddr,
     last_seen: Instant,
 }
 
-enum MediaUdpPacket {
-    Register { stream_id: u64 },
-    Unregister { stream_id: u64 },
-    Media { stream_id: u64 },
-}
-
-fn media_udp_relay_loop(socket: UdpSocket) -> io::Result<()> {
+fn audio_udp_relay_loop(socket: UdpSocket) -> io::Result<()> {
     socket.set_read_timeout(Some(Duration::from_millis(UDP_RELAY_RECV_TIMEOUT_MS)))?;
-    let mut routes = HashMap::<u64, MediaUdpRoute>::new();
-    let mut buf = [0_u8; video_udp::MAX_PACKET_BYTES];
+    let mut routes = HashMap::<u64, AudioUdpRoute>::new();
+    let mut buf = [0_u8; audio_udp::MAX_PACKET_BYTES];
     let mut last_maintenance = Instant::now();
     loop {
         match socket.recv_from(&mut buf) {
-            Ok((len, addr)) => match decode_media_udp_packet(&buf[..len]) {
-                Ok(MediaUdpPacket::Register { stream_id }) => {
+            Ok((len, addr)) => match audio_udp::decode(&buf[..len]) {
+                Ok(audio_udp::Packet::Register { stream_id }) => {
                     routes.insert(
                         stream_id,
-                        MediaUdpRoute {
+                        AudioUdpRoute {
                             receiver_addr: addr,
                             last_seen: Instant::now(),
                         },
                     );
                 }
-                Ok(MediaUdpPacket::Unregister { stream_id }) => {
+                Ok(audio_udp::Packet::Unregister { stream_id }) => {
                     if routes
                         .get(&stream_id)
                         .map(|route| route.receiver_addr == addr)
@@ -153,14 +147,14 @@ fn media_udp_relay_loop(socket: UdpSocket) -> io::Result<()> {
                         routes.remove(&stream_id);
                     }
                 }
-                Ok(MediaUdpPacket::Media { stream_id }) => {
+                Ok(audio_udp::Packet::Audio { stream_id, .. }) => {
                     if let Some(route) = routes.get_mut(&stream_id) {
                         route.last_seen = Instant::now();
                         let _ = socket.send_to(&buf[..len], route.receiver_addr);
                     }
                 }
                 Err(error) => {
-                    eprintln!("media udp relay ignored packet from {addr}: {error}");
+                    eprintln!("audio udp relay ignored packet from {addr}: {error}");
                 }
             },
             Err(error)
@@ -178,31 +172,6 @@ fn media_udp_relay_loop(socket: UdpSocket) -> io::Result<()> {
             last_maintenance = now;
         }
     }
-}
-
-fn decode_media_udp_packet(bytes: &[u8]) -> Result<MediaUdpPacket, &'static str> {
-    if bytes.len() < 4 {
-        return Err("truncated media udp packet");
-    }
-    if bytes.starts_with(&audio_udp::MAGIC) {
-        return match audio_udp::decode(bytes)? {
-            audio_udp::Packet::Register { stream_id } => Ok(MediaUdpPacket::Register { stream_id }),
-            audio_udp::Packet::Unregister { stream_id } => {
-                Ok(MediaUdpPacket::Unregister { stream_id })
-            }
-            audio_udp::Packet::Audio { stream_id, .. } => Ok(MediaUdpPacket::Media { stream_id }),
-        };
-    }
-    if bytes.starts_with(&video_udp::MAGIC) {
-        return match video_udp::decode(bytes)? {
-            video_udp::Packet::Register { stream_id } => Ok(MediaUdpPacket::Register { stream_id }),
-            video_udp::Packet::Unregister { stream_id } => {
-                Ok(MediaUdpPacket::Unregister { stream_id })
-            }
-            video_udp::Packet::Chunk { stream_id, .. } => Ok(MediaUdpPacket::Media { stream_id }),
-        };
-    }
-    Err("unknown media udp packet")
 }
 
 fn accept_loop(listener: TcpListener, events_tx: Sender<ServerEvent>) {

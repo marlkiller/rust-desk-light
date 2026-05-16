@@ -36,7 +36,7 @@ use crate::{
 };
 use eframe::egui;
 use rdl_protocol::{
-    audio_udp, now_epoch_ms, video_udp, AudioSource, ClientInfo, CommandKind, CommandOutputStream,
+    audio_udp, now_epoch_ms, AudioSource, ClientInfo, CommandKind, CommandOutputStream,
     FileTransferAction, FileTransferDirection, Message, VideoSource,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -60,9 +60,6 @@ const MAX_PENDING_AUDIO_FRAMES_PER_SOURCE: usize = 32;
 const AUDIO_UDP_REGISTER_INTERVAL_MS: u64 = 250;
 const AUDIO_UDP_RECV_TIMEOUT_MS: u64 = 20;
 const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
-const VIDEO_UDP_FRAME_TIMEOUT_MS: u64 = 1_500;
-const MAX_VIDEO_UDP_FRAME_BYTES: usize = 16 * 1024 * 1024;
-const MAX_VIDEO_UDP_CHUNKS_PER_FRAME: usize = 16_384;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -326,277 +323,6 @@ fn audio_udp_receive_loop(
     let _ = socket.send_to(&unregister_packet, server_addr);
 }
 
-fn video_udp_receive_loop(
-    socket: UdpSocket,
-    server_addr: String,
-    client_id: String,
-    expected_source: VideoSource,
-    stream_id: u64,
-    stop: Arc<AtomicBool>,
-    event_sink: AdminEventSink,
-) {
-    let mut register_packet = Vec::new();
-    let mut unregister_packet = Vec::new();
-    video_udp::encode_register(stream_id, &mut register_packet);
-    video_udp::encode_unregister(stream_id, &mut unregister_packet);
-    let mut last_register = Instant::now() - Duration::from_millis(AUDIO_UDP_REGISTER_INTERVAL_MS);
-    let mut last_report = Instant::now();
-    let mut assembly = None::<VideoFrameAssembly>;
-    let mut last_completed_seq = 0_u64;
-    let mut packets = 0_u64;
-    let mut completed_frames = 0_u64;
-    let mut dropped_frames = 0_u64;
-    let mut stale_chunks = 0_u64;
-    let mut duplicate_chunks = 0_u64;
-    let mut bytes_received = 0_u64;
-    let mut buf = [0_u8; video_udp::MAX_PACKET_BYTES];
-
-    while !stop.load(Ordering::Relaxed) {
-        if last_register.elapsed() >= Duration::from_millis(AUDIO_UDP_REGISTER_INTERVAL_MS) {
-            if let Err(error) = socket.send_to(&register_packet, &server_addr) {
-                event_sink.send(AdminEvent::Log(format!(
-                    "video udp register failed: {error}"
-                )));
-                break;
-            }
-            last_register = Instant::now();
-        }
-
-        if assembly
-            .as_ref()
-            .map(|frame| {
-                frame.started_at.elapsed() >= Duration::from_millis(VIDEO_UDP_FRAME_TIMEOUT_MS)
-            })
-            .unwrap_or(false)
-        {
-            if let Some(frame) = assembly.take() {
-                last_completed_seq = last_completed_seq.max(frame.seq);
-            }
-            dropped_frames = dropped_frames.saturating_add(1);
-        }
-
-        match socket.recv_from(&mut buf) {
-            Ok((len, _)) => match video_udp::decode(&buf[..len]) {
-                Ok(video_udp::Packet::Chunk {
-                    stream_id: packet_stream_id,
-                    seq,
-                    source,
-                    source_width,
-                    source_height,
-                    image_width,
-                    image_height,
-                    format,
-                    frame_len,
-                    chunk_index,
-                    chunk_count,
-                    bytes,
-                    ..
-                }) if packet_stream_id == stream_id => {
-                    packets = packets.saturating_add(1);
-                    bytes_received = bytes_received.saturating_add(bytes.len() as u64);
-                    if seq <= last_completed_seq {
-                        stale_chunks = stale_chunks.saturating_add(1);
-                        continue;
-                    }
-                    let source =
-                        VideoSource::from_code(source).unwrap_or_else(|_| expected_source.clone());
-                    if source != expected_source {
-                        stale_chunks = stale_chunks.saturating_add(1);
-                        continue;
-                    }
-                    if assembly
-                        .as_ref()
-                        .map(|frame| seq > frame.seq)
-                        .unwrap_or(true)
-                    {
-                        if let Some(frame) = assembly.take() {
-                            last_completed_seq = last_completed_seq.max(frame.seq);
-                            dropped_frames = dropped_frames.saturating_add(1);
-                        }
-                        match VideoFrameAssembly::new(
-                            seq,
-                            source,
-                            source_width,
-                            source_height,
-                            image_width,
-                            image_height,
-                            format,
-                            frame_len,
-                            chunk_count,
-                        ) {
-                            Ok(frame) => assembly = Some(frame),
-                            Err(error) => {
-                                dropped_frames = dropped_frames.saturating_add(1);
-                                event_sink.send(AdminEvent::Log(format!(
-                                    "video udp frame ignored: {error}"
-                                )));
-                                continue;
-                            }
-                        }
-                    }
-                    let Some(frame) = assembly.as_mut().filter(|frame| frame.seq == seq) else {
-                        stale_chunks = stale_chunks.saturating_add(1);
-                        continue;
-                    };
-                    match frame.push_chunk(chunk_index, bytes) {
-                        Ok(VideoFrameAssemblyResult::Pending) => {}
-                        Ok(VideoFrameAssemblyResult::Duplicate) => {
-                            duplicate_chunks = duplicate_chunks.saturating_add(1);
-                        }
-                        Ok(VideoFrameAssemblyResult::Complete(bytes)) => {
-                            last_completed_seq = seq;
-                            completed_frames = completed_frames.saturating_add(1);
-                            let frame = assembly.take().expect("completed video frame exists");
-                            event_sink.send(AdminEvent::VideoFrame {
-                                client_id: client_id.clone(),
-                                source: frame.source,
-                                seq: frame.seq,
-                                source_width: frame.source_width,
-                                source_height: frame.source_height,
-                                image_width: frame.image_width,
-                                image_height: frame.image_height,
-                                format: frame.format,
-                                bytes,
-                            });
-                        }
-                        Err(error) => {
-                            assembly = None;
-                            dropped_frames = dropped_frames.saturating_add(1);
-                            event_sink
-                                .send(AdminEvent::Log(format!("video udp frame dropped: {error}")));
-                        }
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    event_sink.send(AdminEvent::Log(format!(
-                        "video udp packet ignored: {error}"
-                    )));
-                }
-            },
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock
-                    || error.kind() == io::ErrorKind::TimedOut => {}
-            Err(error) => {
-                event_sink.send(AdminEvent::Log(format!(
-                    "video udp receive failed: {error}"
-                )));
-                break;
-            }
-        }
-
-        if last_report.elapsed() >= Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS) {
-            debug_log!(
-                "debug event=remote_desktop_udp_rx client={} stream={} packets={} frames={} bytes={} dropped_frames={} stale_chunks={} duplicate_chunks={}",
-                client_id,
-                stream_id,
-                packets,
-                completed_frames,
-                bytes_received,
-                dropped_frames,
-                stale_chunks,
-                duplicate_chunks
-            );
-            last_report = Instant::now();
-        }
-    }
-
-    let _ = socket.send_to(&unregister_packet, server_addr);
-}
-
-struct VideoFrameAssembly {
-    seq: u64,
-    source: VideoSource,
-    source_width: u32,
-    source_height: u32,
-    image_width: u32,
-    image_height: u32,
-    format: String,
-    frame_len: usize,
-    chunks: Vec<Option<Vec<u8>>>,
-    received_chunks: usize,
-    received_bytes: usize,
-    started_at: Instant,
-}
-
-enum VideoFrameAssemblyResult {
-    Pending,
-    Duplicate,
-    Complete(Vec<u8>),
-}
-
-impl VideoFrameAssembly {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        seq: u64,
-        source: VideoSource,
-        source_width: u32,
-        source_height: u32,
-        image_width: u32,
-        image_height: u32,
-        format: &str,
-        frame_len: u32,
-        chunk_count: u16,
-    ) -> Result<Self, String> {
-        let frame_len = frame_len as usize;
-        let chunk_count = chunk_count as usize;
-        if frame_len == 0 || frame_len > MAX_VIDEO_UDP_FRAME_BYTES {
-            return Err(format!("invalid frame length {frame_len}"));
-        }
-        if chunk_count == 0 || chunk_count > MAX_VIDEO_UDP_CHUNKS_PER_FRAME {
-            return Err(format!("invalid chunk count {chunk_count}"));
-        }
-        Ok(Self {
-            seq,
-            source,
-            source_width,
-            source_height,
-            image_width,
-            image_height,
-            format: format.to_string(),
-            frame_len,
-            chunks: (0..chunk_count).map(|_| None).collect(),
-            received_chunks: 0,
-            received_bytes: 0,
-            started_at: Instant::now(),
-        })
-    }
-
-    fn push_chunk(
-        &mut self,
-        chunk_index: u16,
-        bytes: &[u8],
-    ) -> Result<VideoFrameAssemblyResult, String> {
-        let chunk_index = chunk_index as usize;
-        let Some(slot) = self.chunks.get_mut(chunk_index) else {
-            return Err(format!("chunk index out of range {chunk_index}"));
-        };
-        if slot.is_some() {
-            return Ok(VideoFrameAssemblyResult::Duplicate);
-        }
-        self.received_bytes = self.received_bytes.saturating_add(bytes.len());
-        if self.received_bytes > self.frame_len {
-            return Err("received bytes exceed frame length".to_string());
-        }
-        *slot = Some(bytes.to_vec());
-        self.received_chunks = self.received_chunks.saturating_add(1);
-        if self.received_chunks < self.chunks.len() {
-            return Ok(VideoFrameAssemblyResult::Pending);
-        }
-        if self.received_bytes != self.frame_len {
-            return Err("completed frame length mismatch".to_string());
-        }
-        let mut frame = Vec::with_capacity(self.frame_len);
-        for chunk in &mut self.chunks {
-            let Some(chunk) = chunk.take() else {
-                return Err("completed frame missing chunk".to_string());
-            };
-            frame.extend(chunk);
-        }
-        Ok(VideoFrameAssemblyResult::Complete(frame))
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn disable_macos_automatic_window_tabbing() {
     if let Some(main_thread) = objc2_foundation::MainThreadMarker::new() {
@@ -625,7 +351,6 @@ struct AdminApp {
     camera_windows: Vec<live_control::camera::CameraWindow>,
     audio_windows: Vec<live_control::audio_listen::AudioListenWindow>,
     audio_udp_sessions: HashMap<String, AudioUdpSession>,
-    video_udp_sessions: HashMap<String, AudioUdpSession>,
     audio_udp_next_stream_id: u64,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
@@ -856,7 +581,6 @@ impl AdminApp {
             camera_windows: Vec::new(),
             audio_windows: Vec::new(),
             audio_udp_sessions: HashMap::new(),
-            video_udp_sessions: HashMap::new(),
             audio_udp_next_stream_id: now_epoch_ms() as u64,
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
@@ -900,7 +624,6 @@ impl AdminApp {
                     self.connected = false;
                     self.push_log("disconnected from server");
                     self.stop_all_audio_udp_sessions();
-                    self.stop_all_video_udp_sessions();
                     self.stop_all_voice_udp_sessions();
                     self.clear_voice_udp_senders();
                     for client in &mut self.clients {
@@ -1509,70 +1232,6 @@ impl AdminApp {
         }
     }
 
-    fn start_video_udp_session(&mut self, client_id: &str, source: VideoSource) -> Option<u64> {
-        self.stop_video_udp_session(client_id);
-        let server_addr = format!("{}:{}", self.config.ip, self.config.port);
-        let socket = match UdpSocket::bind("0.0.0.0:0") {
-            Ok(socket) => socket,
-            Err(error) => {
-                self.push_log(format!("video udp bind failed: {error}"));
-                return None;
-            }
-        };
-        if let Err(error) =
-            socket.set_read_timeout(Some(Duration::from_millis(AUDIO_UDP_RECV_TIMEOUT_MS)))
-        {
-            self.push_log(format!("video udp timeout setup failed: {error}"));
-            return None;
-        }
-        let stream_id = self.next_audio_udp_stream_id();
-        let stop = Arc::new(AtomicBool::new(false));
-        let event_sink = AdminEventSink::new(
-            self.event_tx.clone(),
-            Some(self.repaint_handle.clone()),
-            None,
-        );
-        let worker_stop = stop.clone();
-        let worker_client_id = client_id.to_string();
-        let worker_server_addr = server_addr.clone();
-        let worker_source = source.clone();
-        thread::spawn(move || {
-            video_udp_receive_loop(
-                socket,
-                worker_server_addr,
-                worker_client_id,
-                worker_source,
-                stream_id,
-                worker_stop,
-                event_sink,
-            );
-        });
-        self.video_udp_sessions
-            .insert(client_id.to_string(), AudioUdpSession { stream_id, stop });
-        self.push_log(format!(
-            "video udp session started client={client_id} source={} stream={stream_id} relay={server_addr}",
-            source.as_str()
-        ));
-        Some(stream_id)
-    }
-
-    fn stop_video_udp_session(&mut self, client_id: &str) {
-        if let Some(session) = self.video_udp_sessions.remove(client_id) {
-            session.stop.store(true, Ordering::Relaxed);
-            self.push_log(format!(
-                "video udp session stopped client={client_id} stream={}",
-                session.stream_id
-            ));
-        }
-    }
-
-    fn stop_all_video_udp_sessions(&mut self) {
-        let client_ids: Vec<String> = self.video_udp_sessions.keys().cloned().collect();
-        for client_id in client_ids {
-            self.stop_video_udp_session(&client_id);
-        }
-    }
-
     fn start_voice_udp_session(&mut self, client_id: &str) -> Option<u64> {
         self.stop_voice_udp_session(client_id);
         let session = self.start_audio_udp_receive_session(client_id, AudioSource::VoiceChat)?;
@@ -2011,12 +1670,6 @@ impl AdminApp {
     }
 
     fn handle_desktop_ack(&mut self, client_id: &str, accepted: bool, detail: String) {
-        if !accepted
-            || detail.starts_with("remote_desktop_error\n")
-            || detail.starts_with("remote_desktop_stopped\n")
-        {
-            self.stop_video_udp_session(client_id);
-        }
         let (hostname, username) = self.client_window_identity(client_id);
         live_control::remote_desktop::handle_ack(
             &mut self.desktop_windows,
@@ -2768,31 +2421,8 @@ impl AdminApp {
     }
 
     fn render_desktop_windows(&mut self, ctx: &egui::Context) {
-        for mut outbound in
-            live_control::remote_desktop::render_windows(ctx, &mut self.desktop_windows)
+        for outbound in live_control::remote_desktop::render_windows(ctx, &mut self.desktop_windows)
         {
-            match payload_field(&outbound.payload, "action").as_deref() {
-                Some("start") if !outbound.input => {
-                    let Some(stream_id) = self
-                        .start_video_udp_session(&outbound.client_id, VideoSource::RemoteDesktop)
-                    else {
-                        self.handle_desktop_ack(
-                            &outbound.client_id,
-                            false,
-                            "remote_desktop_error\nmessage=video udp setup failed".to_string(),
-                        );
-                        continue;
-                    };
-                    outbound.payload.push_str(&format!(
-                        "\ntransport=udp\nudp_host={}\nudp_port={}\nudp_stream={stream_id}",
-                        self.config.ip, self.config.port
-                    ));
-                }
-                Some("stop") if !outbound.input => {
-                    self.stop_video_udp_session(&outbound.client_id);
-                }
-                _ => {}
-            }
             let message = if outbound.input {
                 AdminInput::DesktopInput {
                     target_id: outbound.client_id.clone(),

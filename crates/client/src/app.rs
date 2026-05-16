@@ -8,8 +8,8 @@ use crate::{
 };
 use eframe::egui;
 use rdl_protocol::{
-    audio_udp, now_epoch_ms, video_udp, write_envelope_with_token, AudioSource, CommandKind,
-    EnvelopeDecoder, FileTransferAction, FileTransferDirection, Message, Role, VideoSource,
+    audio_udp, now_epoch_ms, write_envelope_with_token, AudioSource, CommandKind, EnvelopeDecoder,
+    FileTransferAction, FileTransferDirection, Message, Role, VideoSource,
 };
 use std::io;
 use std::net::{TcpStream, UdpSocket};
@@ -36,8 +36,6 @@ const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
 const AUDIO_UDP_REGISTER_INTERVAL_MS: u64 = 250;
 const AUDIO_UDP_RECV_TIMEOUT_MS: u64 = 20;
 const AUDIO_UDP_MAX_PAYLOAD_BYTES: usize = 1_200;
-const VIDEO_UDP_PACE_CHUNKS: usize = 16;
-const VIDEO_UDP_PACE_MICROS: u64 = 1_000;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -1440,136 +1438,6 @@ impl AudioUdpEndpoint {
     }
 }
 
-struct VideoUdpSender {
-    socket: UdpSocket,
-    stream_id: u64,
-    packet: Vec<u8>,
-    sent_frames: u64,
-    sent_packets: u64,
-    sent_bytes: u64,
-    last_report: Instant,
-}
-
-struct VideoUdpEndpoint {
-    host: String,
-    port: u16,
-    stream_id: u64,
-}
-
-impl VideoUdpSender {
-    fn from_payload(payload: &str) -> Result<Option<Self>, String> {
-        VideoUdpEndpoint::from_payload(payload)?
-            .map(Self::connect)
-            .transpose()
-    }
-
-    fn connect(endpoint: VideoUdpEndpoint) -> Result<Self, String> {
-        let socket =
-            UdpSocket::bind("0.0.0.0:0").map_err(|error| format!("bind udp failed: {error}"))?;
-        socket
-            .connect(endpoint.addr())
-            .map_err(|error| format!("connect udp relay failed: {error}"))?;
-        Ok(Self {
-            socket,
-            stream_id: endpoint.stream_id,
-            packet: Vec::with_capacity(video_udp::MAX_PACKET_BYTES),
-            sent_frames: 0,
-            sent_packets: 0,
-            sent_bytes: 0,
-            last_report: Instant::now(),
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn send_frame(
-        &mut self,
-        client_id: &str,
-        source: &VideoSource,
-        seq: u64,
-        source_width: u32,
-        source_height: u32,
-        image_width: u32,
-        image_height: u32,
-        format: &str,
-        bytes: &[u8],
-    ) -> io::Result<()> {
-        let chunk_count = bytes.len().div_ceil(video_udp::MAX_CHUNK_BYTES).max(1);
-        if chunk_count > u16::MAX as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "video frame has too many udp chunks",
-            ));
-        }
-        let frame_len = u32::try_from(bytes.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "video frame is too large"))?;
-        for (chunk_index, chunk) in bytes.chunks(video_udp::MAX_CHUNK_BYTES).enumerate() {
-            video_udp::encode_chunk(
-                self.stream_id,
-                seq,
-                now_epoch_ms() as u64,
-                source.to_code(),
-                source_width,
-                source_height,
-                image_width,
-                image_height,
-                format,
-                frame_len,
-                chunk_index as u16,
-                chunk_count as u16,
-                chunk,
-                &mut self.packet,
-            )
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            self.socket.send(&self.packet)?;
-            self.sent_packets = self.sent_packets.saturating_add(1);
-            if chunk_count > VIDEO_UDP_PACE_CHUNKS && (chunk_index + 1) % VIDEO_UDP_PACE_CHUNKS == 0
-            {
-                thread::sleep(Duration::from_micros(VIDEO_UDP_PACE_MICROS));
-            }
-        }
-        self.sent_frames = self.sent_frames.saturating_add(1);
-        self.sent_bytes = self.sent_bytes.saturating_add(bytes.len() as u64);
-        if self.last_report.elapsed() >= Duration::from_millis(AUDIO_STREAM_REPORT_INTERVAL_MS) {
-            debug_log!(
-                "debug event=remote_desktop_udp_tx client={} stream={} frames={} packets={} bytes={} last_chunks={}",
-                client_id,
-                self.stream_id,
-                self.sent_frames,
-                self.sent_packets,
-                self.sent_bytes,
-                chunk_count
-            );
-            self.last_report = Instant::now();
-        }
-        Ok(())
-    }
-}
-
-impl VideoUdpEndpoint {
-    fn from_payload(payload: &str) -> Result<Option<Self>, String> {
-        if video_control_value(payload, "transport").as_deref() != Some("udp") {
-            return Ok(None);
-        }
-        let host = video_control_value(payload, "udp_host")
-            .ok_or_else(|| "missing video udp host".to_string())?;
-        let port = video_control_value(payload, "udp_port")
-            .and_then(|value| value.parse::<u16>().ok())
-            .ok_or_else(|| "missing video udp port".to_string())?;
-        let stream_id = video_control_value(payload, "udp_stream")
-            .and_then(|value| value.parse::<u64>().ok())
-            .ok_or_else(|| "missing video udp stream".to_string())?;
-        Ok(Some(Self {
-            host,
-            port,
-            stream_id,
-        }))
-    }
-
-    fn addr(&self) -> String {
-        format!("{}:{}", self.host, self.port)
-    }
-}
-
 fn new_audio_udp_stream_id(tag: u64) -> u64 {
     ((now_epoch_ms() as u64).saturating_mul(1024))
         .saturating_add(tag)
@@ -1886,39 +1754,6 @@ fn video_stream_loop(
     let fps = quality_fps(&quality);
     let interval = Duration::from_millis((1000 / fps).max(1));
     let mut seq = stream_sequence_base(generation);
-    let mut udp_sender = match &source {
-        VideoSource::RemoteDesktop => match VideoUdpSender::from_payload(&start_payload) {
-            Ok(sender) => sender,
-            Err(error) => {
-                let _ = queue_message(
-                    &out_tx,
-                    &session_token,
-                    Message::CommandAck {
-                        client_id,
-                        command: CommandKind::RemoteDesktop,
-                        accepted: false,
-                        detail: format!("remote_desktop_error\nmessage={error}"),
-                    },
-                );
-                stream_state.running.store(false, Ordering::Relaxed);
-                return;
-            }
-        },
-        VideoSource::Camera => None,
-    };
-    if source == VideoSource::RemoteDesktop && udp_sender.is_some() {
-        let _ = queue_message(
-            &out_tx,
-            &session_token,
-            Message::CommandAck {
-                client_id: client_id.clone(),
-                command: CommandKind::RemoteDesktop,
-                accepted: true,
-                detail: "remote_desktop_started\nmessage=UDP stream started\ntransport=udp"
-                    .to_string(),
-            },
-        );
-    }
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
@@ -1963,52 +1798,9 @@ fn video_stream_loop(
         };
         match frame {
             Ok(message) => {
-                if let Some(sender) = udp_sender.as_mut() {
-                    let Message::VideoFrame {
-                        client_id: frame_client_id,
-                        source,
-                        seq,
-                        source_width,
-                        source_height,
-                        image_width,
-                        image_height,
-                        format,
-                        bytes,
-                    } = message
-                    else {
-                        unreachable!("video stream loop only builds video frames");
-                    };
-                    if let Err(error) = sender.send_frame(
-                        &frame_client_id,
-                        &source,
-                        seq,
-                        source_width,
-                        source_height,
-                        image_width,
-                        image_height,
-                        &format,
-                        &bytes,
-                    ) {
-                        let _ = queue_message(
-                            &out_tx,
-                            &session_token,
-                            Message::CommandAck {
-                                client_id: frame_client_id,
-                                command: video_source_command(&source),
-                                accepted: false,
-                                detail: format!(
-                                    "remote_desktop_error\nmessage=udp send failed: {error}"
-                                ),
-                            },
-                        );
-                        stream_state.running.store(false, Ordering::Relaxed);
-                        break;
-                    }
-                } else {
-                    if try_queue_realtime_message(&realtime_tx, &session_token, message).is_err() {
-                        stream_state.running.store(false, Ordering::Relaxed);
-                        break;
-                    }
+                if try_queue_realtime_message(&realtime_tx, &session_token, message).is_err() {
+                    stream_state.running.store(false, Ordering::Relaxed);
+                    break;
                 }
                 seq = seq.saturating_add(1);
             }
