@@ -52,6 +52,7 @@ use std::time::Instant;
 const GUI_IDLE_FRAME_INTERVAL_MS: u64 = 250;
 const GUI_REALTIME_AUDIO_FRAME_INTERVAL_MS: u64 = 16;
 const ADMIN_INPUT_QUEUE_CAPACITY: usize = 8;
+const VOICE_AUDIO_OUTBOUND_QUEUE_CAPACITY: usize = 128;
 const MAX_GUI_EVENTS_PER_FRAME: usize = 4096;
 const MAX_PENDING_AUDIO_MS: u64 = 240;
 const MAX_PENDING_AUDIO_FRAMES_PER_SOURCE: usize = 32;
@@ -71,6 +72,7 @@ fn run_gui(config: Config) -> eframe::Result {
     install_gui_shutdown_signal_handlers();
 
     let (input_tx, input_rx) = mpsc::sync_channel(ADMIN_INPUT_QUEUE_CAPACITY);
+    let (voice_audio_tx, voice_audio_rx) = mpsc::sync_channel(VOICE_AUDIO_OUTBOUND_QUEUE_CAPACITY);
     let (event_tx, event_rx) = mpsc::channel();
     let ui_event_tx = event_tx.clone();
     let network_config = config.clone();
@@ -78,6 +80,9 @@ fn run_gui(config: Config) -> eframe::Result {
     let network_repaint_handle = repaint_handle.clone();
     let ignored_file_transfers = Arc::new(Mutex::new(HashSet::new()));
     let network_ignored_file_transfers = ignored_file_transfers.clone();
+    let voice_audio_input_tx = input_tx.clone();
+
+    thread::spawn(move || voice_audio_forward_loop(voice_audio_rx, voice_audio_input_tx));
 
     thread::spawn(move || {
         let event_sink = AdminEventSink::new(event_tx, Some(network_repaint_handle));
@@ -111,9 +116,42 @@ fn run_gui(config: Config) -> eframe::Result {
                 ui_event_tx,
                 repaint_handle,
                 ignored_file_transfers,
+                voice_audio_tx,
             )))
         }),
     )
+}
+
+fn voice_audio_forward_loop(
+    voice_audio_rx: Receiver<user_interaction::voice_chat::OutboundCommand>,
+    input_tx: SyncSender<AdminInput>,
+) {
+    while let Ok(command) = voice_audio_rx.recv() {
+        let user_interaction::voice_chat::OutboundCommand::AudioFrame {
+            client_id,
+            seq,
+            sample_rate,
+            channels,
+            format,
+            bytes,
+        } = command
+        else {
+            continue;
+        };
+        let input = AdminInput::AudioFrame {
+            target_id: client_id,
+            source: AudioSource::VoiceChat,
+            seq,
+            sample_rate,
+            channels,
+            format,
+            bytes,
+        };
+        match input_tx.try_send(input) {
+            Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => break,
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -132,6 +170,7 @@ struct AdminApp {
     event_rx: Receiver<AdminEvent>,
     event_tx: Sender<AdminEvent>,
     repaint_handle: Arc<Mutex<Option<egui::Context>>>,
+    voice_audio_tx: SyncSender<user_interaction::voice_chat::OutboundCommand>,
     connected: bool,
     clients: Vec<ClientRow>,
     client_filter: String,
@@ -242,6 +281,7 @@ impl AdminApp {
         event_tx: Sender<AdminEvent>,
         repaint_handle: Arc<Mutex<Option<egui::Context>>>,
         ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
+        voice_audio_tx: SyncSender<user_interaction::voice_chat::OutboundCommand>,
     ) -> Self {
         apply_admin_theme(&cc.egui_ctx);
         if let Ok(mut handle) = repaint_handle.lock() {
@@ -265,6 +305,7 @@ impl AdminApp {
             terminal_windows: Vec::new(),
             chat_windows: Vec::new(),
             voice_chat_windows: Vec::new(),
+            voice_audio_tx,
             interaction_command_windows: Vec::new(),
             session_command_windows: Vec::new(),
             execute_windows: Vec::new(),
@@ -1092,6 +1133,7 @@ impl AdminApp {
             username,
             accepted,
             detail,
+            self.voice_audio_tx.clone(),
         );
     }
 

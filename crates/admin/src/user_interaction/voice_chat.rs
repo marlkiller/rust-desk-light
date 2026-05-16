@@ -3,10 +3,11 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 use std::collections::VecDeque;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, SyncSender},
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc::{self, SyncSender},
     Arc, Mutex,
 };
+use std::thread;
 use std::time::{Duration, Instant};
 
 const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
@@ -21,6 +22,7 @@ const MAX_AUDIO_BUFFER_MS: usize = 300;
 const MIN_AUDIO_PREBUFFER_MS: usize = 60;
 const MAX_CAPTURE_QUEUE_MS: u64 = 240;
 const MAX_CAPTURE_QUEUE_FRAMES: usize = 24;
+const CAPTURE_QUEUE_CAPACITY: usize = 64;
 const VOICE_CHAT_REPAINT_MS: u64 = 20;
 
 pub(crate) struct VoiceChatWindow {
@@ -39,7 +41,8 @@ pub(crate) struct VoiceChatWindow {
     open: bool,
     outbound: Vec<OutboundCommand>,
     input_stream: Option<AudioInputStream>,
-    frame_rx: Option<Receiver<CapturedAudioFrame>>,
+    capture_active: bool,
+    capture_generation: Arc<AtomicU64>,
     player: Option<AudioPlayer>,
     seq: u64,
     call_generation: u64,
@@ -149,7 +152,8 @@ pub(crate) fn open_window(
         open: true,
         outbound: Vec::new(),
         input_stream: None,
-        frame_rx: None,
+        capture_active: false,
+        capture_generation: Arc::new(AtomicU64::new(0)),
         player: None,
         seq: 1,
         call_generation: 0,
@@ -166,6 +170,7 @@ pub(crate) fn handle_ack(
     username: String,
     accepted: bool,
     detail: String,
+    audio_tx: SyncSender<OutboundCommand>,
 ) {
     let Some(window) = windows
         .iter_mut()
@@ -176,20 +181,22 @@ pub(crate) fn handle_ack(
     window.hostname = hostname;
     window.username = username;
     match VoiceChatResponse::parse(&detail, accepted) {
-        VoiceChatResponse::Accepted { generation } => match start_local_audio(window) {
-            Ok(()) => {
-                window.status = VoiceChatStatus::Live;
-                window.notice = "Voice chat connected".to_string();
-                window.started_at = Some(Instant::now());
-                window.running.store(true, Ordering::Relaxed);
-                window.inbound_generation = generation;
-                window.last_incoming_seq = 0;
+        VoiceChatResponse::Accepted { generation } => {
+            window.running.store(true, Ordering::Relaxed);
+            window.inbound_generation = generation;
+            match start_local_audio(window, audio_tx) {
+                Ok(()) => {
+                    window.status = VoiceChatStatus::Live;
+                    window.notice = "Voice chat connected".to_string();
+                    window.started_at = Some(Instant::now());
+                    window.last_incoming_seq = 0;
+                }
+                Err(error) => {
+                    stop_call(window, &format!("Local audio failed: {error}"));
+                    window.status = VoiceChatStatus::Failed;
+                }
             }
-            Err(error) => {
-                stop_call(window, &format!("Local audio failed: {error}"));
-                window.status = VoiceChatStatus::Failed;
-            }
-        },
+        }
         VoiceChatResponse::Declined(message) => {
             stop_call(window, &message);
             window.status = VoiceChatStatus::Ended;
@@ -303,7 +310,6 @@ pub(crate) fn render_windows(
             continue;
         }
 
-        drain_captured_audio(window, &mut outbound);
         render_window(ctx, window);
 
         if window.call_requested.swap(false, Ordering::Relaxed) {
@@ -501,59 +507,94 @@ fn call_button(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> egui::Re
     )
 }
 
-fn drain_captured_audio(window: &mut VoiceChatWindow, outbound: &mut Vec<OutboundCommand>) {
-    if !matches!(window.status, VoiceChatStatus::Live) {
-        return;
-    }
-    let Some(frame_rx) = &window.frame_rx else {
-        return;
-    };
-    let mut pending = VecDeque::new();
-    while let Ok(frame) = frame_rx.try_recv() {
-        push_capture_frame(&mut pending, frame);
-    }
-    for frame in pending {
-        let samples = pcm_s16le_to_f32(&frame.bytes);
-        window.stats.outgoing_peak = samples
-            .iter()
-            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-        if window.mic_muted.load(Ordering::Relaxed) {
-            continue;
-        }
-        outbound.push(OutboundCommand::AudioFrame {
-            client_id: window.client_id.clone(),
-            seq: window.seq,
-            sample_rate: frame.sample_rate,
-            channels: frame.channels,
-            format: frame.format,
-            bytes: frame.bytes,
-        });
-        window.seq = window.seq.saturating_add(1);
-    }
-}
-
-fn start_local_audio(window: &mut VoiceChatWindow) -> Result<(), String> {
+fn start_local_audio(
+    window: &mut VoiceChatWindow,
+    audio_tx: SyncSender<OutboundCommand>,
+) -> Result<(), String> {
     if window.player.is_none() {
         window.player = Some(AudioPlayer::start()?);
     }
-    if window.input_stream.is_none() {
-        let (frame_tx, frame_rx) = mpsc::sync_channel(8);
-        window.input_stream = Some(start_input_stream(frame_tx)?);
-        window.frame_rx = Some(frame_rx);
+    if !window.capture_active {
+        let (frame_tx, frame_rx) = mpsc::sync_channel(CAPTURE_QUEUE_CAPACITY);
+        let input_stream = start_input_stream(frame_tx)?;
+        let capture_generation = window
+            .capture_generation
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let capture_state = window.capture_generation.clone();
+        let client_id = window.client_id.clone();
+        let running = window.running.clone();
+        let mic_muted = window.mic_muted.clone();
+        let seq = window.seq;
+        thread::spawn(move || {
+            voice_capture_loop(
+                client_id,
+                frame_rx,
+                audio_tx,
+                running,
+                capture_state,
+                capture_generation,
+                mic_muted,
+                seq,
+            );
+        });
+        window.input_stream = Some(input_stream);
+        window.capture_active = true;
     }
     Ok(())
 }
 
 fn stop_call(window: &mut VoiceChatWindow, notice: &str) {
     window.running.store(false, Ordering::Relaxed);
+    window.capture_generation.fetch_add(1, Ordering::Relaxed);
     window.input_stream = None;
-    window.frame_rx = None;
+    window.capture_active = false;
     window.player = None;
     window.started_at = None;
     window.inbound_generation = None;
     window.last_incoming_seq = 0;
     window.stats = VoiceStats::default();
     window.notice = notice.to_string();
+}
+
+fn voice_capture_loop(
+    client_id: String,
+    frame_rx: mpsc::Receiver<CapturedAudioFrame>,
+    audio_tx: SyncSender<OutboundCommand>,
+    running: Arc<AtomicBool>,
+    capture_state: Arc<AtomicU64>,
+    capture_generation: u64,
+    mic_muted: Arc<AtomicBool>,
+    mut seq: u64,
+) {
+    let mut pending = VecDeque::new();
+    while running.load(Ordering::Relaxed)
+        && capture_state.load(Ordering::Relaxed) == capture_generation
+    {
+        match frame_rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(frame) => push_capture_frame(&mut pending, frame),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        while let Ok(frame) = frame_rx.try_recv() {
+            push_capture_frame(&mut pending, frame);
+        }
+        for frame in pending.drain(..) {
+            if mic_muted.load(Ordering::Relaxed) {
+                continue;
+            }
+            let command = OutboundCommand::AudioFrame {
+                client_id: client_id.clone(),
+                seq,
+                sample_rate: frame.sample_rate,
+                channels: frame.channels,
+                format: frame.format,
+                bytes: frame.bytes,
+            };
+            let _ = audio_tx.try_send(command);
+            seq = seq.saturating_add(1);
+        }
+    }
 }
 
 fn start_input_stream(
