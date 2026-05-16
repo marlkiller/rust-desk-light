@@ -36,6 +36,7 @@ pub(crate) struct RemoteDesktopWindow {
     mouse_follow: Arc<AtomicBool>,
     mouse_click: Arc<AtomicBool>,
     last_mouse_move: Arc<Mutex<Instant>>,
+    last_mouse_target: Arc<Mutex<Option<(i32, i32)>>>,
     running: Arc<AtomicBool>,
     outbound: Vec<String>,
     pending_since: Option<Instant>,
@@ -154,6 +155,9 @@ fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
     window.mouse_follow.store(false, Ordering::Relaxed);
     window.mouse_click.store(false, Ordering::Relaxed);
     window.outbound.clear();
+    if let Ok(mut target) = window.last_mouse_target.lock() {
+        *target = None;
+    }
     window.pending_since = None;
     window.stats.fps = 0.0;
     window.stats.latency_ms = None;
@@ -232,6 +236,7 @@ pub(crate) fn open_window(
         mouse_follow: Arc::new(AtomicBool::new(false)),
         mouse_click: Arc::new(AtomicBool::new(false)),
         last_mouse_move: Arc::new(Mutex::new(Instant::now())),
+        last_mouse_target: Arc::new(Mutex::new(None)),
         running: Arc::new(AtomicBool::new(false)),
         outbound: Vec::new(),
         pending_since: None,
@@ -376,6 +381,7 @@ pub(crate) fn render_windows(
         let mouse_follow = window.mouse_follow.clone();
         let mouse_click = window.mouse_click.clone();
         let last_mouse_move = window.last_mouse_move.clone();
+        let last_mouse_target = window.last_mouse_target.clone();
         let running = window.running.clone();
         let queued = Arc::new(Mutex::new(Vec::new()));
         let queued_for_ui = queued.clone();
@@ -412,6 +418,7 @@ pub(crate) fn render_windows(
                                 &mouse_follow,
                                 &mouse_click,
                                 &last_mouse_move,
+                                &last_mouse_target,
                                 &notice,
                                 &queued_for_ui,
                             );
@@ -663,6 +670,7 @@ fn render_frame(
     mouse_follow: &Arc<AtomicBool>,
     mouse_click: &Arc<AtomicBool>,
     last_mouse_move: &Arc<Mutex<Instant>>,
+    last_mouse_target: &Arc<Mutex<Option<(i32, i32)>>>,
     placeholder: &str,
     queued: &Arc<Mutex<Vec<String>>>,
 ) {
@@ -690,28 +698,18 @@ fn render_frame(
                 .sense(egui::Sense::click_and_drag());
             let response = ui.add(image);
             if mouse_follow.load(Ordering::Relaxed) && response.hovered() {
-                let should_send = last_mouse_move
-                    .lock()
-                    .map(|mut last| {
-                        if last.elapsed() >= MOUSE_MOVE_INTERVAL {
-                            *last = Instant::now();
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(true);
-                if should_send {
-                    if let Some(pos) = response.hover_pos() {
-                        let rel_x = ((pos.x - response.rect.left()) / response.rect.width())
-                            .clamp(0.0, 1.0);
-                        let rel_y = ((pos.y - response.rect.top()) / response.rect.height())
-                            .clamp(0.0, 1.0);
-                        let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
-                        let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+                if let Some((x, y)) =
+                    hovered_remote_point(&response, screen_origin, screen_w, screen_h)
+                {
+                    if mouse_target_changed(last_mouse_target, (x, y))
+                        && mouse_move_due(last_mouse_move)
+                    {
+                        set_last_mouse_target(last_mouse_target, Some((x, y)));
                         queue_ui_payload(queued, format!("action=move\nx={x}\ny={y}"));
                     }
                 }
+            } else {
+                set_last_mouse_target(last_mouse_target, None);
             }
             if mouse_click.load(Ordering::Relaxed)
                 && response.clicked_by(egui::PointerButton::Primary)
@@ -740,6 +738,53 @@ fn render_frame(
                 }
             }
         });
+}
+
+fn hovered_remote_point(
+    response: &egui::Response,
+    screen_origin: (i32, i32),
+    screen_w: u32,
+    screen_h: u32,
+) -> Option<(i32, i32)> {
+    let pos = response.hover_pos()?;
+    let rel_x = ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
+    let rel_y = ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
+    let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
+    let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+    Some((x, y))
+}
+
+fn mouse_target_changed(
+    last_mouse_target: &Arc<Mutex<Option<(i32, i32)>>>,
+    target: (i32, i32),
+) -> bool {
+    last_mouse_target
+        .lock()
+        .map(|last| last.map(|value| value != target).unwrap_or(true))
+        .unwrap_or(true)
+}
+
+fn mouse_move_due(last_mouse_move: &Arc<Mutex<Instant>>) -> bool {
+    last_mouse_move
+        .lock()
+        .map(|mut last| {
+            if last.elapsed() >= MOUSE_MOVE_INTERVAL {
+                *last = Instant::now();
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(true)
+}
+
+fn set_last_mouse_target(
+    last_mouse_target: &Arc<Mutex<Option<(i32, i32)>>>,
+    target: Option<(i32, i32)>,
+) {
+    if let Ok(mut last) = last_mouse_target.lock() {
+        *last = target;
+    }
 }
 
 fn render_status_bar(ui: &mut egui::Ui, status: DesktopStatus, notice: &str, stats: &DesktopStats) {
