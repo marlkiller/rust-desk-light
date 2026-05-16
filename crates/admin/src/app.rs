@@ -2320,18 +2320,38 @@ fn command_status_notice(
     status: CommandResultStatus,
     detail: &str,
 ) -> Option<String> {
-    let expects_table = matches!(
+    if matches!(status, CommandResultStatus::Accepted) {
+        if command_expects_result_table(command) && parse_result_table(detail).is_none() {
+            return Some("Table data could not be parsed".to_string());
+        }
+        if matches!(command, CommandKind::PerformanceMonitor)
+            && !detail.trim().is_empty()
+            && parse_performance_metrics(detail).is_empty()
+        {
+            return Some("Performance metrics could not be parsed".to_string());
+        }
+        if command_allows_plain_detail(command, detail) {
+            return Some("Result received".to_string());
+        }
+    }
+    None
+}
+
+fn command_expects_result_table(command: &CommandKind) -> bool {
+    matches!(
         command,
         CommandKind::ProcessManager | CommandKind::EventLog | CommandKind::ActiveConnections
-    );
-    if expects_table
-        && matches!(status, CommandResultStatus::Accepted)
-        && parse_result_table(detail).is_none()
-    {
-        Some("Table data could not be parsed; showing raw output".to_string())
-    } else {
-        None
+    )
+}
+
+fn command_allows_plain_detail(command: &CommandKind, detail: &str) -> bool {
+    if detail.trim().is_empty() || command_expects_result_table(command) {
+        return false;
     }
+    if matches!(command, CommandKind::Camera) && parse_camera_frame(detail).is_some() {
+        return false;
+    }
+    true
 }
 
 fn kill_target_process_succeeded(detail: &str) -> bool {
@@ -2378,11 +2398,7 @@ fn render_command_result(
     refresh_in_flight: bool,
     process_kill_requested: &Arc<Mutex<Option<String>>>,
 ) {
-    let expects_table = matches!(
-        command,
-        CommandKind::ProcessManager | CommandKind::EventLog | CommandKind::ActiveConnections
-    );
-    if expects_table {
+    if command_expects_result_table(command) {
         render_table_toolbar(ui, table_filter, refresh_requested, refresh_in_flight);
         ui.add_space(8.0);
         if let Some(table) = parse_result_table(detail) {
@@ -2397,6 +2413,7 @@ fn render_command_result(
             );
             return;
         }
+        return;
     }
     if matches!(command, CommandKind::PerformanceMonitor) {
         render_performance_monitor_toolbar(
@@ -2406,12 +2423,101 @@ fn render_command_result(
             refresh_in_flight,
         );
         ui.add_space(8.0);
+        render_performance_monitor_detail(ui, detail);
+        return;
     }
     if matches!(command, CommandKind::Camera) {
-        render_camera_result(ui, detail);
-        ui.add_space(8.0);
+        if render_camera_result(ui, detail) {
+            ui.add_space(8.0);
+        } else {
+            render_plain_command_detail(ui, detail);
+        }
+        return;
+    }
+    render_plain_command_detail(ui, detail);
+}
+
+struct PerformanceMetrics {
+    cpu: Option<PerformanceMetric>,
+    memory: Option<PerformanceMetric>,
+    disk: Option<PerformanceMetric>,
+}
+
+impl PerformanceMetrics {
+    fn is_empty(&self) -> bool {
+        self.cpu.is_none() && self.memory.is_none() && self.disk.is_none()
     }
 
+    fn bars(&self) -> Vec<&PerformanceMetric> {
+        [&self.cpu, &self.memory, &self.disk]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+}
+
+struct PerformanceMetric {
+    label: &'static str,
+    percent: f32,
+    value: String,
+    color: egui::Color32,
+}
+
+fn render_performance_monitor_detail(ui: &mut egui::Ui, detail: &mut String) {
+    let metrics = parse_performance_metrics(detail);
+    if !metrics.is_empty() {
+        render_performance_metric_bars(ui, &metrics);
+        ui.add_space(10.0);
+    }
+    render_plain_command_detail(ui, detail);
+}
+
+fn render_performance_metric_bars(ui: &mut egui::Ui, metrics: &PerformanceMetrics) {
+    egui::Frame::default()
+        .fill(COLOR_PANEL)
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Resource usage")
+                    .size(12.0)
+                    .color(COLOR_TEXT)
+                    .strong(),
+            );
+            ui.add_space(8.0);
+            for metric in metrics.bars() {
+                render_performance_metric_bar(ui, metric);
+                ui.add_space(6.0);
+            }
+        });
+}
+
+fn render_performance_metric_bar(ui: &mut egui::Ui, metric: &PerformanceMetric) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [82.0, 20.0],
+            egui::Label::new(
+                egui::RichText::new(metric.label)
+                    .size(12.0)
+                    .color(COLOR_MUTED),
+            )
+            .truncate(),
+        );
+        let bar_width = (ui.available_width() - 4.0).max(120.0);
+        ui.add_sized(
+            [bar_width, 20.0],
+            egui::ProgressBar::new((metric.percent / 100.0).clamp(0.0, 1.0))
+                .fill(metric.color)
+                .text(metric.value.clone()),
+        );
+    });
+}
+
+fn render_plain_command_detail(ui: &mut egui::Ui, detail: &mut String) {
+    if detail.trim().is_empty() {
+        return;
+    }
     ui.add(
         egui::TextEdit::multiline(detail)
             .font(egui::TextStyle::Monospace)
@@ -2421,9 +2527,176 @@ fn render_command_result(
     );
 }
 
-fn render_camera_result(ui: &mut egui::Ui, detail: &str) {
+fn parse_performance_metrics(detail: &str) -> PerformanceMetrics {
+    PerformanceMetrics {
+        cpu: parse_cpu_metric(detail),
+        memory: parse_memory_metric(detail),
+        disk: parse_disk_metric(detail),
+    }
+}
+
+fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
+    parse_named_number(
+        detail,
+        &["cpu_percent", "cpupercent", "LoadPercent", "LoadPercentage"],
+    )
+    .map(|value| percent_metric("CPU", value, egui::Color32::from_rgb(35, 99, 188)))
+    .or_else(|| {
+        let load = parse_load_average(detail)?;
+        let cores = std::thread::available_parallelism()
+            .map(|value| value.get() as f32)
+            .unwrap_or(1.0)
+            .max(1.0);
+        Some(PerformanceMetric {
+            label: "CPU Load",
+            percent: clamp_percent(load * 100.0 / cores),
+            value: format!("{load:.2} load"),
+            color: egui::Color32::from_rgb(35, 99, 188),
+        })
+    })
+}
+
+fn parse_memory_metric(detail: &str) -> Option<PerformanceMetric> {
+    parse_named_number(
+        detail,
+        &["memory_percent", "memorypercent", "MemoryPercent"],
+    )
+    .or_else(|| parse_windows_memory_percent(detail))
+    .or_else(|| parse_linux_memory_percent(detail))
+    .or_else(|| parse_macos_memory_percent(detail))
+    .map(|value| percent_metric("Memory", value, egui::Color32::from_rgb(24, 135, 84)))
+}
+
+fn parse_disk_metric(detail: &str) -> Option<PerformanceMetric> {
+    parse_named_number(detail, &["disk_percent", "diskpercent", "DiskPercent"])
+        .or_else(|| parse_df_disk_percent(detail))
+        .map(|value| percent_metric("Disk", value, egui::Color32::from_rgb(179, 116, 28)))
+}
+
+fn percent_metric(label: &'static str, value: f32, color: egui::Color32) -> PerformanceMetric {
+    let percent = clamp_percent(value);
+    PerformanceMetric {
+        label,
+        percent,
+        value: format!("{percent:.1}%"),
+        color,
+    }
+}
+
+fn clamp_percent(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
+fn parse_named_number(detail: &str, keys: &[&str]) -> Option<f32> {
+    detail.lines().find_map(|line| {
+        keys.iter()
+            .find_map(|key| parse_number_after_key(line.trim(), key))
+    })
+}
+
+fn parse_number_after_key(line: &str, key: &str) -> Option<f32> {
+    let key_len = key.len();
+    let prefix = line.get(..key_len)?;
+    if !prefix.eq_ignore_ascii_case(key) {
+        return None;
+    }
+    let rest = line[key_len..]
+        .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, ':' | '='));
+    first_number(rest)
+}
+
+fn parse_load_average(detail: &str) -> Option<f32> {
+    detail.lines().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        ["load average:", "load averages:"]
+            .into_iter()
+            .find_map(|marker| {
+                let index = lower.find(marker)?;
+                first_number(&line[index + marker.len()..])
+            })
+    })
+}
+
+fn parse_windows_memory_percent(detail: &str) -> Option<f32> {
+    let total = parse_named_number(detail, &["TotalMemoryMB"])?;
+    let free = parse_named_number(detail, &["FreeMemoryMB"])?;
+    (total > 0.0).then_some((total - free) * 100.0 / total)
+}
+
+fn parse_linux_memory_percent(detail: &str) -> Option<f32> {
+    detail.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix("Mem:")?;
+        let values = rest
+            .split_whitespace()
+            .filter_map(first_number)
+            .collect::<Vec<_>>();
+        let total = *values.first()?;
+        let used = *values.get(1)?;
+        (total > 0.0).then_some(used * 100.0 / total)
+    })
+}
+
+fn parse_macos_memory_percent(detail: &str) -> Option<f32> {
+    let free = parse_vm_stat_pages(detail, "Pages free")?;
+    let active = parse_vm_stat_pages(detail, "Pages active").unwrap_or(0.0);
+    let inactive = parse_vm_stat_pages(detail, "Pages inactive").unwrap_or(0.0);
+    let speculative = parse_vm_stat_pages(detail, "Pages speculative").unwrap_or(0.0);
+    let wired = parse_vm_stat_pages(detail, "Pages wired down").unwrap_or(0.0);
+    let compressed = parse_vm_stat_pages(detail, "Pages occupied by compressor").unwrap_or(0.0);
+    let used = active + inactive + wired + compressed;
+    let total = used + free + speculative;
+    (total > 0.0).then_some(used * 100.0 / total)
+}
+
+fn parse_vm_stat_pages(detail: &str, label: &str) -> Option<f32> {
+    detail.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let prefix = trimmed.get(..label.len())?;
+        if !prefix.eq_ignore_ascii_case(label) {
+            return None;
+        }
+        first_number(&trimmed[label.len()..])
+    })
+}
+
+fn parse_df_disk_percent(detail: &str) -> Option<f32> {
+    let mut lines = detail.lines();
+    while lines
+        .next()
+        .is_some_and(|line| !line.split_whitespace().any(|cell| cell == "Filesystem"))
+    {}
+    lines.find_map(|line| {
+        line.split_whitespace()
+            .find_map(|cell| cell.strip_suffix('%').and_then(first_number))
+    })
+}
+
+fn first_number(value: &str) -> Option<f32> {
+    let mut number = String::new();
+    let mut started = false;
+    for ch in value.chars() {
+        if ch.is_ascii_digit() || matches!(ch, '.' | '-') {
+            number.push(ch);
+            started = true;
+        } else if ch == ',' && started {
+            continue;
+        } else if started {
+            break;
+        }
+    }
+    if number.is_empty() || number == "." || number == "-" {
+        return None;
+    }
+    number.parse::<f32>().ok()
+}
+
+fn render_camera_result(ui: &mut egui::Ui, detail: &str) -> bool {
     let Some(frame) = parse_camera_frame(detail) else {
-        return;
+        return false;
     };
     let bytes = match base64::engine::general_purpose::STANDARD.decode(frame.image_base64) {
         Ok(bytes) => bytes,
@@ -2432,7 +2705,7 @@ fn render_camera_result(ui: &mut egui::Ui, detail: &str) {
                 egui::RichText::new(format!("decode camera frame failed: {error}"))
                     .color(COLOR_BAD),
             );
-            return;
+            return true;
         }
     };
     let image = match image::load_from_memory(&bytes) {
@@ -2441,7 +2714,7 @@ fn render_camera_result(ui: &mut egui::Ui, detail: &str) {
             ui.label(
                 egui::RichText::new(format!("load camera frame failed: {error}")).color(COLOR_BAD),
             );
-            return;
+            return true;
         }
     };
     let size = [image.width() as usize, image.height() as usize];
@@ -2455,6 +2728,7 @@ fn render_camera_result(ui: &mut egui::Ui, detail: &str) {
     let scale = (available_width / size[0] as f32).min(1.0);
     let display_size = egui::vec2(size[0] as f32 * scale, size[1] as f32 * scale);
     ui.add(egui::Image::new(&texture).fit_to_exact_size(display_size));
+    true
 }
 
 struct CameraFrame<'a> {
@@ -3180,6 +3454,132 @@ mod tests {
     }
 
     #[test]
+    fn table_parse_failures_only_report_status_notice() {
+        assert_eq!(
+            command_status_notice(
+                &CommandKind::ProcessManager,
+                CommandResultStatus::Accepted,
+                "not a table"
+            )
+            .as_deref(),
+            Some("Table data could not be parsed")
+        );
+    }
+
+    #[test]
+    fn plain_detail_is_suppressed_for_table_commands() {
+        assert!(!command_allows_plain_detail(
+            &CommandKind::EventLog,
+            "not a table"
+        ));
+    }
+
+    #[test]
+    fn plain_detail_is_available_for_regular_command_results() {
+        assert!(command_allows_plain_detail(
+            &CommandKind::ComputerInfo,
+            "computer_info:\nhostname=test"
+        ));
+        assert_eq!(
+            command_status_notice(
+                &CommandKind::ComputerInfo,
+                CommandResultStatus::Accepted,
+                "computer_info:\nhostname=test"
+            )
+            .as_deref(),
+            Some("Result received")
+        );
+    }
+
+    #[test]
+    fn camera_text_errors_fall_back_to_plain_detail() {
+        assert!(command_allows_plain_detail(
+            &CommandKind::Camera,
+            "camera_error\nmessage=no device"
+        ));
+    }
+
+    #[test]
+    fn camera_frames_do_not_show_raw_base64_detail() {
+        assert!(!command_allows_plain_detail(
+            &CommandKind::Camera,
+            "camera_frame\nimage_base64=abcd"
+        ));
+    }
+
+    #[test]
+    fn performance_metrics_parse_structured_percent_fields() {
+        let detail =
+            "performance_snapshot:\ncpu_percent=12.5\nmemory_percent=45.0\ndisk_percent=67.2";
+
+        let metrics = parse_performance_metrics(detail);
+
+        assert_metric(metrics.cpu.as_ref(), "CPU", 12.5);
+        assert_metric(metrics.memory.as_ref(), "Memory", 45.0);
+        assert_metric(metrics.disk.as_ref(), "Disk", 67.2);
+    }
+
+    #[test]
+    fn performance_metrics_parse_windows_format_list() {
+        let detail = "\
+Cpu           : Intel
+LoadPercent   : 23
+TotalMemoryMB : 16000
+FreeMemoryMB  : 4000
+DiskPercent   : 55";
+
+        let metrics = parse_performance_metrics(detail);
+
+        assert_metric(metrics.cpu.as_ref(), "CPU", 23.0);
+        assert_metric(metrics.memory.as_ref(), "Memory", 75.0);
+        assert_metric(metrics.disk.as_ref(), "Disk", 55.0);
+    }
+
+    #[test]
+    fn performance_metrics_parse_unix_command_output() {
+        let detail = "\
+performance_snapshot:
+ 18:19:21 up 1 day,  4:51,  load average: 1.50, 1.20, 0.90
+              total        used        free      shared  buff/cache   available
+Mem:           1000         250         500          10         250         700
+Filesystem     1024-blocks Used Available Capacity Mounted on
+/dev/disk1       100000000 4200  5800     42%      .";
+
+        let metrics = parse_performance_metrics(detail);
+
+        assert_eq!(
+            metrics.cpu.as_ref().map(|metric| metric.label),
+            Some("CPU Load")
+        );
+        assert_eq!(
+            metrics.cpu.as_ref().map(|metric| metric.value.as_str()),
+            Some("1.50 load")
+        );
+        assert_metric(metrics.memory.as_ref(), "Memory", 25.0);
+        assert_metric(metrics.disk.as_ref(), "Disk", 42.0);
+    }
+
+    #[test]
+    fn performance_metrics_parse_macos_vm_stat_memory() {
+        let detail = "\
+performance_snapshot:
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               100.
+Pages active:                             100.
+Pages inactive:                           100.
+Pages speculative:                          0.
+Pages wired down:                         100.
+Pages occupied by compressor:             100.
+Filesystem 512-blocks Used Available Capacity iused ifree %iused Mounted on
+/dev/disk3s1 1000000 610000 390000 61% 1 2 1% .";
+
+        let metrics = parse_performance_metrics(detail);
+
+        assert_metric(metrics.memory.as_ref(), "Memory", 80.0);
+        assert_metric(metrics.disk.as_ref(), "Disk", 61.0);
+    }
+
+    #[test]
     fn performance_auto_refresh_waits_for_interval() {
         let now = Instant::now();
         let mut window = test_command_window(CommandKind::PerformanceMonitor);
@@ -3210,6 +3610,16 @@ mod tests {
 
     fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
         values.into_iter().map(str::to_string).collect()
+    }
+
+    fn assert_metric(metric: Option<&PerformanceMetric>, label: &str, percent: f32) {
+        let metric = metric.expect("metric should parse");
+        assert_eq!(metric.label, label);
+        assert!(
+            (metric.percent - percent).abs() < 0.1,
+            "expected {percent}, got {}",
+            metric.percent
+        );
     }
 
     fn test_command_window(command: CommandKind) -> CommandResultWindow {
