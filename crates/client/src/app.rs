@@ -70,10 +70,15 @@ fn run_gui(config: Config) -> eframe::Result {
         }
     });
 
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([780.0, 520.0])
+        .with_min_inner_size([680.0, 440.0]);
+    let viewport = match rust_desk_light_assets::app_window_icon() {
+        Some(icon) => viewport.with_icon(icon),
+        None => viewport,
+    };
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([780.0, 520.0])
-            .with_min_inner_size([680.0, 440.0]),
+        viewport,
         ..Default::default()
     };
     let window_title = rdl_version::app_version("rust-desk-light client");

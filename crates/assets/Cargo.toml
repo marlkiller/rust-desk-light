@@ -1,0 +1,10 @@
+[package]
+name = "rust-desk-light-assets"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+egui = "0.34.2"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

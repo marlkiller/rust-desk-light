@@ -3325,8 +3325,17 @@ dependencies = [
  "image",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "rust-desk-light-assets",
  "rust-desk-light-protocol",
  "rust-desk-light-version",
+]
+
+[[package]]
+name = "rust-desk-light-assets"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "image",
 ]
 
 [[package]]
@@ -3342,6 +3351,7 @@ dependencies = [
  "nokhwa",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "rust-desk-light-assets",
  "rust-desk-light-protocol",
  "rust-desk-light-version",
  "windows-sys 0.61.2",

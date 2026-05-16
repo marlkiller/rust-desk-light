@@ -13,6 +13,7 @@ path = "src/main.rs"
 base64 = "0.22.1"
 cpal = "0.15.3"
 eframe = "0.34.2"
+rust-desk-light-assets = { path = "../assets" }
 rust-desk-light-protocol = { path = "../protocol" }
 rust-desk-light-version = { path = "../version" }
 
