@@ -305,7 +305,9 @@ fn client_connection_once(
                             continue;
                         }
                     };
-                    let receive_stream_id = new_audio_udp_stream_id(generation);
+                    let receive_stream_id = endpoint
+                        .return_stream_id
+                        .unwrap_or_else(|| new_audio_udp_stream_id(generation));
                     let socket = match UdpSocket::bind("0.0.0.0:0") {
                         Ok(socket) => socket,
                         Err(error) => {
@@ -1358,6 +1360,7 @@ struct AudioUdpEndpoint {
     host: String,
     port: u16,
     stream_id: u64,
+    return_stream_id: Option<u64>,
 }
 
 impl AudioUdpSender {
@@ -1413,10 +1416,13 @@ impl AudioUdpEndpoint {
         let stream_id = video_control_value(payload, "udp_stream")
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or_else(|| "missing audio udp stream".to_string())?;
+        let return_stream_id =
+            video_control_value(payload, "udp_return_stream").and_then(|value| value.parse().ok());
         Ok(Some(Self {
             host,
             port,
             stream_id,
+            return_stream_id,
         }))
     }
 

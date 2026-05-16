@@ -1077,6 +1077,12 @@ impl AdminApp {
         );
     }
 
+    fn next_audio_udp_stream_id(&mut self) -> u64 {
+        let stream_id = self.audio_udp_next_stream_id.max(1);
+        self.audio_udp_next_stream_id = self.audio_udp_next_stream_id.saturating_add(1);
+        stream_id
+    }
+
     fn start_audio_udp_receive_session(
         &mut self,
         client_id: &str,
@@ -1096,8 +1102,7 @@ impl AdminApp {
             self.push_log(format!("audio udp timeout setup failed: {error}"));
             return None;
         }
-        let stream_id = self.audio_udp_next_stream_id.max(1);
-        self.audio_udp_next_stream_id = self.audio_udp_next_stream_id.saturating_add(1);
+        let stream_id = self.next_audio_udp_stream_id();
         let stop = Arc::new(AtomicBool::new(false));
         let event_sink = AdminEventSink::new(
             self.event_tx.clone(),
@@ -1181,7 +1186,15 @@ impl AdminApp {
     fn set_voice_udp_sender(&mut self, client_id: &str, detail: &str) -> Result<(), String> {
         let endpoint = AudioUdpEndpoint::from_payload(detail)?
             .ok_or_else(|| "voice chat udp transport unavailable".to_string())?;
-        let sender = AudioUdpSender::connect(&endpoint)?;
+        self.set_voice_udp_sender_endpoint(client_id, &endpoint)
+    }
+
+    fn set_voice_udp_sender_endpoint(
+        &mut self,
+        client_id: &str,
+        endpoint: &AudioUdpEndpoint,
+    ) -> Result<(), String> {
+        let sender = AudioUdpSender::connect(endpoint)?;
         if let Ok(mut senders) = self.voice_udp_senders.lock() {
             senders.insert(client_id.to_string(), sender);
         }
@@ -2019,8 +2032,25 @@ impl AdminApp {
                             );
                             continue;
                         };
+                        let client_receive_stream_id = self.next_audio_udp_stream_id();
+                        let client_receive_endpoint = AudioUdpEndpoint {
+                            host: self.config.ip.clone(),
+                            port: self.config.port,
+                            stream_id: client_receive_stream_id,
+                        };
+                        if let Err(error) =
+                            self.set_voice_udp_sender_endpoint(&client_id, &client_receive_endpoint)
+                        {
+                            self.stop_voice_udp_session(&client_id);
+                            self.handle_voice_chat_ack(
+                                &client_id,
+                                false,
+                                format!("voice_chat_error\nmessage={error}"),
+                            );
+                            continue;
+                        }
                         payload.push_str(&format!(
-                            "\ntransport=udp\nudp_host={}\nudp_port={}\nudp_stream={stream_id}",
+                            "\ntransport=udp\nudp_host={}\nudp_port={}\nudp_stream={stream_id}\nudp_return_stream={client_receive_stream_id}",
                             self.config.ip, self.config.port
                         ));
                     }
