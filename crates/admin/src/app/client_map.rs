@@ -184,7 +184,7 @@ fn render_map_contents(
             render_map_stats_bar(ui, map_size.x, located, clients.len());
             ui.add_space(8.0);
 
-            let (map_rect, response) = ui.allocate_exact_size(map_size, egui::Sense::click());
+            let (map_rect, _response) = ui.allocate_exact_size(map_size, egui::Sense::hover());
             let painter = ui.painter_at(map_rect);
             draw_world_map(&painter, map_rect);
 
@@ -196,23 +196,24 @@ fn render_map_contents(
                     .iter()
                     .any(|id| selected_client_id == Some(id.as_str()));
                 draw_map_cluster(&painter, cluster, selected);
+                draw_map_cluster_label(&painter, map_rect, cluster, selected);
             }
 
-            if let Some(pointer) = response.hover_pos() {
-                if let Some(cluster) = nearest_cluster(&clusters, pointer) {
+            for (index, cluster) in clusters.iter().enumerate() {
+                let response = ui.interact(
+                    cluster_hit_rect(map_rect, cluster),
+                    ui.id().with(("client-map-cluster", index)),
+                    egui::Sense::click(),
+                );
+                if response.hovered() {
                     response
                         .clone()
-                        .on_hover_text(format!("{}\n{}", cluster.title, cluster.detail));
+                        .on_hover_text(format!("{}\n\n{}", cluster.title, cluster.detail));
                 }
-            }
-
-            if response.clicked() {
-                if let Some(pointer) = response.interact_pointer_pos() {
-                    if let Some(cluster) = nearest_cluster(&clusters, pointer) {
-                        if let Some(client_id) = cluster.client_ids.first() {
-                            if let Ok(mut target) = selected_sink.lock() {
-                                *target = Some(client_id.clone());
-                            }
+                if response.clicked() {
+                    if let Some(client_id) = cluster.client_ids.first() {
+                        if let Ok(mut target) = selected_sink.lock() {
+                            *target = Some(client_id.clone());
                         }
                     }
                 }
@@ -513,7 +514,7 @@ fn draw_map_summary(
 
 fn draw_map_cluster(painter: &egui::Painter, cluster: &MapCluster, selected: bool) {
     let count = cluster.client_ids.len();
-    let radius = if count > 1 { 14.0 } else { 8.5 };
+    let radius = cluster_radius(cluster);
     let fill = if selected {
         ui::COLOR_ACCENT
     } else {
@@ -553,6 +554,92 @@ fn draw_map_cluster(painter: &egui::Painter, cluster: &MapCluster, selected: boo
     }
 }
 
+fn draw_map_cluster_label(
+    painter: &egui::Painter,
+    map_rect: egui::Rect,
+    cluster: &MapCluster,
+    selected: bool,
+) {
+    let rect = cluster_label_rect(map_rect, cluster);
+    let fill = if selected {
+        egui::Color32::from_rgba_unmultiplied(229, 239, 253, 235)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220)
+    };
+    let stroke = if selected {
+        egui::Stroke::new(1.0, ui::COLOR_ACCENT.gamma_multiply(0.55))
+    } else {
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(188, 202, 214, 165),
+        )
+    };
+
+    painter.rect_filled(rect, 7.0, fill);
+    painter.rect_stroke(rect, 7.0, stroke, egui::StrokeKind::Inside);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        map_cluster_label(cluster),
+        egui::FontId::proportional(11.0),
+        ui::COLOR_TEXT,
+    );
+}
+
+fn cluster_hit_rect(map_rect: egui::Rect, cluster: &MapCluster) -> egui::Rect {
+    let radius = cluster_radius(cluster) + 9.0;
+    let marker_rect = egui::Rect::from_center_size(cluster.pos, egui::Vec2::splat(radius * 2.0));
+    marker_rect
+        .union(cluster_label_rect(map_rect, cluster))
+        .expand(6.0)
+        .intersect(map_rect)
+}
+
+fn cluster_label_rect(map_rect: egui::Rect, cluster: &MapCluster) -> egui::Rect {
+    let label = map_cluster_label(cluster);
+    let label_width = (label.chars().count() as f32 * 7.0 + 18.0).clamp(62.0, 190.0);
+    let label_size = egui::vec2(label_width, 22.0);
+    let mut min = cluster.pos + egui::vec2(13.0, -30.0);
+    if min.x + label_size.x > map_rect.right() - 6.0 {
+        min.x = cluster.pos.x - label_size.x - 13.0;
+    }
+    if min.x < map_rect.left() + 6.0 {
+        min.x = map_rect.left() + 6.0;
+    }
+    if min.y < map_rect.top() + 6.0 {
+        min.y = cluster.pos.y + 14.0;
+    }
+    if min.y + label_size.y > map_rect.bottom() - 6.0 {
+        min.y = map_rect.bottom() - label_size.y - 6.0;
+    }
+    egui::Rect::from_min_size(min, label_size)
+}
+
+fn cluster_radius(cluster: &MapCluster) -> f32 {
+    if cluster.client_ids.len() > 1 {
+        14.0
+    } else {
+        8.5
+    }
+}
+
+fn map_cluster_label(cluster: &MapCluster) -> String {
+    if cluster.client_ids.len() > 1 {
+        format!("{} clients", cluster.client_ids.len())
+    } else {
+        truncate_label(&cluster.title, 22)
+    }
+}
+
+fn truncate_label(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut label = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        label.push_str("...");
+    }
+    label
+}
+
 fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
     let mut clusters = Vec::<MapCluster>::new();
     for row in clients {
@@ -562,11 +649,7 @@ fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
         let lat = location.latitude().clamp(-90.0, 90.0);
         let lon = location.longitude().clamp(-180.0, 180.0);
         let pos = map_project(rect, lat, lon);
-        let title = if row.info.hostname.trim().is_empty() {
-            ui::compact_id(&row.info.id)
-        } else {
-            row.info.hostname.clone()
-        };
+        let title = map_client_title(row);
         let detail = map_point_detail(row);
 
         if let Some(cluster) = clusters
@@ -595,24 +678,18 @@ fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
     clusters
 }
 
-fn nearest_cluster(clusters: &[MapCluster], pointer: egui::Pos2) -> Option<&MapCluster> {
-    clusters
-        .iter()
-        .filter_map(|cluster| {
-            let radius = if cluster.client_ids.len() > 1 {
-                17.0
-            } else {
-                12.0
-            };
-            let distance = cluster.pos.distance(pointer);
-            (distance <= radius).then_some((distance, cluster))
-        })
-        .min_by(|left, right| {
-            left.0
-                .partial_cmp(&right.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(_, cluster)| cluster)
+fn map_client_title(row: &ClientRow) -> String {
+    let hostname = row.info.hostname.trim();
+    if !hostname.is_empty() {
+        return hostname.to_string();
+    }
+
+    let peer_ip = client_peer_ip(&row.info.peer_addr);
+    if peer_ip != "-" {
+        return peer_ip;
+    }
+
+    ui::compact_id(&row.info.id)
 }
 
 fn map_point_detail(row: &ClientRow) -> String {
