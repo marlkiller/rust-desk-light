@@ -948,6 +948,10 @@ fn render_entries_table(
                     queue_payload(outbound, &request("list", &path, ""));
                     ui.close();
                 }
+                if ui.button("Copy Full Path").clicked() {
+                    ui.ctx().copy_text(join_remote(current_path, &entry.name));
+                    ui.close();
+                }
                 if ui.button("Download...").clicked() {
                     choose_download_remote(
                         current_path,
@@ -1005,6 +1009,18 @@ fn render_entries_table(
             });
         },
     );
+    render_remote_blank_context_menu(
+        ui,
+        selected_name,
+        current_path,
+        local_path,
+        pending_new_folder,
+        new_folder_name,
+        outbound,
+        status,
+        notice,
+        transfers,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1052,6 +1068,10 @@ fn render_local_entries_table(
                     set_local_dir(local_path, entries, selected_name, &path);
                     ui.close();
                 }
+                if ui.button("Copy Full Path").clicked() {
+                    ui.ctx().copy_text(join_local(local_path, &entry.name));
+                    ui.close();
+                }
                 if ui.button("Upload").clicked() {
                     select_entry(selected_name, entry);
                     upload_selected_local(
@@ -1087,6 +1107,106 @@ fn render_local_entries_table(
             });
         },
     );
+    render_local_blank_context_menu(
+        ui,
+        selected_name,
+        local_path,
+        pending_local_new_folder,
+        local_new_folder_name,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_remote_blank_context_menu(
+    ui: &mut egui::Ui,
+    selected_name: &Arc<Mutex<Option<String>>>,
+    current_path: &Arc<Mutex<String>>,
+    local_path: &Arc<Mutex<String>>,
+    pending_new_folder: &Arc<Mutex<bool>>,
+    new_folder_name: &Arc<Mutex<String>>,
+    outbound: &Arc<Mutex<Vec<String>>>,
+    status: &Arc<Mutex<FileStatus>>,
+    notice: &Arc<Mutex<String>>,
+    transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
+) {
+    let Some(blank_response) = file_table_blank_response(ui) else {
+        return;
+    };
+    if blank_response.clicked() || blank_response.secondary_clicked() {
+        clear_selection(selected_name);
+    }
+    let ctx = blank_response.ctx.clone();
+    blank_response.context_menu(|ui| {
+        if ui.button("New Folder").clicked() {
+            begin_new_folder(pending_new_folder, new_folder_name);
+            ui.close();
+        }
+        if ui.button("Upload File...").clicked() {
+            choose_upload_local(
+                LocalPickMode::File,
+                current_path,
+                local_path,
+                outbound,
+                status,
+                notice,
+                transfers,
+            );
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+            ui.close();
+        }
+        if ui.button("Upload Folder...").clicked() {
+            choose_upload_local(
+                LocalPickMode::Folder,
+                current_path,
+                local_path,
+                outbound,
+                status,
+                notice,
+                transfers,
+            );
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Copy Current Folder Path").clicked() {
+            ui.ctx().copy_text(current_directory_path(current_path));
+            ui.close();
+        }
+    });
+}
+
+fn render_local_blank_context_menu(
+    ui: &mut egui::Ui,
+    selected_name: &Arc<Mutex<Option<String>>>,
+    local_path: &Arc<Mutex<String>>,
+    pending_local_new_folder: &Arc<Mutex<bool>>,
+    local_new_folder_name: &Arc<Mutex<String>>,
+) {
+    let Some(blank_response) = file_table_blank_response(ui) else {
+        return;
+    };
+    if blank_response.clicked() || blank_response.secondary_clicked() {
+        clear_selection(selected_name);
+    }
+    blank_response.context_menu(|ui| {
+        if ui.button("New Folder").clicked() {
+            begin_local_new_folder(pending_local_new_folder, local_new_folder_name);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Copy Current Folder Path").clicked() {
+            ui.ctx().copy_text(current_directory_path(local_path));
+            ui.close();
+        }
+    });
+}
+
+fn file_table_blank_response(ui: &mut egui::Ui) -> Option<egui::Response> {
+    let size = ui.available_size();
+    if size.x <= 1.0 || size.y <= 1.0 {
+        return None;
+    }
+    Some(ui.allocate_response(size, egui::Sense::click()))
 }
 
 fn file_table<R>(
@@ -2397,6 +2517,16 @@ fn select_entry(selected_name: &Arc<Mutex<Option<String>>>, entry: &FileEntry) {
     if let Ok(mut selected) = selected_name.lock() {
         *selected = Some(entry.name.clone());
     }
+}
+
+fn clear_selection(selected_name: &Arc<Mutex<Option<String>>>) {
+    if let Ok(mut selected) = selected_name.lock() {
+        *selected = None;
+    }
+}
+
+fn current_directory_path(path: &Arc<Mutex<String>>) -> String {
+    path.lock().map(|value| value.clone()).unwrap_or_default()
 }
 
 fn refresh_local_entries(window: &FileManagerWindow) {
