@@ -6,7 +6,7 @@ use super::{
         TOOLBAR_CONTROL_HEIGHT,
     },
 };
-use base64::Engine;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use rdl_protocol::CommandKind;
@@ -40,9 +40,19 @@ pub(super) struct CommandResultWindow {
     pub(super) auto_refresh_enabled: Arc<AtomicBool>,
     pub(super) last_auto_refresh_at: Option<Instant>,
     pub(super) process_kill_requested: Arc<Mutex<Option<String>>>,
+    pub(super) startup_action_requested: Arc<Mutex<Option<String>>>,
+    pub(super) startup_add_form: Arc<Mutex<StartupAddForm>>,
     pub(super) table_filter: Arc<Mutex<String>>,
     pub(super) table_sort: Arc<Mutex<Option<TableSort>>>,
     pub(super) table_selected_row: Arc<Mutex<Option<String>>>,
+}
+
+#[derive(Default)]
+pub(super) struct StartupAddForm {
+    open: bool,
+    name: String,
+    command: String,
+    error: String,
 }
 
 #[derive(Clone, Copy)]
@@ -267,9 +277,26 @@ pub(super) fn render_command_result(
     auto_refresh_enabled: &Arc<AtomicBool>,
     refresh_in_flight: bool,
     process_kill_requested: &Arc<Mutex<Option<String>>>,
+    startup_action_requested: &Arc<Mutex<Option<String>>>,
+    startup_add_form: &Arc<Mutex<StartupAddForm>>,
 ) {
     if command_expects_result_table(command) {
-        render_table_toolbar(ui, table_filter, refresh_requested, refresh_in_flight);
+        render_table_toolbar(
+            ui,
+            command,
+            table_filter,
+            refresh_requested,
+            refresh_in_flight,
+            startup_add_form,
+        );
+        if matches!(command, CommandKind::StartupManager) {
+            render_startup_add_form(
+                ui,
+                startup_add_form,
+                startup_action_requested,
+                refresh_in_flight,
+            );
+        }
         ui.add_space(8.0);
         if let Some(table) = parse_result_table(detail) {
             render_result_table(
@@ -280,6 +307,7 @@ pub(super) fn render_command_result(
                 table_sort,
                 table_selected_row,
                 process_kill_requested,
+                startup_action_requested,
             );
             return;
         }
@@ -638,9 +666,11 @@ fn stable_hash(value: &str) -> u64 {
 
 fn render_table_toolbar(
     ui: &mut egui::Ui,
+    command: &CommandKind,
     table_filter: &Arc<Mutex<String>>,
     refresh_requested: &Arc<AtomicBool>,
     refresh_in_flight: bool,
+    startup_add_form: &Arc<Mutex<StartupAddForm>>,
 ) {
     let mut filter = table_filter
         .lock()
@@ -678,7 +708,91 @@ fn render_table_toolbar(
         {
             refresh_requested.store(true, Ordering::Relaxed);
         }
+        if matches!(command, CommandKind::StartupManager)
+            && ui
+                .add_enabled(!refresh_in_flight, egui::Button::new("Add Item"))
+                .clicked()
+        {
+            if let Ok(mut form) = startup_add_form.lock() {
+                form.open = true;
+                form.error.clear();
+            }
+        }
     });
+}
+
+fn render_startup_add_form(
+    ui: &mut egui::Ui,
+    startup_add_form: &Arc<Mutex<StartupAddForm>>,
+    startup_action_requested: &Arc<Mutex<Option<String>>>,
+    refresh_in_flight: bool,
+) {
+    let mut queued_payload = None;
+    if let Ok(mut form) = startup_add_form.lock() {
+        if !form.open {
+            return;
+        }
+
+        ui.add_space(8.0);
+        egui::Frame::default()
+            .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+                    ui.label(egui::RichText::new("Name").size(12.0).color(COLOR_MUTED));
+                    ui.add_sized(
+                        [160.0, TOOLBAR_CONTROL_HEIGHT],
+                        egui::TextEdit::singleline(&mut form.name)
+                            .hint_text("Item name")
+                            .vertical_align(egui::Align::Center),
+                    );
+                    ui.label(egui::RichText::new("Command").size(12.0).color(COLOR_MUTED));
+                    ui.add_sized(
+                        [360.0, TOOLBAR_CONTROL_HEIGHT],
+                        egui::TextEdit::singleline(&mut form.command)
+                            .hint_text("Command or executable path")
+                            .vertical_align(egui::Align::Center),
+                    );
+
+                    let can_submit = !refresh_in_flight
+                        && !form.name.trim().is_empty()
+                        && !form.command.trim().is_empty();
+                    if ui
+                        .add_enabled(can_submit, egui::Button::new("Add"))
+                        .clicked()
+                    {
+                        queued_payload = Some(startup_add_payload(&form.name, &form.command));
+                        form.name.clear();
+                        form.command.clear();
+                        form.error.clear();
+                        form.open = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        form.error.clear();
+                        form.open = false;
+                    }
+                });
+                if !form.error.trim().is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new(&form.error).size(12.0).color(COLOR_BAD));
+                } else if form.name.trim().is_empty() || form.command.trim().is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Name and command are required.")
+                            .size(12.0)
+                            .color(COLOR_MUTED),
+                    );
+                }
+            });
+    }
+
+    if let Some(payload) = queued_payload {
+        if let Ok(mut action) = startup_action_requested.lock() {
+            *action = Some(payload);
+        }
+    }
 }
 
 fn render_performance_monitor_toolbar(
@@ -801,6 +915,7 @@ fn render_result_table(
     table_sort: &Arc<Mutex<Option<TableSort>>>,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     process_kill_requested: &Arc<Mutex<Option<String>>>,
+    startup_action_requested: &Arc<Mutex<Option<String>>>,
 ) {
     let filter = table_filter
         .lock()
@@ -877,6 +992,8 @@ fn render_result_table(
                         row.set_selected(selected_row.as_deref() == Some(row_key.as_str()));
                         let row_text = row_data.cells.join("\t");
                         let process_id = process_row_pid(command, &table.headers, &row_data.cells);
+                        let startup_action =
+                            startup_row_action(command, &table.headers, &row_data.cells);
 
                         for (index, _header) in table.headers.iter().enumerate() {
                             let cell = row_data.cells.get(index).map(String::as_str).unwrap_or("");
@@ -895,6 +1012,7 @@ fn render_result_table(
                             let row_text = row_text.clone();
                             let row_key = row_key.clone();
                             let process_id = process_id.clone();
+                            let startup_action = startup_action.clone();
                             cell_response.context_menu(|ui| {
                                 if ui.button("Copy Cell").clicked() {
                                     ui.ctx().copy_text(cell_text.clone());
@@ -912,6 +1030,18 @@ fn render_result_table(
                                         }
                                         if let Ok(mut value) = process_kill_requested.lock() {
                                             *value = Some(process_id.clone());
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                                if let Some(startup_action) = startup_action.clone() {
+                                    ui.separator();
+                                    if ui.button(startup_action.label).clicked() {
+                                        if let Ok(mut selected) = table_selected_row.lock() {
+                                            *selected = Some(row_key.clone());
+                                        }
+                                        if let Ok(mut value) = startup_action_requested.lock() {
+                                            *value = Some(startup_action.payload.clone());
                                         }
                                         ui.close();
                                     }
@@ -943,6 +1073,86 @@ fn render_result_table(
                 .color(COLOR_MUTED),
         );
     }
+}
+
+#[derive(Clone)]
+struct StartupRowAction {
+    label: &'static str,
+    payload: String,
+}
+
+fn startup_row_action(
+    command: &CommandKind,
+    headers: &[String],
+    row: &[String],
+) -> Option<StartupRowAction> {
+    if !matches!(command, CommandKind::StartupManager) {
+        return None;
+    }
+
+    let status = table_value(headers, row, "status")?;
+    let status_key = status.trim().to_ascii_lowercase();
+    if status_key == "info" || status_key == "error" {
+        return None;
+    }
+
+    let (action, label) = match status_key.as_str() {
+        "disabled" => ("enable", "Enable Startup Item"),
+        "enabled" | "registry" | "file" | "present" | "desktopentry" => {
+            ("disable", "Disable Startup Item")
+        }
+        _ => return None,
+    };
+
+    let source = table_value(headers, row, "source")?;
+    let name = table_value(headers, row, "name")?;
+    if !startup_cell_is_actionable(source) || !startup_cell_is_actionable(name) {
+        return None;
+    }
+
+    let scope = table_value(headers, row, "scope").unwrap_or_default();
+    let startup_command = table_value(headers, row, "command").unwrap_or_default();
+    Some(StartupRowAction {
+        label,
+        payload: startup_action_payload(action, scope, source, name, startup_command),
+    })
+}
+
+fn table_value<'a>(headers: &[String], row: &'a [String], name: &str) -> Option<&'a str> {
+    let wanted = normalized_table_header(name);
+    let index = headers
+        .iter()
+        .position(|header| normalized_table_header(header) == wanted)?;
+    row.get(index).map(String::as_str)
+}
+
+fn startup_cell_is_actionable(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && value != "-"
+}
+
+fn startup_action_payload(
+    action: &str,
+    scope: &str,
+    source: &str,
+    name: &str,
+    command: &str,
+) -> String {
+    format!(
+        "action={action}\nscope_b64={}\nsource_b64={}\nname_b64={}\ncommand_b64={}",
+        STANDARD.encode(scope),
+        STANDARD.encode(source),
+        STANDARD.encode(name),
+        STANDARD.encode(command)
+    )
+}
+
+fn startup_add_payload(name: &str, command: &str) -> String {
+    format!(
+        "action=add\nscope=CurrentUser\nname_b64={}\ncommand_b64={}",
+        STANDARD.encode(name.trim()),
+        STANDARD.encode(command.trim())
+    )
 }
 
 fn filtered_table_rows(table: &ResultTable, filter: &str) -> Vec<DisplayTableRow> {
@@ -1389,6 +1599,45 @@ mod tests {
     }
 
     #[test]
+    fn startup_enabled_rows_request_disable_action() {
+        let headers = strings(["Scope", "Source", "Name", "Command", "Status"]);
+        let row = strings([
+            "CurrentUser",
+            "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "App",
+            "C:\\App\\app.exe",
+            "Enabled",
+        ]);
+
+        let action = startup_row_action(&CommandKind::StartupManager, &headers, &row)
+            .expect("startup row should be actionable");
+
+        assert_eq!(action.label, "Disable Startup Item");
+        assert!(action.payload.contains("action=disable"));
+        assert!(action
+            .payload
+            .contains(&format!("name_b64={}", STANDARD.encode("App"))));
+    }
+
+    #[test]
+    fn startup_disabled_rows_request_enable_action() {
+        let headers = strings(["Scope", "Source", "Name", "Command", "Status"]);
+        let row = strings([
+            "CurrentUser",
+            "/Users/me/Library/LaunchAgents",
+            "app.plist.disabled",
+            "/Users/me/Library/LaunchAgents/app.plist.disabled",
+            "Disabled",
+        ]);
+
+        let action = startup_row_action(&CommandKind::StartupManager, &headers, &row)
+            .expect("startup row should be actionable");
+
+        assert_eq!(action.label, "Enable Startup Item");
+        assert!(action.payload.contains("action=enable"));
+    }
+
+    #[test]
     fn table_parse_failures_only_report_status_notice() {
         assert_eq!(
             command_status_notice(
@@ -1630,6 +1879,8 @@ Filesystem 512-blocks Used Available Capacity iused ifree %iused Mounted on
             auto_refresh_enabled: Arc::new(AtomicBool::new(false)),
             last_auto_refresh_at: None,
             process_kill_requested: Arc::new(Mutex::new(None)),
+            startup_action_requested: Arc::new(Mutex::new(None)),
+            startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
             table_filter: Arc::new(Mutex::new(String::new())),
             table_sort: Arc::new(Mutex::new(None)),
             table_selected_row: Arc::new(Mutex::new(None)),

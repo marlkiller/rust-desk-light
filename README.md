@@ -19,6 +19,12 @@
 
 Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`, and `xdotool`. macOS remote control needs Accessibility permission for the app that launches `rdl-client-gui`, and screen capture may need Screen Recording permission.
 
+## Screenshots
+
+![Admin overview](docs/screenshots/admin-overview.png)
+
+![Client overview](docs/screenshots/client-overview.png)
+
 ## Quick Start
 
 Start the local development stack:

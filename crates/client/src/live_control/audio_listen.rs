@@ -110,6 +110,7 @@ fn list_devices(scan_full: bool) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn confirm_audio_listen() -> Result<(), String> {
     let title = "Rust Desk Light";
     let message = "An administrator requested live microphone listening. Allow this session?";
@@ -705,6 +706,7 @@ fn sanitize_field(value: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn platform_confirm(title: &str, message: &str) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
@@ -728,6 +730,7 @@ fn platform_confirm(title: &str, message: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn platform_confirm(title: &str, message: &str) -> Result<(), String> {
     let script = format!(
         "display dialog \"{}\" with title \"{}\" buttons {{\"Deny\", \"Allow\"}} default button \"Deny\" with icon caution",
@@ -750,6 +753,7 @@ fn platform_confirm(title: &str, message: &str) -> Result<(), String> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
+#[allow(dead_code)]
 fn platform_confirm(title: &str, message: &str) -> Result<(), String> {
     run_first_success(&[
         (
@@ -772,16 +776,19 @@ fn platform_confirm(title: &str, message: &str) -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+#[allow(dead_code)]
 fn platform_confirm(_title: &str, _message: &str) -> Result<(), String> {
     Err("audio listening confirmation is not supported on this platform".to_string())
 }
 
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn applescript_string(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -791,6 +798,7 @@ fn applescript_string(value: &str) -> String {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
+#[allow(dead_code)]
 fn run_first_success(commands: &[(&str, Vec<&str>)]) -> Result<(), String> {
     let mut errors = Vec::new();
     for (program, args) in commands {

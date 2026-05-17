@@ -13,7 +13,7 @@ use self::{
         kill_target_process_succeeded, performance_auto_refresh_due,
         quiet_user_interaction_command, refresh_command_window, render_command_result,
         render_command_window_status_bar, session_command_requires_confirmation,
-        update_command_window, CommandResultStatus, CommandResultWindow,
+        update_command_window, CommandResultStatus, CommandResultWindow, StartupAddForm,
     },
     event::{AdminEvent, AdminEventSink, AdminInput},
     file_transfer::{
@@ -366,6 +366,7 @@ struct AdminApp {
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
     client_online_toasts: VecDeque<ClientOnlineToast>,
+    client_list_initialized: bool,
     auth_token_prompt_open: bool,
     auth_token_input: String,
     auth_token_error: String,
@@ -649,7 +650,7 @@ fn client_os_emoji(os: &str) -> &'static str {
     } else if os.contains("macos") || os.contains("darwin") || os.contains("os x") {
         "🍎"
     } else if os.contains("windows") || os.starts_with("win") {
-        "🪟"
+        "💻"
     } else if os.contains("linux")
         || os.contains("ubuntu")
         || os.contains("debian")
@@ -742,6 +743,7 @@ impl AdminApp {
                 rdl_version::display_version()
             ))],
             client_online_toasts: VecDeque::new(),
+            client_list_initialized: false,
             auth_token_prompt_open,
             auth_token_input: initial_auth_token,
             auth_token_error: String::new(),
@@ -770,6 +772,7 @@ impl AdminApp {
                 AdminEvent::Disconnected => {
                     self.connected = false;
                     self.push_log("disconnected from server");
+                    self.client_list_initialized = false;
                     self.stop_all_audio_udp_sessions();
                     self.stop_all_voice_udp_sessions();
                     self.clear_voice_udp_senders();
@@ -1196,6 +1199,7 @@ impl AdminApp {
     }
 
     fn merge_clients(&mut self, clients: Vec<ClientInfo>) {
+        let notify_online_changes = self.client_list_initialized;
         let online_ids: HashSet<String> = clients.iter().map(|client| client.id.clone()).collect();
         let mut online_notices = Vec::new();
         for client in clients {
@@ -1221,9 +1225,12 @@ impl AdminApp {
             }
         }
 
-        for (title, detail) in online_notices {
-            self.push_client_online_toast(title, detail);
+        if notify_online_changes {
+            for (title, detail) in online_notices {
+                self.push_client_online_toast(title, detail);
+            }
         }
+        self.client_list_initialized = true;
     }
 
     fn filtered_clients(&self) -> Vec<ClientRow> {
@@ -1624,6 +1631,8 @@ impl AdminApp {
             auto_refresh_enabled: Arc::new(AtomicBool::new(false)),
             last_auto_refresh_at: None,
             process_kill_requested: Arc::new(Mutex::new(None)),
+            startup_action_requested: Arc::new(Mutex::new(None)),
+            startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
             table_filter: Arc::new(Mutex::new(String::new())),
             table_sort: Arc::new(Mutex::new(None)),
             table_selected_row: Arc::new(Mutex::new(None)),
@@ -1846,6 +1855,8 @@ impl AdminApp {
             auto_refresh_enabled: Arc::new(AtomicBool::new(false)),
             last_auto_refresh_at: None,
             process_kill_requested: Arc::new(Mutex::new(None)),
+            startup_action_requested: Arc::new(Mutex::new(None)),
+            startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
             table_filter: Arc::new(Mutex::new(String::new())),
             table_sort: Arc::new(Mutex::new(None)),
             table_selected_row: Arc::new(Mutex::new(None)),
@@ -2375,6 +2386,29 @@ impl AdminApp {
                     &mut pending_logs,
                 );
             }
+            if window.command == CommandKind::StartupManager {
+                let startup_payload = window
+                    .startup_action_requested
+                    .lock()
+                    .ok()
+                    .and_then(|mut value| value.take());
+                if let Some(payload) = startup_payload {
+                    let action = payload_field(&payload, "action")
+                        .unwrap_or_else(|| "startup_action".to_string());
+                    let _ = self.input_tx.send(AdminInput::Command {
+                        target_id: window.client_id.clone(),
+                        command: CommandKind::StartupManager,
+                        payload,
+                    });
+                    window.status = CommandResultStatus::Pending;
+                    window.detail = "Applying startup manager change...".to_string();
+                    window.open = true;
+                    pending_logs.push(format!(
+                        "startup manager {} on {}",
+                        action, window.client_id
+                    ));
+                }
+            }
             let process_id = window
                 .process_kill_requested
                 .lock()
@@ -2415,6 +2449,8 @@ impl AdminApp {
             let refresh_requested = window.refresh_requested.clone();
             let auto_refresh_enabled = window.auto_refresh_enabled.clone();
             let process_kill_requested = window.process_kill_requested.clone();
+            let startup_action_requested = window.startup_action_requested.clone();
+            let startup_add_form = window.startup_add_form.clone();
             let table_filter = window.table_filter.clone();
             let table_sort = window.table_sort.clone();
             let table_selected_row = window.table_selected_row.clone();
@@ -2452,6 +2488,8 @@ impl AdminApp {
                                             &auto_refresh_enabled,
                                             matches!(status, CommandResultStatus::Pending),
                                             &process_kill_requested,
+                                            &startup_action_requested,
+                                            &startup_add_form,
                                         );
                                     });
                             },

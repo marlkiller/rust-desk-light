@@ -1,5 +1,8 @@
 use crate::support::{join_sections, run_command, run_first_available, run_powershell};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use rdl_protocol::CommandKind;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 mod file_manager;
 mod remote_terminal;
@@ -16,7 +19,7 @@ pub fn handle(command: &CommandKind, payload: &str) -> String {
         CommandKind::ProcessManager => process_list(),
         CommandKind::RegistryManager => registry_manager(),
         CommandKind::RemoteTerminal => remote_terminal::execute(payload),
-        CommandKind::StartupManager => startup_manager(),
+        CommandKind::StartupManager => startup_manager(payload),
         CommandKind::WindowManager => window_manager(),
         CommandKind::PerformanceMonitor => performance_snapshot(),
         CommandKind::EventLog => event_log_summary(),
@@ -57,15 +60,121 @@ fn window_manager() -> String {
     join_sections("window_manager", vec![output])
 }
 
-fn startup_manager() -> String {
-    let output = if cfg!(target_os = "windows") {
+fn startup_manager(payload: &str) -> String {
+    let request = StartupRequest::parse(payload);
+    let output = match request.action.as_str() {
+        "list" => startup_manager_list(),
+        "add" | "enable" | "disable" => match apply_startup_action(&request) {
+            Ok(()) => startup_manager_list(),
+            Err(error) => startup_action_error_table(&error),
+        },
+        action => {
+            startup_action_error_table(&format!("unsupported startup_manager action: {action}"))
+        }
+    };
+    join_sections("startup_manager", vec![output])
+}
+
+fn startup_manager_list() -> String {
+    if cfg!(target_os = "windows") {
         windows_startup_manager()
     } else if cfg!(target_os = "macos") {
         macos_startup_manager()
     } else {
         linux_startup_manager()
-    };
-    join_sections("startup_manager", vec![output])
+    }
+}
+
+#[derive(Debug)]
+struct StartupRequest {
+    action: String,
+    source: Option<String>,
+    name: Option<String>,
+    command: Option<String>,
+}
+
+impl StartupRequest {
+    fn parse(payload: &str) -> Self {
+        let action = startup_payload_field(payload, "action")
+            .unwrap_or_else(|| "list".to_string())
+            .to_ascii_lowercase();
+        Self {
+            action,
+            source: startup_payload_field(payload, "source"),
+            name: startup_payload_field(payload, "name"),
+            command: startup_payload_field(payload, "command"),
+        }
+    }
+}
+
+fn startup_payload_field(payload: &str, key: &str) -> Option<String> {
+    let encoded_key = format!("{key}_b64");
+    let raw_key = format!("{key}=");
+    let encoded_prefix = format!("{encoded_key}=");
+    payload
+        .lines()
+        .find_map(|line| line.strip_prefix(&encoded_prefix))
+        .and_then(|value| decode_payload_value(value.trim()).ok())
+        .or_else(|| {
+            payload
+                .lines()
+                .find_map(|line| line.strip_prefix(&raw_key))
+                .map(|value| value.trim().to_string())
+        })
+}
+
+fn decode_payload_value(value: &str) -> Result<String, String> {
+    let bytes = STANDARD
+        .decode(value)
+        .map_err(|error| format!("invalid base64 payload field: {error}"))?;
+    String::from_utf8(bytes).map_err(|error| format!("invalid utf8 payload field: {error}"))
+}
+
+fn apply_startup_action(request: &StartupRequest) -> Result<(), String> {
+    match request.action.as_str() {
+        "add" => add_startup_item(request),
+        "enable" | "disable" => set_startup_item_enabled(request),
+        action => Err(format!("unsupported startup_manager action: {action}")),
+    }
+}
+
+fn add_startup_item(request: &StartupRequest) -> Result<(), String> {
+    let name = required_startup_value(request.name.as_deref(), "name")?;
+    let command = required_startup_value(request.command.as_deref(), "command")?;
+    if cfg!(target_os = "windows") {
+        windows_add_startup_item(name, command)
+    } else if cfg!(target_os = "macos") {
+        macos_add_startup_item(name, command)
+    } else {
+        linux_add_startup_item(name, command)
+    }
+}
+
+fn set_startup_item_enabled(request: &StartupRequest) -> Result<(), String> {
+    let source = required_startup_value(request.source.as_deref(), "source")?;
+    let name = required_startup_value(request.name.as_deref(), "name")?;
+    let enabled = request.action == "enable";
+    if cfg!(target_os = "windows") {
+        windows_set_startup_item_enabled(source, name, enabled)
+    } else if cfg!(target_os = "macos") {
+        macos_set_startup_item_enabled(source, name, enabled)
+    } else {
+        linux_set_startup_item_enabled(source, name, enabled)
+    }
+}
+
+fn required_startup_value<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")
+        .ok_or_else(|| format!("startup_manager requires {name}"))
+}
+
+fn startup_action_error_table(message: &str) -> String {
+    format!(
+        "Scope\tSource\tName\tCommand\tStatus\n{}",
+        table_row(&["-", "-", "Startup action failed", message, "Error"])
+    )
 }
 
 fn registry_manager() -> String {
@@ -186,16 +295,20 @@ function EmitRow($scope, $source, $name, $command, $status) {
   "{0}`t{1}`t{2}`t{3}`t{4}" -f (Clean $scope),(Clean $source),(Clean $name),(Clean $command),(Clean $status)
 }
 $runKeys = @(
-  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" },
-  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" },
-  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" },
-  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" }
+  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"; Status = "Enabled" },
+  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"; Status = "Enabled" },
+  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunDisabled"; Status = "Disabled" },
+  @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnceDisabled"; Status = "Disabled" },
+  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; Status = "Enabled" },
+  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"; Status = "Enabled" },
+  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunDisabled"; Status = "Disabled" },
+  @{ Scope = "LocalMachine"; Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnceDisabled"; Status = "Disabled" }
 )
 foreach ($entry in $runKeys) {
   if (Test-Path $entry.Path) {
     $props = Get-ItemProperty -Path $entry.Path
     $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
-      EmitRow $entry.Scope $entry.Path $_.Name $_.Value "Registry"
+      EmitRow $entry.Scope $entry.Path $_.Name $_.Value $entry.Status
     }
   }
 }
@@ -206,7 +319,8 @@ $folders = @(
 foreach ($folder in $folders) {
   if ($folder.Path -and (Test-Path $folder.Path)) {
     Get-ChildItem -Path $folder.Path -File -ErrorAction SilentlyContinue | ForEach-Object {
-      EmitRow $folder.Scope $folder.Path $_.Name $_.FullName "File"
+      $status = if ($_.Name.EndsWith(".disabled")) { "Disabled" } else { "Enabled" }
+      EmitRow $folder.Scope $folder.Path $_.Name $_.FullName $status
     }
   }
 }
@@ -216,6 +330,100 @@ if ($count -eq 0) {
 "#,
         300,
     )
+}
+
+fn windows_add_startup_item(name: &str, command: &str) -> Result<(), String> {
+    let script = r#"
+$ErrorActionPreference = "Stop"
+function Decode($value) {
+  [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($value))
+}
+$name = Decode "__NAME_B64__"
+$command = Decode "__COMMAND_B64__"
+if ([string]::IsNullOrWhiteSpace($name)) { throw "startup item name is required" }
+if ([string]::IsNullOrWhiteSpace($command)) { throw "startup item command is required" }
+$key = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+if (!(Test-Path $key)) {
+  New-Item -Path $key -Force | Out-Null
+}
+New-ItemProperty -Path $key -Name $name -Value $command -PropertyType String -Force | Out-Null
+Write-Output "ok"
+"#
+    .replace("__NAME_B64__", &STANDARD.encode(name))
+    .replace("__COMMAND_B64__", &STANDARD.encode(command));
+    startup_command_result(run_powershell(&script, 20), "add Windows startup item")
+}
+
+fn windows_set_startup_item_enabled(source: &str, name: &str, enabled: bool) -> Result<(), String> {
+    let script = r#"
+$ErrorActionPreference = "Stop"
+function Decode($value) {
+  [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($value))
+}
+function RegistryDestination($source, $enable) {
+  if ($enable) {
+    if ($source -match "\\RunOnceDisabled$") { return ($source -replace "RunOnceDisabled$", "RunOnce") }
+    if ($source -match "\\RunDisabled$") { return ($source -replace "RunDisabled$", "Run") }
+    if ($source -match "\\RunOnce$" -or $source -match "\\Run$") { return $source }
+  } else {
+    if ($source -match "\\RunOnceDisabled$" -or $source -match "\\RunDisabled$") { return $source }
+    if ($source -match "\\RunOnce$") { return ($source -replace "RunOnce$", "RunOnceDisabled") }
+    if ($source -match "\\Run$") { return ($source -replace "Run$", "RunDisabled") }
+  }
+  return $null
+}
+$source = Decode "__SOURCE_B64__"
+$name = Decode "__NAME_B64__"
+$enable = "__ENABLE__" -eq "true"
+if ([string]::IsNullOrWhiteSpace($source)) { throw "startup item source is required" }
+if ([string]::IsNullOrWhiteSpace($name)) { throw "startup item name is required" }
+if ($source -match "^HK(CU|LM):\\") {
+  $destination = RegistryDestination $source $enable
+  if ($null -eq $destination) { throw "unsupported registry startup source: $source" }
+  if ($destination -eq $source) {
+    Write-Output "ok"
+    exit 0
+  }
+  if (!(Test-Path $source)) { throw "startup registry source does not exist: $source" }
+  $property = (Get-ItemProperty -Path $source).PSObject.Properties | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+  if ($null -eq $property) { throw "startup registry value not found: $name" }
+  if (!(Test-Path $destination)) {
+    New-Item -Path $destination -Force | Out-Null
+  }
+  New-ItemProperty -Path $destination -Name $name -Value $property.Value -PropertyType String -Force | Out-Null
+  Remove-ItemProperty -Path $source -Name $name -ErrorAction Stop
+  Write-Output "ok"
+  exit 0
+}
+if (!(Test-Path -LiteralPath $source -PathType Container)) {
+  throw "unsupported startup source: $source"
+}
+$path = Join-Path $source $name
+if (!(Test-Path -LiteralPath $path -PathType Leaf)) {
+  throw "startup file not found: $path"
+}
+if ($enable) {
+  if (!$name.EndsWith(".disabled")) {
+    Write-Output "ok"
+    exit 0
+  }
+  $newName = $name.Substring(0, $name.Length - ".disabled".Length)
+} else {
+  if ($name.EndsWith(".disabled")) {
+    Write-Output "ok"
+    exit 0
+  }
+  $newName = "$name.disabled"
+}
+$target = Join-Path $source $newName
+if (Test-Path -LiteralPath $target) { throw "target startup file already exists: $target" }
+Rename-Item -LiteralPath $path -NewName $newName
+Write-Output "ok"
+"#
+    .replace("__SOURCE_B64__", &STANDARD.encode(source))
+    .replace("__NAME_B64__", &STANDARD.encode(name))
+    .replace("__ENABLE__", if enabled { "true" } else { "false" });
+    startup_command_result(run_powershell(&script, 40), "update Windows startup item")
 }
 
 fn macos_startup_manager() -> String {
@@ -237,9 +445,14 @@ for dir in "$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/Launch
     /System/*) scope="System" ;;
     *) scope="LocalMachine" ;;
   esac
-  for file in "$dir"/*.plist; do
+  for file in "$dir"/*.plist "$dir"/*.plist.disabled; do
     [ -e "$file" ] || continue
-    emit "$scope" "$dir" "$(basename "$file")" "$file" "Present"
+    name="$(basename "$file")"
+    case "$name" in
+      *.disabled) status="Disabled" ;;
+      *) status="Enabled" ;;
+    esac
+    emit "$scope" "$dir" "$name" "$file" "$status"
   done
 done
 if [ "$count" -eq 0 ]; then
@@ -249,6 +462,44 @@ fi
         ],
         300,
     )
+}
+
+fn macos_add_startup_item(name: &str, command: &str) -> Result<(), String> {
+    let launch_agents = home_dir()?.join("Library").join("LaunchAgents");
+    fs::create_dir_all(&launch_agents)
+        .map_err(|error| format!("create LaunchAgents directory failed: {error}"))?;
+    let label = format!("com.rust-desk-light.{}", safe_startup_file_stem(name));
+    let path = launch_agents.join(format!("{label}.plist"));
+    if path.exists() {
+        return Err(format!("startup item already exists: {}", path.display()));
+    }
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>{}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+"#,
+        xml_escape(&label),
+        xml_escape(command)
+    );
+    fs::write(&path, plist).map_err(|error| format!("write launch agent failed: {error}"))
+}
+
+fn macos_set_startup_item_enabled(source: &str, name: &str, enabled: bool) -> Result<(), String> {
+    rename_disabled_startup_file(Path::new(source), name, enabled)
 }
 
 fn linux_startup_manager() -> String {
@@ -269,18 +520,30 @@ for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
     "$HOME"/*) scope="CurrentUser" ;;
     *) scope="System" ;;
   esac
-  for file in "$dir"/*.desktop; do
+  for file in "$dir"/*.desktop "$dir"/*.desktop.disabled; do
     [ -e "$file" ] || continue
     name="$(basename "$file")"
     command="$(sed -n 's/^Exec=//p' "$file" | head -n 1)"
-    emit "$scope" "$dir" "$name" "${command:-$file}" "DesktopEntry"
+    hidden="$(awk -F= 'tolower($1)=="hidden" { print tolower($2); exit }' "$file" 2>/dev/null)"
+    autostart_enabled="$(awk -F= 'tolower($1)=="x-gnome-autostart-enabled" { print tolower($2); exit }' "$file" 2>/dev/null)"
+    status="Enabled"
+    case "$name:$hidden:$autostart_enabled" in
+      *.disabled:*|*:true:*|*:*:false) status="Disabled" ;;
+    esac
+    emit "$scope" "$dir" "$name" "${command:-$file}" "$status"
   done
 done
 if command -v systemctl >/dev/null 2>&1; then
-  system_rows="$(systemctl list-unit-files --type=service --state=enabled --no-legend --no-pager 2>/dev/null | awk 'NF > 0 { printf "System\tsystemd\t%s\t-\t%s\n", $1, ($2 == "" ? "enabled" : $2) }')"
+  system_rows="$(systemctl list-unit-files --type=service --state=enabled,disabled --no-legend --no-pager 2>/dev/null | head -n 160 | awk 'NF > 0 { status=tolower($2); if (status == "enabled") status="Enabled"; else if (status == "disabled") status="Disabled"; printf "System\tsystemd\t%s\t-\t%s\n", $1, status }')"
   if [ -n "$system_rows" ]; then
     printf '%s\n' "$system_rows"
     row_count="$(printf '%s\n' "$system_rows" | wc -l | tr -d ' ')"
+    count=$((count + row_count))
+  fi
+  user_rows="$(systemctl --user list-unit-files --type=service --state=enabled,disabled --no-legend --no-pager 2>/dev/null | head -n 80 | awk 'NF > 0 { status=tolower($2); if (status == "enabled") status="Enabled"; else if (status == "disabled") status="Disabled"; printf "CurrentUser\tsystemd-user\t%s\t-\t%s\n", $1, status }')"
+  if [ -n "$user_rows" ]; then
+    printf '%s\n' "$user_rows"
+    row_count="$(printf '%s\n' "$user_rows" | wc -l | tr -d ' ')"
     count=$((count + row_count))
   fi
 fi
@@ -291,6 +554,53 @@ fi
         ],
         300,
     )
+}
+
+fn linux_add_startup_item(name: &str, command: &str) -> Result<(), String> {
+    let autostart_dir = home_dir()?.join(".config").join("autostart");
+    fs::create_dir_all(&autostart_dir)
+        .map_err(|error| format!("create autostart directory failed: {error}"))?;
+    let path = autostart_dir.join(format!("{}.desktop", safe_startup_file_stem(name)));
+    if path.exists() {
+        return Err(format!("startup item already exists: {}", path.display()));
+    }
+
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName={}\nExec={}\nX-GNOME-Autostart-enabled=true\n",
+        desktop_entry_value(name),
+        desktop_entry_value(command)
+    );
+    fs::write(&path, entry).map_err(|error| format!("write autostart entry failed: {error}"))
+}
+
+fn linux_set_startup_item_enabled(source: &str, name: &str, enabled: bool) -> Result<(), String> {
+    match source {
+        "systemd" => {
+            let output = run_command(
+                "systemctl",
+                &[if enabled { "enable" } else { "disable" }, name],
+                40,
+            );
+            startup_command_result(output, "update systemd startup service")
+        }
+        "systemd-user" => {
+            let output = run_command(
+                "systemctl",
+                &["--user", if enabled { "enable" } else { "disable" }, name],
+                40,
+            );
+            startup_command_result(output, "update user systemd startup service")
+        }
+        _ if name.ends_with(".disabled") || source.ends_with("/autostart") => {
+            let source_path = Path::new(source);
+            if name.ends_with(".disabled") {
+                rename_disabled_startup_file(source_path, name, enabled)
+            } else {
+                set_desktop_entry_enabled(source_path, name, enabled)
+            }
+        }
+        _ => Err(format!("unsupported Linux startup source: {source}")),
+    }
 }
 
 fn windows_registry_manager() -> String {
@@ -627,6 +937,155 @@ fn table_row(cells: &[&str]) -> String {
         .join("\t")
 }
 
+fn home_dir() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "home directory is unavailable".to_string())
+}
+
+fn safe_startup_file_stem(name: &str) -> String {
+    let mut value = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    value = value
+        .trim_matches(|ch| matches!(ch, '-' | '.'))
+        .chars()
+        .take(64)
+        .collect();
+    if value.is_empty() {
+        "startup-item".to_string()
+    } else {
+        value
+    }
+}
+
+fn startup_entry_path(source: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.contains('/') || name.contains('\\') || matches!(name, "." | "..") {
+        return Err(format!("invalid startup item name: {name}"));
+    }
+    Ok(source.join(name))
+}
+
+fn rename_disabled_startup_file(source: &Path, name: &str, enabled: bool) -> Result<(), String> {
+    let path = startup_entry_path(source, name)?;
+    if !path.is_file() {
+        return Err(format!("startup file not found: {}", path.display()));
+    }
+
+    let new_name = if enabled {
+        match name.strip_suffix(".disabled") {
+            Some(value) => value.to_string(),
+            None => return Ok(()),
+        }
+    } else if name.ends_with(".disabled") {
+        return Ok(());
+    } else {
+        format!("{name}.disabled")
+    };
+
+    let target = startup_entry_path(source, &new_name)?;
+    if target.exists() {
+        return Err(format!(
+            "target startup file already exists: {}",
+            target.display()
+        ));
+    }
+    fs::rename(&path, &target).map_err(|error| format!("rename startup file failed: {error}"))
+}
+
+fn set_desktop_entry_enabled(source: &Path, name: &str, enabled: bool) -> Result<(), String> {
+    let path = startup_entry_path(source, name)?;
+    let home_autostart = home_dir()?.join(".config").join("autostart");
+    if !enabled && !path.starts_with(&home_autostart) {
+        fs::create_dir_all(&home_autostart)
+            .map_err(|error| format!("create autostart override directory failed: {error}"))?;
+        let override_path = startup_entry_path(&home_autostart, name)?;
+        let contents = fs::read_to_string(&path).unwrap_or_else(|_| {
+            format!(
+                "[Desktop Entry]\nType=Application\nName={}\nExec={}\n",
+                desktop_entry_value(name),
+                desktop_entry_value(&path.display().to_string())
+            )
+        });
+        let contents = set_desktop_entry_key(&contents, "Hidden", "true");
+        fs::write(&override_path, contents)
+            .map_err(|error| format!("write autostart override failed: {error}"))?;
+        return Ok(());
+    }
+
+    let contents =
+        fs::read_to_string(&path).map_err(|error| format!("read desktop entry failed: {error}"))?;
+    let hidden = if enabled { "false" } else { "true" };
+    let autostart_enabled = if enabled { "true" } else { "false" };
+    let contents = set_desktop_entry_key(&contents, "Hidden", hidden);
+    let contents = set_desktop_entry_key(&contents, "X-GNOME-Autostart-enabled", autostart_enabled);
+    fs::write(&path, contents).map_err(|error| format!("write desktop entry failed: {error}"))
+}
+
+fn set_desktop_entry_key(contents: &str, key: &str, value: &str) -> String {
+    let mut found = false;
+    let mut lines = contents
+        .lines()
+        .map(|line| {
+            if desktop_entry_key_matches(line, key) {
+                found = true;
+                format!("{key}={value}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !found {
+        lines.push(format!("{key}={value}"));
+    }
+    let mut output = lines.join("\n");
+    output.push('\n');
+    output
+}
+
+fn desktop_entry_key_matches(line: &str, key: &str) -> bool {
+    line.split_once('=')
+        .map(|(candidate, _)| candidate.trim().eq_ignore_ascii_case(key))
+        .unwrap_or(false)
+}
+
+fn desktop_entry_value(value: &str) -> String {
+    value.replace(['\r', '\n'], " ").trim().to_string()
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn startup_command_result(output: String, context: &str) -> Result<(), String> {
+    let text = output.trim();
+    let lower = text.to_ascii_lowercase();
+    if lower.starts_with("powershell exited with error")
+        || lower.starts_with("systemctl exited with error")
+        || lower.starts_with("powershell failed:")
+        || lower.starts_with("systemctl failed:")
+        || lower.contains(" timed out")
+    {
+        Err(format!("{context} failed: {text}"))
+    } else {
+        Ok(())
+    }
+}
+
 fn macos_lsof_connection_row(line: &str) -> Option<String> {
     let line = line.trim();
     if line.is_empty() || line.starts_with("COMMAND") {
@@ -681,7 +1140,11 @@ fn macos_lsof_connection_row(line: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{macos_log_row, macos_lsof_connection_row, table_row, unsupported_registry_table};
+    use super::{
+        macos_log_row, macos_lsof_connection_row, safe_startup_file_stem, set_desktop_entry_key,
+        table_row, unsupported_registry_table, StartupRequest,
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine};
 
     #[test]
     fn table_row_sanitizes_embedded_line_breaks_and_tabs() {
@@ -696,6 +1159,39 @@ mod tests {
         assert_eq!(rows.first(), Some(&"Hive\tPath\tName\tType\tValue"));
         assert_eq!(rows.len(), 2);
         assert!(rows[1].contains("Registry Manager is only available on Windows"));
+    }
+
+    #[test]
+    fn startup_request_decodes_base64_fields() {
+        let payload = format!(
+            "action=add\nname_b64={}\ncommand_b64={}",
+            STANDARD.encode("My App"),
+            STANDARD.encode("/usr/bin/my-app --flag")
+        );
+
+        let request = StartupRequest::parse(&payload);
+
+        assert_eq!(request.action, "add");
+        assert_eq!(request.name.as_deref(), Some("My App"));
+        assert_eq!(request.command.as_deref(), Some("/usr/bin/my-app --flag"));
+    }
+
+    #[test]
+    fn safe_startup_file_stem_keeps_portable_names() {
+        assert_eq!(safe_startup_file_stem("My App!"), "my-app");
+        assert_eq!(safe_startup_file_stem("../"), "startup-item");
+    }
+
+    #[test]
+    fn desktop_entry_key_update_replaces_existing_value() {
+        let updated = set_desktop_entry_key(
+            "[Desktop Entry]\nName=App\nHidden=false\n",
+            "Hidden",
+            "true",
+        );
+
+        assert!(updated.contains("Hidden=true\n"));
+        assert!(!updated.contains("Hidden=false"));
     }
 
     #[test]

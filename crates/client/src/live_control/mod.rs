@@ -148,11 +148,13 @@ pub(crate) fn capture_camera_video_frame(
 }
 
 #[cfg(feature = "gui")]
+#[allow(dead_code)]
 pub(crate) fn confirm_audio_listen() -> Result<(), String> {
     audio_listen::confirm_audio_listen()
 }
 
 #[cfg(not(feature = "gui"))]
+#[allow(dead_code)]
 pub(crate) fn confirm_audio_listen() -> Result<(), String> {
     Err(gui_unavailable_message())
 }

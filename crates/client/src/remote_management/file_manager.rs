@@ -544,7 +544,7 @@ where
             FileTransferDirection::Download,
             FileTransferAction::Directory,
             context.requested_path.to_string(),
-            relative.to_string_lossy().to_string(),
+            protocol_relative_path(relative),
             context.total_bytes,
             *transferred_bytes,
             0,
@@ -622,7 +622,7 @@ where
             FileTransferDirection::Download,
             FileTransferAction::Chunk,
             context.requested_path.to_string(),
-            relative.to_string_lossy().to_string(),
+            protocol_relative_path(relative),
             context.total_bytes,
             *transferred_bytes,
             file_size,
@@ -924,19 +924,42 @@ fn safe_join(root: &Path, relative_path: &str) -> Option<PathBuf> {
     if relative_path.is_empty() {
         return Some(root.to_path_buf());
     }
-    let relative = Path::new(relative_path);
-    if relative.is_absolute() {
+    if is_remote_absolute_path(relative_path) {
         return None;
     }
     let mut path = root.to_path_buf();
-    for component in relative.components() {
-        match component {
-            std::path::Component::Normal(part) => path.push(part),
-            std::path::Component::CurDir => {}
-            _ => return None,
+    for part in relative_path.split(is_remote_path_separator) {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            _ if part.contains('\0') => return None,
+            _ => path.push(part),
         }
     }
     Some(path)
+}
+
+fn protocol_relative_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn is_remote_path_separator(ch: char) -> bool {
+    matches!(ch, '\\' | '/')
+}
+
+fn is_remote_absolute_path(path: &str) -> bool {
+    path.starts_with(is_remote_path_separator) || has_windows_drive_prefix(path)
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn update_upload_progress(transfer_id: u64, added: u64, total_bytes: u64) -> u64 {
@@ -1073,6 +1096,31 @@ fn download_transfers() -> &'static Mutex<HashMap<u64, Arc<AtomicBool>>> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn protocol_relative_path_uses_forward_slashes() {
+        assert_eq!(
+            protocol_relative_path(&PathBuf::from("nested").join("file.txt")),
+            "nested/file.txt"
+        );
+    }
+
+    #[test]
+    fn safe_join_accepts_protocol_and_windows_separators() {
+        let root = PathBuf::from("upload-root");
+
+        assert_eq!(
+            safe_join(&root, "nested/file.txt").unwrap(),
+            root.join("nested").join("file.txt")
+        );
+        assert_eq!(
+            safe_join(&root, r"nested\file.txt").unwrap(),
+            root.join("nested").join("file.txt")
+        );
+        assert!(safe_join(&root, "../file.txt").is_none());
+        assert!(safe_join(&root, r"..\file.txt").is_none());
+        assert!(safe_join(&root, r"C:\temp\file.txt").is_none());
+    }
 
     #[test]
     fn upload_transfer_writes_directory_chunks() {

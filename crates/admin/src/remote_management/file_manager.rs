@@ -2510,16 +2510,16 @@ fn safe_local_join(root: &Path, relative_path: &str) -> Option<PathBuf> {
     if relative_path.is_empty() {
         return Some(root.to_path_buf());
     }
-    let relative = Path::new(relative_path);
-    if relative.is_absolute() {
+    if is_remote_absolute_path(relative_path) {
         return None;
     }
     let mut path = root.to_path_buf();
-    for component in relative.components() {
-        match component {
-            std::path::Component::Normal(part) => path.push(part),
-            std::path::Component::CurDir => {}
-            _ => return None,
+    for part in relative_path.split(is_remote_path_separator) {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            _ if part.contains('\0') => return None,
+            _ => path.push(part),
         }
     }
     Some(path)
@@ -2679,10 +2679,52 @@ fn join_local(local_path: &Arc<Mutex<String>>, name: &str) -> String {
 }
 
 fn parent_path(path: &str) -> String {
-    Path::new(path)
-        .parent()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| path.to_string())
+    let path = path.trim();
+    if path.is_empty() {
+        return String::new();
+    }
+    let trimmed = path.trim_end_matches(is_remote_path_separator);
+    if trimmed.is_empty() || is_windows_drive_label(trimmed) {
+        return path.to_string();
+    }
+    let Some(separator_index) = trimmed.rfind(is_remote_path_separator) else {
+        return path.to_string();
+    };
+    if separator_index == 0 {
+        return trimmed[..=separator_index].to_string();
+    }
+    let parent = &trimmed[..separator_index];
+    if is_windows_drive_label(parent) {
+        return format!("{parent}{}", &trimmed[separator_index..=separator_index]);
+    }
+    parent.to_string()
+}
+
+fn remote_file_name(path: &str) -> String {
+    path.trim()
+        .trim_end_matches(is_remote_path_separator)
+        .rsplit(is_remote_path_separator)
+        .find(|part| !part.trim().is_empty())
+        .unwrap_or("download.bin")
+        .to_string()
+}
+
+fn is_remote_path_separator(ch: char) -> bool {
+    matches!(ch, '\\' | '/')
+}
+
+fn is_remote_absolute_path(path: &str) -> bool {
+    path.starts_with(is_remote_path_separator) || has_windows_drive_prefix(path)
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn is_windows_drive_label(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn save_download(window: &FileManagerWindow, response: &FileResponse) -> Result<String, String> {
@@ -2700,10 +2742,7 @@ fn save_download(window: &FileManagerWindow, response: &FileResponse) -> Result<
     if !dir.is_dir() {
         return Err("Local target is not a directory".to_string());
     }
-    let name = Path::new(&response.path)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "download.bin".to_string());
+    let name = remote_file_name(&response.path);
     let target = dir.join(name);
     if let Some(parent) = target.parent() {
         if !parent.as_os_str().is_empty() {
@@ -2803,6 +2842,39 @@ fn identity_title(hostname: &str, username: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_path_handles_remote_windows_paths() {
+        assert_eq!(parent_path(r"C:\Users\alice\dev"), r"C:\Users\alice");
+        assert_eq!(parent_path(r"C:\Users"), r"C:\");
+        assert_eq!(parent_path(r"C:\"), r"C:\");
+        assert_eq!(parent_path("/Users/alice/dev"), "/Users/alice");
+        assert_eq!(parent_path("/Users"), "/");
+    }
+
+    #[test]
+    fn safe_local_join_accepts_windows_relative_paths() {
+        let root = PathBuf::from("download-root");
+
+        assert_eq!(
+            safe_local_join(&root, r"dev\README.md").unwrap(),
+            root.join("dev").join("README.md")
+        );
+        assert_eq!(
+            safe_local_join(&root, "dev/README.md").unwrap(),
+            root.join("dev").join("README.md")
+        );
+        assert!(safe_local_join(&root, r"..\README.md").is_none());
+        assert!(safe_local_join(&root, "../README.md").is_none());
+        assert!(safe_local_join(&root, r"C:\dev\README.md").is_none());
+    }
+
+    #[test]
+    fn remote_file_name_handles_remote_windows_paths() {
+        assert_eq!(remote_file_name(r"C:\dev\README.md"), "README.md");
+        assert_eq!(remote_file_name("dev/README.md"), "README.md");
+        assert_eq!(remote_file_name(""), "download.bin");
+    }
 
     #[test]
     fn closing_window_with_running_transfer_queues_cancel_and_drops_window() {

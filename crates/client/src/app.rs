@@ -1946,20 +1946,22 @@ fn audio_stream_loop(
         }
     };
 
-    if let Err(error) = crate::live_control::confirm_audio_listen() {
-        stream_state.running.store(false, Ordering::Relaxed);
-        let _ = queue_message(
-            &out_tx,
-            &session_token,
-            Message::CommandAck {
-                client_id,
-                command: CommandKind::AudioListen,
-                accepted: false,
-                detail: format!("audio_listen_error\nmessage={error}"),
-            },
-        );
-        return;
-    }
+    // Audio listen is allowed by default. Keep the old confirmation flow here
+    // for deployments that want to restore a per-session prompt later.
+    // if let Err(error) = crate::live_control::confirm_audio_listen() {
+    //     stream_state.running.store(false, Ordering::Relaxed);
+    //     let _ = queue_message(
+    //         &out_tx,
+    //         &session_token,
+    //         Message::CommandAck {
+    //             client_id,
+    //             command: CommandKind::AudioListen,
+    //             accepted: false,
+    //             detail: format!("audio_listen_error\nmessage={error}"),
+    //         },
+    //     );
+    //     return;
+    // }
 
     let device = video_control_value(&start_payload, "device")
         .and_then(|value| value.parse::<usize>().ok())
