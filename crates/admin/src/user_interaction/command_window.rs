@@ -10,8 +10,13 @@ use std::sync::{
 const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
 const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
 const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
+const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
 const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
+const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
+const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
+const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const STATUS_BAR_HEIGHT: f32 = 44.0;
 
 pub(crate) struct InteractionCommandWindow {
     pub(crate) client_id: String,
@@ -20,9 +25,19 @@ pub(crate) struct InteractionCommandWindow {
     command: CommandKind,
     title: Arc<Mutex<String>>,
     body: Arc<Mutex<String>>,
+    status: Arc<Mutex<InteractionStatus>>,
+    notice: Arc<Mutex<String>>,
     open: bool,
     close_requested: Arc<AtomicBool>,
     send_requested: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InteractionStatus {
+    Ready,
+    Sending,
+    Done,
+    Failed,
 }
 
 pub(crate) struct OutboundInteractionCommand {
@@ -45,6 +60,12 @@ pub(crate) fn open_window(
         window.open = true;
         window.hostname = hostname;
         window.username = username;
+        set_status(
+            &window.status,
+            &window.notice,
+            InteractionStatus::Ready,
+            "Ready",
+        );
         return;
     }
 
@@ -56,10 +77,49 @@ pub(crate) fn open_window(
         command,
         title: Arc::new(Mutex::new(title)),
         body: Arc::new(Mutex::new(body)),
+        status: Arc::new(Mutex::new(InteractionStatus::Ready)),
+        notice: Arc::new(Mutex::new("Ready".to_string())),
         open: true,
         close_requested: Arc::new(AtomicBool::new(false)),
         send_requested: Arc::new(AtomicBool::new(false)),
     });
+}
+
+pub(crate) fn handle_ack(
+    windows: &mut [InteractionCommandWindow],
+    client_id: &str,
+    command: &CommandKind,
+    accepted: bool,
+    detail: &str,
+) -> bool {
+    if !interaction_command_is_supported(command) {
+        return false;
+    }
+
+    let Some(window) = windows
+        .iter_mut()
+        .rev()
+        .find(|window| window.client_id == client_id && &window.command == command)
+    else {
+        return false;
+    };
+
+    let detail_failed = interaction_detail_failed(detail);
+    let status = if accepted && !detail_failed {
+        InteractionStatus::Done
+    } else {
+        InteractionStatus::Failed
+    };
+    let notice = interaction_notice(
+        detail,
+        if accepted {
+            "Command sent"
+        } else {
+            "Command failed"
+        },
+    );
+    set_status(&window.status, &window.notice, status, &notice);
+    true
 }
 
 pub(crate) fn render_windows(
@@ -91,6 +151,8 @@ pub(crate) fn render_windows(
         let command = window.command.clone();
         let field_title = window.title.clone();
         let body = window.body.clone();
+        let status = window.status.clone();
+        let notice = window.notice.clone();
         let close_requested = window.close_requested.clone();
         let send_requested = window.send_requested.clone();
 
@@ -102,11 +164,25 @@ pub(crate) fn render_windows(
                 .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
-                    render_form(ui, &command, &field_title, &body, &send_requested);
+                    render_form(
+                        ui,
+                        &command,
+                        &field_title,
+                        &body,
+                        &status,
+                        &notice,
+                        &send_requested,
+                    );
                 });
         });
 
         if window.send_requested.swap(false, Ordering::Relaxed) {
+            set_status(
+                &window.status,
+                &window.notice,
+                InteractionStatus::Sending,
+                "Sending command...",
+            );
             let title = window
                 .title
                 .lock()
@@ -122,7 +198,6 @@ pub(crate) fn render_windows(
                 command: window.command.clone(),
                 payload: payload_for(&window.command, &title, &body),
             });
-            window.open = false;
         }
     }
 
@@ -135,20 +210,81 @@ fn render_form(
     command: &CommandKind,
     title: &Arc<Mutex<String>>,
     body: &Arc<Mutex<String>>,
+    status: &Arc<Mutex<InteractionStatus>>,
+    notice: &Arc<Mutex<String>>,
     send_requested: &Arc<AtomicBool>,
 ) {
+    egui::Panel::bottom(egui::Id::new((
+        "interaction_command_status_panel",
+        Arc::as_ptr(status),
+    )))
+    .exact_size(STATUS_BAR_HEIGHT)
+    .show_separator_line(false)
+    .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(0.0))
+    .show_inside(ui, |ui| {
+        ui.add_space(8.0);
+        render_status_bar(ui, status, notice);
+    });
+
+    egui::CentralPanel::default()
+        .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(0.0))
+        .show_inside(ui, |ui| {
+            egui::Frame::default()
+                .fill(COLOR_PANEL)
+                .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+                .corner_radius(8.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        render_title_field(ui, command, title);
+                        ui.add_space(8.0);
+                        render_body_field(ui, command, body);
+                        ui.add_space(10.0);
+                        render_actions(ui, body, send_requested);
+                    });
+                });
+        });
+}
+
+fn render_status_bar(
+    ui: &mut egui::Ui,
+    status: &Arc<Mutex<InteractionStatus>>,
+    notice: &Arc<Mutex<String>>,
+) {
+    let status = status
+        .lock()
+        .map(|status| *status)
+        .unwrap_or(InteractionStatus::Ready);
+    let notice = notice.lock().map(|value| value.clone()).unwrap_or_default();
+    let (label, default_notice, color) = match status {
+        InteractionStatus::Ready => ("Ready", "Ready", COLOR_MUTED),
+        InteractionStatus::Sending => ("Sending", "Waiting for client result", COLOR_WARN),
+        InteractionStatus::Done => ("Done", "Command sent", COLOR_GOOD),
+        InteractionStatus::Failed => ("Failed", "Command failed", COLOR_BAD),
+    };
+    let notice = if notice.trim().is_empty() {
+        default_notice
+    } else {
+        notice.trim()
+    };
+
     egui::Frame::default()
         .fill(COLOR_PANEL)
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .corner_radius(8.0)
-        .inner_margin(12.0)
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .corner_radius(egui::CornerRadius::same(6))
         .show(ui, |ui| {
-            ui.vertical(|ui| {
-                render_title_field(ui, command, title);
-                ui.add_space(8.0);
-                render_body_field(ui, command, body);
-                ui.add_space(10.0);
-                render_actions(ui, body, send_requested);
+            ui.set_min_height(26.0);
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 4.0, color);
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(12.0)
+                        .color(COLOR_TEXT)
+                        .strong(),
+                );
+                ui.label(egui::RichText::new(notice).size(12.0).color(COLOR_MUTED));
             });
         });
 }
@@ -257,6 +393,129 @@ fn body_label(command: &CommandKind) -> &'static str {
         CommandKind::BalloonTip => balloon_tip::body_label(),
         CommandKind::OpenTextInNotepad => open_text_in_notepad::body_label(),
         _ => message_box::body_label(),
+    }
+}
+
+fn interaction_command_is_supported(command: &CommandKind) -> bool {
+    matches!(
+        command,
+        CommandKind::MessageBox | CommandKind::BalloonTip | CommandKind::OpenTextInNotepad
+    )
+}
+
+fn interaction_notice(detail: &str, fallback: &str) -> String {
+    let detail = detail.trim();
+    if detail.is_empty() || detail.eq_ignore_ascii_case("ok") {
+        fallback.to_string()
+    } else if detail.eq_ignore_ascii_case("forwarded") {
+        "Sent to client".to_string()
+    } else if interaction_detail_failed(detail) {
+        detail_field(detail, "message").unwrap_or_else(|| detail_header(detail).to_string())
+    } else if let Some(status) = detail_field(detail, "status") {
+        status
+    } else if let Some(message) = detail_field(detail, "message") {
+        message
+    } else {
+        let header = detail_header(detail);
+        if matches!(
+            header,
+            "message_box" | "balloon_tip" | "open_text_in_notepad"
+        ) {
+            fallback.to_string()
+        } else {
+            header.to_string()
+        }
+    }
+}
+
+fn interaction_detail_failed(detail: &str) -> bool {
+    let header = detail_header(detail);
+    header.ends_with("_error") || header.ends_with("_disabled")
+}
+
+fn detail_header(detail: &str) -> &str {
+    detail.lines().next().unwrap_or_default().trim()
+}
+
+fn detail_field(detail: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    detail.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn set_status(
+    status: &Arc<Mutex<InteractionStatus>>,
+    notice: &Arc<Mutex<String>>,
+    next_status: InteractionStatus,
+    next_notice: &str,
+) {
+    if let Ok(mut status) = status.lock() {
+        *status = next_status;
+    }
+    if let Ok(mut notice) = notice.lock() {
+        *notice = next_notice.to_string();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{handle_ack, open_window, InteractionStatus};
+    use rdl_protocol::CommandKind;
+
+    #[test]
+    fn ack_updates_interaction_window_status() {
+        let mut windows = Vec::new();
+        open_window(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+            CommandKind::MessageBox,
+        );
+
+        assert!(handle_ack(
+            &mut windows,
+            "client-1",
+            &CommandKind::MessageBox,
+            true,
+            "message_box\nstatus=shown\ntitle=Hi\nmessage=Body",
+        ));
+
+        assert_eq!(*windows[0].status.lock().unwrap(), InteractionStatus::Done);
+        assert_eq!(windows[0].notice.lock().unwrap().as_str(), "shown");
+    }
+
+    #[test]
+    fn accepted_error_detail_marks_interaction_failed() {
+        let mut windows = Vec::new();
+        open_window(
+            &mut windows,
+            "client-1",
+            "host".to_string(),
+            "user".to_string(),
+            CommandKind::BalloonTip,
+        );
+
+        assert!(handle_ack(
+            &mut windows,
+            "client-1",
+            &CommandKind::BalloonTip,
+            true,
+            "balloon_tip_error\nmessage=notify-send failed",
+        ));
+
+        assert_eq!(
+            *windows[0].status.lock().unwrap(),
+            InteractionStatus::Failed
+        );
+        assert_eq!(
+            windows[0].notice.lock().unwrap().as_str(),
+            "notify-send failed"
+        );
     }
 }
 

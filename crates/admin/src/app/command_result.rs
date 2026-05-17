@@ -8,6 +8,7 @@ use super::{
 };
 use base64::Engine;
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use rdl_protocol::CommandKind;
 use std::hash::{Hash, Hasher};
 use std::sync::{
@@ -815,28 +816,120 @@ fn render_result_table(
     let row_cells = rows.iter().map(|row| row.cells.clone()).collect::<Vec<_>>();
     let widths = table_column_widths(command, &table.headers, &row_cells, ui.available_width());
     let alignments = table_column_alignments(command, &table.headers);
+    let specs = table
+        .headers
+        .iter()
+        .map(|header| table_column_spec(command, header))
+        .collect::<Vec<_>>();
 
     egui::Frame::default()
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            table_header_row(ui, &table.headers, &widths, &alignments, &mut sort);
-            for (row_index, row) in rows.iter().enumerate() {
-                let row_key = table_row_key(row);
-                table_row(
-                    ui,
-                    &row.cells,
-                    &widths,
-                    &alignments,
-                    false,
-                    row_index,
-                    selected_row.as_deref() == Some(row_key.as_str()),
-                    &row_key,
-                    table_selected_row,
-                    process_row_pid(command, &table.headers, &row.cells),
-                    process_kill_requested,
-                );
+            let mut table_builder = TableBuilder::new(ui)
+                .id_salt(command_result_table_id(command, &table.headers))
+                .striped(true)
+                .resizable(true)
+                .sense(egui::Sense::click())
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+            for (width, spec) in widths.iter().zip(specs.iter()) {
+                table_builder =
+                    table_builder.column(Column::initial(*width).at_least(spec.min).clip(true));
             }
+
+            table_builder
+                .header(TABLE_HEADER_CELL_HEIGHT + 7.0, |mut header| {
+                    for (index, cell) in table.headers.iter().enumerate() {
+                        let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
+                        let marker = match sort {
+                            Some(current) if current.column == index && current.ascending => " ^",
+                            Some(current) if current.column == index => " v",
+                            _ => "",
+                        };
+                        header.col(|ui| {
+                            let response = table_cell_label(
+                                ui,
+                                &format!("{cell}{marker}"),
+                                TABLE_HEADER_TEXT_SIZE,
+                                COLOR_MUTED,
+                                align,
+                                egui::Sense::click(),
+                            );
+                            if response.clicked() {
+                                sort = match sort {
+                                    Some(current) if current.column == index => Some(TableSort {
+                                        column: index,
+                                        ascending: !current.ascending,
+                                    }),
+                                    _ => Some(TableSort {
+                                        column: index,
+                                        ascending: true,
+                                    }),
+                                };
+                            }
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(TABLE_BODY_CELL_HEIGHT + 7.0, rows.len(), |mut row| {
+                        let row_data = &rows[row.index()];
+                        let row_key = table_row_key(row_data);
+                        row.set_selected(selected_row.as_deref() == Some(row_key.as_str()));
+                        let row_text = row_data.cells.join("\t");
+                        let process_id = process_row_pid(command, &table.headers, &row_data.cells);
+
+                        for (index, _header) in table.headers.iter().enumerate() {
+                            let cell = row_data.cells.get(index).map(String::as_str).unwrap_or("");
+                            let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
+                            let (_, cell_response) = row.col(|ui| {
+                                let _ = table_cell_label(
+                                    ui,
+                                    cell,
+                                    TABLE_BODY_TEXT_SIZE,
+                                    COLOR_TEXT,
+                                    align,
+                                    egui::Sense::hover(),
+                                );
+                            });
+                            let cell_text = cell.to_string();
+                            let row_text = row_text.clone();
+                            let row_key = row_key.clone();
+                            let process_id = process_id.clone();
+                            cell_response.context_menu(|ui| {
+                                if ui.button("Copy Cell").clicked() {
+                                    ui.ctx().copy_text(cell_text.clone());
+                                    ui.close();
+                                }
+                                if ui.button("Copy Row").clicked() {
+                                    ui.ctx().copy_text(row_text.clone());
+                                    ui.close();
+                                }
+                                if let Some(process_id) = process_id.clone() {
+                                    ui.separator();
+                                    if ui.button("Kill Process").clicked() {
+                                        if let Ok(mut selected) = table_selected_row.lock() {
+                                            *selected = Some(row_key.clone());
+                                        }
+                                        if let Ok(mut value) = process_kill_requested.lock() {
+                                            *value = Some(process_id.clone());
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
+
+                        let response = row.response();
+                        if response.hovered() {
+                            response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if response.clicked() || response.secondary_clicked() {
+                            if let Ok(mut value) = table_selected_row.lock() {
+                                *value = Some(row_key.clone());
+                            }
+                        }
+                    });
+                });
         });
 
     if let Ok(mut value) = table_sort.lock() {
@@ -909,151 +1002,33 @@ fn table_row_key(row: &DisplayTableRow) -> String {
     format!("{}\t{}", row.source_index, row.cells.join("\t"))
 }
 
-fn table_header_row(
-    ui: &mut egui::Ui,
-    cells: &[String],
-    widths: &[f32],
-    alignments: &[egui::Align],
-    sort: &mut Option<TableSort>,
-) {
-    let fill = egui::Color32::from_rgb(235, 240, 247);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-        for (index, width) in widths.iter().enumerate() {
-            let cell = cells.get(index).map(String::as_str).unwrap_or("");
-            let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
-            let marker = match sort {
-                Some(current) if current.column == index && current.ascending => " ^",
-                Some(current) if current.column == index => " v",
-                _ => "",
-            };
-            egui::Frame::default()
-                .fill(fill)
-                .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                .inner_margin(egui::Margin::symmetric(5, 2))
-                .show(ui, |ui| {
-                    ui.set_width(*width);
-                    let response = ui.add_sized(
-                        [*width, TABLE_HEADER_CELL_HEIGHT],
-                        egui::Label::new(
-                            egui::RichText::new(format!("{cell}{marker}"))
-                                .size(TABLE_HEADER_TEXT_SIZE)
-                                .color(COLOR_MUTED)
-                                .strong(),
-                        )
-                        .selectable(false)
-                        .truncate()
-                        .halign(align)
-                        .sense(egui::Sense::click()),
-                    );
-                    if response.clicked() {
-                        *sort = match sort {
-                            Some(current) if current.column == index => Some(TableSort {
-                                column: index,
-                                ascending: !current.ascending,
-                            }),
-                            _ => Some(TableSort {
-                                column: index,
-                                ascending: true,
-                            }),
-                        };
-                    }
-                });
-        }
-    });
+fn command_result_table_id(
+    command: &CommandKind,
+    headers: &[String],
+) -> (&'static str, &'static str, u64) {
+    (
+        "command_result_table_resizable",
+        command.as_str(),
+        stable_hash(&headers.join("\t")),
+    )
 }
 
-fn table_row(
+fn table_cell_label(
     ui: &mut egui::Ui,
-    cells: &[String],
-    widths: &[f32],
-    alignments: &[egui::Align],
-    header: bool,
-    row_index: usize,
-    selected: bool,
-    row_key: &str,
-    table_selected_row: &Arc<Mutex<Option<String>>>,
-    process_id: Option<String>,
-    process_kill_requested: &Arc<Mutex<Option<String>>>,
-) {
-    let fill = if selected {
-        egui::Color32::from_rgb(219, 234, 254)
-    } else if header {
-        egui::Color32::from_rgb(235, 240, 247)
-    } else if row_index % 2 == 0 {
-        COLOR_PANEL
-    } else {
-        egui::Color32::from_rgb(248, 250, 253)
-    };
-
-    let row_text = cells.join("\t");
-    let pointer_pos = ui.ctx().pointer_latest_pos();
-    let mut pointer_cell = None;
-    let response = ui
-        .horizontal(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-            for (index, width) in widths.iter().enumerate() {
-                let cell = cells.get(index).map(String::as_str).unwrap_or("");
-                let align = alignments.get(index).copied().unwrap_or(egui::Align::Min);
-                let frame_response = egui::Frame::default()
-                    .fill(fill)
-                    .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                    .inner_margin(egui::Margin::symmetric(5, 2))
-                    .show(ui, |ui| {
-                        ui.set_width(*width);
-                        ui.add_sized(
-                            [*width, TABLE_BODY_CELL_HEIGHT],
-                            egui::Label::new(
-                                egui::RichText::new(cell)
-                                    .size(TABLE_BODY_TEXT_SIZE)
-                                    .color(if header { COLOR_MUTED } else { COLOR_TEXT }),
-                            )
-                            .selectable(false)
-                            .truncate()
-                            .halign(align)
-                            .sense(egui::Sense::hover()),
-                        );
-                    })
-                    .response;
-                if pointer_pos.is_some_and(|pos| frame_response.rect.contains(pos)) {
-                    pointer_cell = Some(cell.to_string());
-                }
-            }
-        })
-        .response
-        .interact(egui::Sense::click());
-    if response.hovered() && !header {
-        response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    if (response.clicked() || response.secondary_clicked()) && !header {
-        if let Ok(mut value) = table_selected_row.lock() {
-            *value = Some(row_key.to_string());
-        }
-    }
-    response.context_menu(|ui| {
-        if let Some(cell) = pointer_cell.as_deref() {
-            if ui.button("Copy Cell").clicked() {
-                ui.ctx().copy_text(cell.to_string());
-                ui.close();
-            }
-        }
-        if ui.button("Copy Row").clicked() {
-            ui.ctx().copy_text(row_text.clone());
-            ui.close();
-        }
-        if let Some(process_id) = process_id.clone() {
-            ui.separator();
-            if ui.button("Kill Process").clicked() {
-                if let Ok(mut selected) = table_selected_row.lock() {
-                    *selected = Some(row_key.to_string());
-                }
-                if let Ok(mut value) = process_kill_requested.lock() {
-                    *value = Some(process_id.clone());
-                }
-                ui.close();
-            }
-        }
-    });
+    text: &str,
+    size: f32,
+    color: egui::Color32,
+    align: egui::Align,
+    sense: egui::Sense,
+) -> egui::Response {
+    ui.add_sized(
+        [ui.available_width(), ui.available_height()],
+        egui::Label::new(egui::RichText::new(text).size(size).color(color))
+            .selectable(false)
+            .truncate()
+            .halign(align)
+            .sense(sense),
+    )
 }
 
 fn process_row_pid(command: &CommandKind, headers: &[String], row: &[String]) -> Option<String> {

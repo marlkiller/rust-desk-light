@@ -63,9 +63,6 @@ pub(super) fn render(ui: &mut egui::Ui, result_detail: &Arc<Mutex<String>>) {
         .lock()
         .map(|value| value.clone())
         .unwrap_or_default();
-    if detail.trim().is_empty() {
-        return;
-    }
 
     ui.add_space(10.0);
     ui.separator();
@@ -77,7 +74,11 @@ pub(super) fn render(ui: &mut egui::Ui, result_detail: &Arc<Mutex<String>>) {
     );
     ui.add_space(4.0);
     let height = ui.available_height().clamp(96.0, 180.0);
-    let mut output = detail;
+    let mut output = if detail.trim().is_empty() {
+        "No output yet".to_string()
+    } else {
+        detail
+    };
     let output_rows = output.lines().count().clamp(6, 120);
     let output_content_height = (output_rows as f32 * ui::CODE_ROW_HEIGHT + 18.0).max(height);
     egui::ScrollArea::vertical()

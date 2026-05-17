@@ -109,13 +109,23 @@ pub(super) fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut eg
 
 pub(super) fn cell_label(ui: &mut egui::Ui, text: impl Into<String>) {
     let text = text.into();
+    cell_label_with_hover(ui, text.clone(), text);
+}
+
+pub(super) fn cell_label_with_hover(
+    ui: &mut egui::Ui,
+    text: impl Into<String>,
+    hover_text: impl Into<String>,
+) {
+    let text = text.into();
+    let hover_text = hover_text.into();
     let response = ui.add(
         egui::Label::new(egui::RichText::new(text.clone()).size(12.0))
             .selectable(false)
             .sense(egui::Sense::hover()),
     );
     if response.hovered() {
-        response.on_hover_text(text);
+        response.on_hover_text(hover_text);
     }
 }
 
@@ -182,8 +192,21 @@ fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
 }
 
 pub(super) fn compact_id(value: &str) -> String {
-    if value.len() > 22 {
-        format!("{}...", &value[..22])
+    let value = value.trim();
+    let value = value.strip_prefix("client-").unwrap_or(value);
+    compact_middle(value, 12, 6)
+}
+
+fn compact_middle(value: &str, head: usize, tail: usize) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() > head + tail + 3 {
+        let prefix = chars.iter().take(head).copied().collect::<String>();
+        let suffix = chars
+            .iter()
+            .skip(chars.len().saturating_sub(tail))
+            .copied()
+            .collect::<String>();
+        format!("{prefix}...{suffix}")
     } else {
         value.to_string()
     }

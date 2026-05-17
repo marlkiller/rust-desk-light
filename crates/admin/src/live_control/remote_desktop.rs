@@ -1,6 +1,7 @@
 use crate::windowing;
 use base64::Engine;
 use eframe::egui;
+use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -44,6 +45,7 @@ pub(crate) struct RemoteDesktopWindow {
     close_requested: Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
 pub(crate) struct DesktopFrame {
     seq: u64,
     screen_width: u32,
@@ -353,6 +355,7 @@ pub(crate) fn render_windows(
         let client_id = window.client_id.clone();
         let close_requested = window.close_requested.clone();
         let texture = window.texture.clone();
+        let frame_for_save = window.frame.clone();
         let frame_info = window.frame.as_ref().map(|frame| {
             (
                 frame.screen_width,
@@ -385,6 +388,8 @@ pub(crate) fn render_windows(
         let running = window.running.clone();
         let queued = Arc::new(Mutex::new(Vec::new()));
         let queued_for_ui = queued.clone();
+        let save_notice = Arc::new(Mutex::new(None::<String>));
+        let save_notice_for_ui = save_notice.clone();
 
         ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
             if ui.ctx().input(|input| input.viewport().close_requested()) {
@@ -403,6 +408,8 @@ pub(crate) fn render_windows(
                         &mouse_click,
                         &running,
                         &queued_for_ui,
+                        frame_for_save.as_ref(),
+                        &save_notice_for_ui,
                     );
                     ui.add_space(8.0);
                     let frame_height = (ui.available_height() - 52.0).max(160.0);
@@ -445,6 +452,9 @@ pub(crate) fn render_windows(
                 window.queue_payload(payload);
             }
         }
+        if let Some(notice) = save_notice.lock().ok().and_then(|mut value| value.take()) {
+            window.notice = notice;
+        }
         while let Some(payload) = window.outbound.pop() {
             let input = remote_desktop_payload_is_input(&payload);
             if !input {
@@ -486,6 +496,8 @@ fn render_toolbar(
     mouse_click: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
     queued: &Arc<Mutex<Vec<String>>>,
+    latest_frame: Option<&DesktopFrame>,
+    save_notice: &Arc<Mutex<Option<String>>>,
 ) {
     ui.vertical(|ui| {
         let is_running = running.load(Ordering::Relaxed);
@@ -521,6 +533,18 @@ fn render_toolbar(
         toolbar_row(ui, |ui| {
             if ui.button("Reload Screens").clicked() {
                 queue_ui_payload(queued, "action=screens".to_string());
+            }
+            if ui
+                .add_enabled(latest_frame.is_some(), egui::Button::new("Save Frame"))
+                .clicked()
+            {
+                if let Some(frame) = latest_frame {
+                    if let Some(message) = save_frame_dialog(frame) {
+                        if let Ok(mut notice) = save_notice.lock() {
+                            *notice = Some(message);
+                        }
+                    }
+                }
             }
             ui.separator();
             let mut selected_quality = quality
@@ -896,6 +920,32 @@ fn queue_ui_payload(queue: &Arc<Mutex<Vec<String>>>, payload: String) {
     if let Ok(mut queue) = queue.lock() {
         queue.push(payload);
     }
+}
+
+fn save_frame_dialog(frame: &DesktopFrame) -> Option<String> {
+    let path = rfd::FileDialog::new()
+        .set_title("Save Remote Desktop Frame")
+        .add_filter("PNG image", &["png"])
+        .set_file_name(format!("remote-desktop-frame-{}.png", frame.seq))
+        .save_file()?;
+
+    match save_frame_to_path(frame, &path) {
+        Ok(()) => Some(format!("Saved frame to {}", path.display())),
+        Err(error) => Some(format!("Save frame failed: {error}")),
+    }
+}
+
+fn save_frame_to_path(frame: &DesktopFrame, path: &Path) -> Result<(), String> {
+    let mut rgba = Vec::with_capacity(frame.image.pixels.len() * 4);
+    for pixel in &frame.image.pixels {
+        rgba.extend_from_slice(&pixel.to_srgba_unmultiplied());
+    }
+    let image =
+        image::RgbaImage::from_raw(frame.image_width as u32, frame.image_height as u32, rgba)
+            .ok_or_else(|| "invalid frame image buffer".to_string())?;
+    image
+        .save(path)
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 enum DesktopResponse {

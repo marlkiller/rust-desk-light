@@ -484,14 +484,25 @@ fn render_input(
             .lock()
             .map(|value| prompt_label(&value))
             .unwrap_or_else(|_| "$".to_string());
-        ui.label(
-            egui::RichText::new(prompt)
-                .font(egui::FontId::monospace(13.0))
-                .color(COLOR_MUTED),
-        );
         let button_width = 72.0;
+        let spacing = ui.spacing().item_spacing.x;
+        let available_width = ui.available_width();
+        let prompt_width = (available_width * 0.22)
+            .clamp(56.0, 180.0)
+            .min((available_width - button_width - spacing * 2.0 - 100.0).max(56.0));
+        ui.add_sized(
+            [prompt_width, TOOLBAR_CONTROL_HEIGHT],
+            egui::Label::new(
+                egui::RichText::new(prompt)
+                    .font(egui::FontId::monospace(13.0))
+                    .color(COLOR_MUTED),
+            )
+            .selectable(false)
+            .truncate()
+            .halign(egui::Align::Max),
+        );
         let input_width =
-            (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(100.0);
+            (available_width - prompt_width - button_width - spacing * 2.0).max(100.0);
         let response = ui.add_sized(
             [input_width, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(&mut text)

@@ -23,10 +23,10 @@ use self::{
     network::admin_network_loop,
     payload::{payload_field, video_stream_payload},
     ui::{
-        activity_context_menu, apply_admin_theme, cell_label, centered_cell, compact_id,
+        activity_context_menu, apply_admin_theme, cell_label, centered_cell,
         connection_status_pill, empty_state, panel, prune_activity_logs, section_title,
-        table_header, timestamped_log, COLOR_BAD, COLOR_BG, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT,
-        COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        table_header, timestamped_log, COLOR_BAD, COLOR_BG, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED,
+        COLOR_PANEL, COLOR_TEXT, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
     },
 };
 use crate::{
@@ -55,6 +55,8 @@ const VOICE_AUDIO_OUTBOUND_QUEUE_CAPACITY: usize = 128;
 const MAX_GUI_EVENTS_PER_FRAME: usize = 4096;
 const MAX_PENDING_AUDIO_MS: u64 = 240;
 const MAX_PENDING_AUDIO_FRAMES_PER_SOURCE: usize = 32;
+const CLIENT_ONLINE_TOAST_TTL: Duration = Duration::from_secs(5);
+const MAX_CLIENT_ONLINE_TOASTS: usize = 4;
 const AUDIO_UDP_REGISTER_INTERVAL_MS: u64 = 250;
 const AUDIO_UDP_RECV_TIMEOUT_MS: u64 = 20;
 const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
@@ -363,6 +365,7 @@ struct AdminApp {
     file_transfer_cancel_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
+    client_online_toasts: VecDeque<ClientOnlineToast>,
     auth_token_prompt_open: bool,
     auth_token_input: String,
     auth_token_error: String,
@@ -374,11 +377,31 @@ struct ClientRow {
     status: ClientStatus,
 }
 
+struct ClientOnlineToast {
+    title: String,
+    detail: String,
+    created_at: Instant,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum ClientStatus {
     Online,
     Stale,
     Offline,
+}
+
+impl ClientStatus {
+    fn can_receive_commands(self) -> bool {
+        matches!(self, ClientStatus::Online)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ClientStatus::Online => "online",
+            ClientStatus::Stale => "stale",
+            ClientStatus::Offline => "offline",
+        }
+    }
 }
 
 struct PendingVideoFrame {
@@ -536,11 +559,7 @@ fn audio_source_key(source: &AudioSource) -> u8 {
 }
 
 fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
-    let (text, color) = match status {
-        ClientStatus::Online => ("Online", COLOR_GOOD),
-        ClientStatus::Stale => ("Stale", COLOR_WARN),
-        ClientStatus::Offline => ("Offline", COLOR_BAD),
-    };
+    let (text, color) = client_status_display(status);
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 3.5, color);
@@ -552,16 +571,83 @@ fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
     });
 }
 
+fn client_status_display(status: ClientStatus) -> (&'static str, egui::Color32) {
+    match status {
+        ClientStatus::Online => ("Online", COLOR_GOOD),
+        ClientStatus::Stale => ("Stale", COLOR_WARN),
+        ClientStatus::Offline => ("Offline", COLOR_BAD),
+    }
+}
+
+fn client_commands_disabled_text(status: ClientStatus) -> &'static str {
+    match status {
+        ClientStatus::Online => "",
+        ClientStatus::Stale => "Client stale - commands disabled",
+        ClientStatus::Offline => "Client offline - commands disabled",
+    }
+}
+
 fn overview_metric(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).size(12.0).color(COLOR_MUTED));
-        ui.label(
-            egui::RichText::new(value.into())
-                .size(13.0)
-                .color(COLOR_TEXT)
-                .strong(),
-        );
-    });
+    let value = value.into();
+    egui::Frame::default()
+        .fill(COLOR_BG)
+        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_min_width(match label {
+                "Selected" => 170.0,
+                "Version" => 112.0,
+                _ => 82.0,
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).size(12.0).color(COLOR_MUTED));
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(value.clone())
+                            .size(13.0)
+                            .color(COLOR_TEXT)
+                            .strong(),
+                    )
+                    .selectable(false),
+                )
+                .on_hover_text(value);
+            });
+        });
+}
+
+fn client_location_label(client: &ClientInfo) -> String {
+    client
+        .location
+        .as_ref()
+        .map(|location| {
+            let label = location.label.trim();
+            if label.is_empty() {
+                format!("{:.2}, {:.2}", location.latitude(), location.longitude())
+            } else {
+                label.to_string()
+            }
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn client_identity_label(client: &ClientInfo) -> String {
+    match (client.hostname.trim(), client.username.trim()) {
+        ("", "") => client.id.clone(),
+        (hostname, "") => hostname.to_string(),
+        ("", username) => username.to_string(),
+        (hostname, username) => format!("{hostname} / {username}"),
+    }
+}
+
+fn client_online_notice(client: &ClientInfo) -> (String, String) {
+    let title = format!("{} is online", client_identity_label(client));
+    let detail = if client.peer_addr.trim().is_empty() {
+        client.id.clone()
+    } else {
+        format!("{} - {}", client.id, client.peer_addr)
+    };
+    (title, detail)
 }
 
 impl AdminApp {
@@ -619,6 +705,7 @@ impl AdminApp {
                 "admin gui started version={}",
                 rdl_version::display_version()
             ))],
+            client_online_toasts: VecDeque::new(),
             auth_token_prompt_open,
             auth_token_input: initial_auth_token,
             auth_token_error: String::new(),
@@ -1060,13 +1147,31 @@ impl AdminApp {
         prune_activity_logs(&mut self.log_lines);
     }
 
+    fn push_client_online_toast(&mut self, title: String, detail: String) {
+        self.push_log(format!("client online: {title}"));
+        self.client_online_toasts.push_back(ClientOnlineToast {
+            title,
+            detail,
+            created_at: Instant::now(),
+        });
+        while self.client_online_toasts.len() > MAX_CLIENT_ONLINE_TOASTS {
+            self.client_online_toasts.pop_front();
+        }
+    }
+
     fn merge_clients(&mut self, clients: Vec<ClientInfo>) {
         let online_ids: HashSet<String> = clients.iter().map(|client| client.id.clone()).collect();
+        let mut online_notices = Vec::new();
         for client in clients {
             if let Some(existing) = self.clients.iter_mut().find(|row| row.info.id == client.id) {
+                let was_online = existing.status == ClientStatus::Online;
                 existing.info = client;
                 existing.status = ClientStatus::Online;
+                if !was_online {
+                    online_notices.push(client_online_notice(&existing.info));
+                }
             } else {
+                online_notices.push(client_online_notice(&client));
                 self.clients.push(ClientRow {
                     info: client,
                     status: ClientStatus::Online,
@@ -1078,6 +1183,10 @@ impl AdminApp {
             if !online_ids.contains(&row.info.id) && row.status != ClientStatus::Stale {
                 row.status = ClientStatus::Offline;
             }
+        }
+
+        for (title, detail) in online_notices {
+            self.push_client_online_toast(title, detail);
         }
     }
 
@@ -1094,6 +1203,9 @@ impl AdminApp {
                     || row.info.hostname.to_ascii_lowercase().contains(&filter)
                     || row.info.username.to_ascii_lowercase().contains(&filter)
                     || row.info.os.to_ascii_lowercase().contains(&filter)
+                    || client_location_label(&row.info)
+                        .to_ascii_lowercase()
+                        .contains(&filter)
             })
             .cloned()
             .collect()
@@ -1106,7 +1218,39 @@ impl AdminApp {
             .count()
     }
 
+    fn client_status_for(&self, client_id: &str) -> Option<ClientStatus> {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| row.status)
+    }
+
+    fn selected_client_label(&self) -> String {
+        let Some(selected_id) = self.selected_client_id.as_deref() else {
+            return "None".to_string();
+        };
+
+        self.clients
+            .iter()
+            .find(|row| row.info.id == selected_id)
+            .map(|row| client_identity_label(&row.info))
+            .unwrap_or_else(|| selected_id.to_string())
+    }
+
     fn send_command(&mut self, client_id: &str, command: CommandKind) {
+        if !self
+            .client_status_for(client_id)
+            .map(ClientStatus::can_receive_commands)
+            .unwrap_or(false)
+        {
+            self.push_log(format!(
+                "blocked command={} to {}: client is offline",
+                command.as_str(),
+                client_id
+            ));
+            return;
+        }
+
         if command.requires_client_gui() && !self.client_gui_available(client_id) {
             self.push_log(format!(
                 "blocked command={} to {}: client has no GUI session",
@@ -1510,6 +1654,13 @@ impl AdminApp {
         ));
 
         if accepted && detail == "forwarded" {
+            user_interaction::handle_ack(
+                &mut self.interaction_command_windows,
+                &client_id,
+                &command,
+                accepted,
+                &detail,
+            );
             return;
         }
 
@@ -1564,6 +1715,22 @@ impl AdminApp {
             {
                 self.remove_client_row(&client_id);
             }
+            return;
+        }
+        if user_interaction::handle_ack(
+            &mut self.interaction_command_windows,
+            &client_id,
+            &command,
+            accepted,
+            &detail,
+        ) {
+            self.push_log(format!(
+                "result client={} command={} accepted={} detail={}",
+                client_id,
+                command.as_str(),
+                accepted,
+                sanitize_log_value(&detail)
+            ));
             return;
         }
         if quiet_user_interaction_command(&command) {
@@ -1845,20 +2012,36 @@ impl AdminApp {
     fn render_menu_bar(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Client Map").clicked() {
+                if ui.button("🌐 Client Map").clicked() {
                     self.client_map_window.open();
                 }
                 if let Some(client_id) = self.selected_client_id.clone() {
                     ui.separator();
-                    let gui_available = self.client_gui_available(&client_id);
-                    command_menu::render_context_menu(
-                        ui,
-                        &client_id,
-                        gui_available,
-                        &mut |client_id, command| {
-                            self.send_command(client_id, command);
-                        },
-                    );
+                    let status = self
+                        .client_status_for(&client_id)
+                        .unwrap_or(ClientStatus::Offline);
+                    if status.can_receive_commands() {
+                        let gui_available = self.client_gui_available(&client_id);
+                        command_menu::render_context_menu(
+                            ui,
+                            &client_id,
+                            gui_available,
+                            &mut |client_id, command| {
+                                self.send_command(client_id, command);
+                            },
+                        );
+                    } else {
+                        let (_, color) = client_status_display(status);
+                        ui.label(
+                            egui::RichText::new(client_commands_disabled_text(status))
+                                .size(12.0)
+                                .color(color)
+                                .strong(),
+                        )
+                        .on_hover_text(
+                            "Remote commands become available when the client reconnects",
+                        );
+                    }
                 } else {
                     ui.separator();
                     ui.label(
@@ -1890,20 +2073,12 @@ impl AdminApp {
 
     fn render_overview(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
+            section_title(ui, "Overview");
+            ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                section_title(ui, "Overview");
-                ui.add_space(14.0);
                 overview_metric(ui, "Online", self.online_client_count().to_string());
-                ui.separator();
                 overview_metric(ui, "Known", self.clients.len().to_string());
-                ui.separator();
-                let selected = self
-                    .selected_client_id
-                    .as_deref()
-                    .map(compact_id)
-                    .unwrap_or_else(|| "None".to_string());
-                overview_metric(ui, "Selected", selected);
-                ui.separator();
+                overview_metric(ui, "Selected", self.selected_client_label());
                 overview_metric(ui, "Version", rdl_version::display_version());
             });
         });
@@ -1927,7 +2102,7 @@ impl AdminApp {
                 ui.add_sized(
                     [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut self.client_filter)
-                        .hint_text("Search by id, fingerprint, host, user, or OS")
+                        .hint_text("Search by id, fingerprint, host, user, OS, or location")
                         .vertical_align(egui::Align::Center),
                 );
             });
@@ -1941,19 +2116,46 @@ impl AdminApp {
 
             let ctx = ui.ctx().clone();
             egui_extras::TableBuilder::new(ui)
-                .id_salt("admin_clients_table")
+                .id_salt("admin_clients_table_resizable")
                 .striped(false)
                 .sense(egui::Sense::click())
-                .column(egui_extras::Column::exact(86.0))
-                .column(egui_extras::Column::remainder().at_least(140.0).clip(true))
-                .column(egui_extras::Column::remainder().at_least(120.0).clip(true))
-                .column(egui_extras::Column::remainder().at_least(120.0).clip(true))
-                .column(egui_extras::Column::exact(90.0).clip(true))
-                .column(egui_extras::Column::remainder().at_least(130.0).clip(true))
+                .resizable(true)
+                .column(egui_extras::Column::initial(86.0).at_least(72.0).clip(true))
+                .column(
+                    egui_extras::Column::initial(190.0)
+                        .at_least(140.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(150.0)
+                        .at_least(120.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(180.0)
+                        .at_least(120.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(150.0)
+                        .at_least(120.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(100.0)
+                        .at_least(80.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(220.0)
+                        .at_least(130.0)
+                        .clip(true),
+                )
                 .header(24.0, |mut header| {
                     header.col(|ui| table_header(ui, "Status"));
                     header.col(|ui| table_header(ui, "Client ID"));
                     header.col(|ui| table_header(ui, "IP"));
+                    header.col(|ui| table_header(ui, "Location"));
                     header.col(|ui| table_header(ui, "Host"));
                     header.col(|ui| table_header(ui, "User"));
                     header.col(|ui| table_header(ui, "OS Version"));
@@ -1970,12 +2172,17 @@ impl AdminApp {
                         });
                         row.col(|ui| {
                             centered_cell(ui, |ui| {
-                                cell_label(ui, compact_id(&client.id));
+                                cell_label(ui, &client.id);
                             });
                         });
                         row.col(|ui| {
                             centered_cell(ui, |ui| {
                                 cell_label(ui, &client.peer_addr);
+                            });
+                        });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, client_location_label(client));
                             });
                         });
                         row.col(|ui| {
@@ -2001,14 +2208,22 @@ impl AdminApp {
                             self.selected_client_id = Some(client.id.clone());
                         }
                         response.context_menu(|ui| {
-                            command_menu::render_context_menu(
-                                ui,
-                                &client.id,
-                                client.gui_available,
-                                &mut |client_id, command| {
-                                    self.send_command(client_id, command);
-                                },
-                            );
+                            if row_data.status.can_receive_commands() {
+                                command_menu::render_context_menu(
+                                    ui,
+                                    &client.id,
+                                    client.gui_available,
+                                    &mut |client_id, command| {
+                                        self.send_command(client_id, command);
+                                    },
+                                );
+                            } else {
+                                command_menu::render_unavailable_client_menu(
+                                    ui,
+                                    &client.id,
+                                    row_data.status.label(),
+                                );
+                            }
                         });
                     });
                 });
@@ -2033,6 +2248,66 @@ impl AdminApp {
                 });
             activity_context_menu(ui, output.inner_rect, output.id, &mut self.log_lines);
         });
+    }
+
+    fn render_client_online_toasts(&mut self, ctx: &egui::Context) {
+        self.client_online_toasts
+            .retain(|toast| toast.created_at.elapsed() < CLIENT_ONLINE_TOAST_TTL);
+        if self.client_online_toasts.is_empty() {
+            return;
+        }
+
+        let mut dismiss_index = None;
+        egui::Area::new(egui::Id::new("admin_client_online_toasts"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-18.0, 18.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                for index in (0..self.client_online_toasts.len()).rev() {
+                    let toast = &self.client_online_toasts[index];
+                    let title = toast.title.clone();
+                    let detail = toast.detail.clone();
+                    egui::Frame::default()
+                        .fill(COLOR_PANEL)
+                        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+                        .corner_radius(8.0)
+                        .inner_margin(egui::Margin::symmetric(12, 10))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(rect.center(), 4.0, COLOR_GOOD);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(title)
+                                            .size(13.0)
+                                            .color(COLOR_TEXT)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(detail).size(12.0).color(COLOR_MUTED),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Min),
+                                    |ui| {
+                                        if ui.small_button("x").on_hover_text("Dismiss").clicked() {
+                                            dismiss_index = Some(index);
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                }
+            });
+
+        if let Some(index) = dismiss_index {
+            self.client_online_toasts.remove(index);
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
     }
 
     fn render_command_windows(&mut self, ctx: &egui::Context) {
@@ -2615,6 +2890,7 @@ impl eframe::App for AdminApp {
             &mut self.selected_client_id,
             &mut self.client_filter,
         );
+        self.render_client_online_toasts(ui.ctx());
 
         if changed {
             ui.ctx().request_repaint();

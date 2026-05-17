@@ -183,9 +183,6 @@ pub(crate) fn render_windows(
             if let Ok(mut status) = window.result_status.lock() {
                 *status = "Running...".to_string();
             }
-            if let Ok(mut detail) = window.result_detail.lock() {
-                detail.clear();
-            }
             outbound.push(OutboundExecuteCommand {
                 client_id: client_id.clone(),
                 command: window.command.clone(),
@@ -276,14 +273,6 @@ fn render_form(
     result_detail: &Arc<Mutex<String>>,
     send_requested: &Arc<AtomicBool>,
 ) {
-    let has_result = !result_status
-        .lock()
-        .map(|value| value.trim().is_empty())
-        .unwrap_or(true)
-        || !result_detail
-            .lock()
-            .map(|value| value.trim().is_empty())
-            .unwrap_or(true);
     ui::render_status_panel(ui, result_status);
 
     egui::CentralPanel::no_frame().show_inside(ui, |ui| {
@@ -303,7 +292,7 @@ fn render_form(
                     code_languages,
                     language_status,
                     language_probe_requested,
-                    has_result,
+                    true,
                     send_requested,
                 ),
                 CommandKind::ExecuteStaticCommand => execute_static_command::render(

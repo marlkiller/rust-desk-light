@@ -430,12 +430,7 @@ fn render_window(ctx: &egui::Context, window: &mut VoiceChatWindow) {
                     ui.add_space(18.0);
                     render_avatar(ui, status);
                     ui.add_space(16.0);
-                    ui.label(
-                        egui::RichText::new(status_title(status))
-                            .size(22.0)
-                            .strong()
-                            .color(COLOR_TEXT),
-                    );
+                    render_status_title(ui, status);
                     ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new(notice.as_str())
@@ -484,16 +479,25 @@ fn render_avatar(ui: &mut egui::Ui, status: VoiceChatStatus) {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        "Voice",
-        egui::FontId::proportional(16.0),
+        "🎤",
+        egui::FontId::proportional(30.0),
         color,
     );
 }
 
 fn render_meters(ui: &mut egui::Ui, stats: &VoiceStats) {
-    meter(ui, "You", stats.outgoing_peak);
+    meter(ui, "🎤 You", stats.outgoing_peak);
     ui.add_space(6.0);
-    meter(ui, "Client", stats.incoming_peak);
+    meter(ui, "🔊 Client", stats.incoming_peak);
+}
+
+fn render_status_title(ui: &mut egui::Ui, status: VoiceChatStatus) {
+    ui.label(
+        egui::RichText::new(status_title(status))
+            .size(22.0)
+            .strong()
+            .color(COLOR_TEXT),
+    );
 }
 
 fn meter(ui: &mut egui::Ui, label: &str, peak: f32) {
@@ -521,25 +525,25 @@ fn render_controls(
 ) {
     match status {
         VoiceChatStatus::Ready | VoiceChatStatus::Ended | VoiceChatStatus::Failed => {
-            if call_button(ui, "Call", COLOR_GOOD).clicked() {
+            if call_button(ui, "📞 Call", COLOR_GOOD).clicked() {
                 call_requested.store(true, Ordering::Relaxed);
             }
         }
         VoiceChatStatus::Ringing | VoiceChatStatus::Live => {
             ui.horizontal(|ui| {
                 let mut mic = mic_muted.load(Ordering::Relaxed);
-                let mic_label = mic_label(mic);
-                if ui.checkbox(&mut mic, mic_label).changed() {
+                let label = mic_label(mic);
+                if ui.checkbox(&mut mic, label).changed() {
                     mic_muted.store(mic, Ordering::Relaxed);
                 }
                 let mut speaker = speaker_muted.load(Ordering::Relaxed);
-                let speaker_label = speaker_label(speaker);
-                if ui.checkbox(&mut speaker, speaker_label).changed() {
+                let label = speaker_label(speaker);
+                if ui.checkbox(&mut speaker, label).changed() {
                     speaker_muted.store(speaker, Ordering::Relaxed);
                 }
             });
             ui.add_space(20.0);
-            if call_button(ui, "Hang Up", COLOR_BAD).clicked() {
+            if call_button(ui, "☎ Hang Up", COLOR_BAD).clicked() {
                 end_requested.store(true, Ordering::Relaxed);
             }
         }
@@ -548,17 +552,17 @@ fn render_controls(
 
 fn mic_label(muted: bool) -> &'static str {
     if muted {
-        "Mic off"
+        "🚫🎤 Mic off"
     } else {
-        "Mic on"
+        "🎤 Mic on"
     }
 }
 
 fn speaker_label(muted: bool) -> &'static str {
     if muted {
-        "Speaker off"
+        "🔇 Speaker off"
     } else {
-        "Speaker on"
+        "🔊 Speaker on"
     }
 }
 
@@ -1151,11 +1155,11 @@ fn payload_field(payload: &str, key: &str) -> Option<String> {
 
 fn status_title(status: VoiceChatStatus) -> &'static str {
     match status {
-        VoiceChatStatus::Ready => "Voice Chat",
-        VoiceChatStatus::Ringing => "Calling",
-        VoiceChatStatus::Live => "Voice Chat",
-        VoiceChatStatus::Ended => "Call Ended",
-        VoiceChatStatus::Failed => "Call Failed",
+        VoiceChatStatus::Ready => "🎤 Voice Chat",
+        VoiceChatStatus::Ringing => "📞 Calling",
+        VoiceChatStatus::Live => "🎤 Voice Chat",
+        VoiceChatStatus::Ended => "✅ Call Ended",
+        VoiceChatStatus::Failed => "⚠ Call Failed",
     }
 }
 

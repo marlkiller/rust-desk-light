@@ -930,7 +930,7 @@ fn render_entries_table(
     let ctx = ui.ctx().clone();
     file_table(
         ui,
-        ("remote_file_table_v2", entries_id),
+        ("remote_file_table_resizable", entries_id),
         &entries,
         selected.as_deref(),
         |row_response, entry| {
@@ -1035,7 +1035,7 @@ fn render_local_entries_table(
         .unwrap_or(None);
     file_table(
         ui,
-        ("local_file_table_v2", entries_id),
+        ("local_file_table_resizable", entries_id),
         &entries_snapshot,
         selected.as_deref(),
         |row_response, entry| {
@@ -1104,14 +1104,13 @@ fn file_table<R>(
     let table = TableBuilder::new(ui)
         .id_salt(id)
         .striped(true)
-        .resizable(false)
+        .resizable(true)
         .sense(egui::Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .column(Column::exact(type_width))
-        .column(Column::exact(name_width))
-        .column(Column::exact(size_width))
-        .column(Column::exact(modified_width));
-    table.reset();
+        .column(Column::initial(type_width).at_least(38.0).clip(true))
+        .column(Column::initial(name_width).at_least(140.0).clip(true))
+        .column(Column::initial(size_width).at_least(72.0).clip(true))
+        .column(Column::initial(modified_width).at_least(108.0).clip(true));
     table
         .header(24.0, |mut header| {
             header.col(|ui| table_header_label(ui, "Type"));
@@ -1196,17 +1195,17 @@ fn render_transfer_table(
                 .max(180.0);
 
             TableBuilder::new(ui)
-                .id_salt("file_transfer_table")
+                .id_salt("file_transfer_table_resizable")
                 .striped(true)
-                .resizable(false)
+                .resizable(true)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(id_width))
-                .column(Column::exact(direction_width))
-                .column(Column::exact(name_width))
-                .column(Column::exact(progress_width))
-                .column(Column::exact(status_width))
-                .column(Column::exact(message_width))
+                .column(Column::initial(id_width).at_least(48.0).clip(true))
+                .column(Column::initial(direction_width).at_least(76.0).clip(true))
+                .column(Column::initial(name_width).at_least(160.0).clip(true))
+                .column(Column::initial(progress_width).at_least(110.0).clip(true))
+                .column(Column::initial(status_width).at_least(92.0).clip(true))
+                .column(Column::initial(message_width).at_least(120.0).clip(true))
                 .header(24.0, |mut header| {
                     header.col(|ui| table_header_label(ui, "ID"));
                     header.col(|ui| table_header_label(ui, "Direction"));
