@@ -23,6 +23,8 @@ Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`, an
 
 ![Admin overview](docs/screenshots/admin-overview.png)
 
+![Client map](docs/screenshots/client-map.png)
+
 ![Client overview](docs/screenshots/client-overview.png)
 
 ## Quick Start
