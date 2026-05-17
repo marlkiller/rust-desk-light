@@ -62,6 +62,10 @@ const MAX_CLIENT_ONLINE_TOASTS: usize = 4;
 const AUDIO_UDP_REGISTER_INTERVAL_MS: u64 = 250;
 const AUDIO_UDP_RECV_TIMEOUT_MS: u64 = 20;
 const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
+const PACKAGE_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
+const PACKAGE_REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+const PACKAGE_LICENSE: &str = env!("CARGO_PKG_LICENSE");
+const FALLBACK_REPOSITORY: &str = "https://github.com/marlkiller/rust-desk-light";
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
@@ -374,6 +378,7 @@ struct AdminApp {
     auth_token_prompt_open: bool,
     auth_token_input: String,
     auth_token_error: String,
+    about_open: bool,
 }
 
 #[derive(Clone)]
@@ -621,6 +626,71 @@ fn overview_metric(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
         });
 }
 
+fn about_row(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
+    let value = value.into();
+    ui.horizontal(|ui| {
+        ui.set_min_height(22.0);
+        ui.add_sized(
+            [84.0, 18.0],
+            egui::Label::new(egui::RichText::new(label).size(12.0).color(COLOR_MUTED)),
+        );
+        ui.add_sized(
+            [ui.available_width(), 18.0],
+            egui::Label::new(
+                egui::RichText::new(value.clone())
+                    .size(12.0)
+                    .color(COLOR_TEXT),
+            )
+            .selectable(true),
+        )
+        .on_hover_text(value);
+    });
+}
+
+fn info_icon_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let icon_color = if response.hovered() || selected {
+            COLOR_TEXT
+        } else {
+            COLOR_MUTED
+        };
+        let bg_color = if selected {
+            egui::Color32::from_rgb(226, 235, 247)
+        } else if response.hovered() {
+            egui::Color32::from_rgb(243, 246, 250)
+        } else {
+            egui::Color32::TRANSPARENT
+        };
+        if bg_color != egui::Color32::TRANSPARENT {
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(6), bg_color);
+        }
+
+        let center = rect.center();
+        ui.painter()
+            .circle_stroke(center, 8.0, egui::Stroke::new(1.5, icon_color));
+        ui.painter()
+            .circle_filled(egui::pos2(center.x, center.y - 4.2), 1.25, icon_color);
+        ui.painter().line_segment(
+            [
+                egui::pos2(center.x, center.y - 0.8),
+                egui::pos2(center.x, center.y + 5.0),
+            ],
+            egui::Stroke::new(1.6, icon_color),
+        );
+    }
+    response.on_hover_text("About")
+}
+
+fn package_repository() -> &'static str {
+    if PACKAGE_REPOSITORY.trim().is_empty() {
+        FALLBACK_REPOSITORY
+    } else {
+        PACKAGE_REPOSITORY
+    }
+}
+
 fn client_location_label(client: &ClientInfo) -> String {
     client
         .location
@@ -754,6 +824,7 @@ impl AdminApp {
             auth_token_prompt_open,
             auth_token_input: initial_auth_token,
             auth_token_error: String::new(),
+            about_open: false,
         }
     }
 
@@ -1048,6 +1119,43 @@ impl AdminApp {
                     }
                 }
             });
+    }
+
+    fn render_about_window(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+
+        let mut open = self.about_open;
+        let mut close_requested = false;
+        egui::Window::new("About")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("rust-desk-light admin")
+                        .size(18.0)
+                        .color(COLOR_TEXT)
+                        .strong(),
+                );
+                ui.add_space(6.0);
+                about_row(ui, "Version", rdl_version::display_version());
+                about_row(ui, "Author", PACKAGE_AUTHORS);
+                about_row(ui, "Repository", package_repository());
+                about_row(ui, "License", PACKAGE_LICENSE);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Copy repository").clicked() {
+                        ui.ctx().copy_text(package_repository().to_string());
+                    }
+                    if ui.button("Close").clicked() {
+                        close_requested = true;
+                    }
+                });
+            });
+        self.about_open = open && !close_requested;
     }
 
     fn handle_pending_audio_frame(&mut self, client_id: &str, frame: PendingAudioFrame) {
@@ -2121,7 +2229,7 @@ impl AdminApp {
         });
     }
 
-    fn render_status_bar(&self, ui: &mut egui::Ui) {
+    fn render_status_bar(&mut self, ui: &mut egui::Ui) {
         let (status_text, notice, color) = if self.connected {
             ("Online", "Connected to service", COLOR_GOOD)
         } else {
@@ -2154,6 +2262,11 @@ impl AdminApp {
                         .size(12.0)
                         .color(COLOR_MUTED),
                     );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if info_icon_button(ui, self.about_open).clicked() {
+                            self.about_open = true;
+                        }
+                    });
                 });
             });
     }
@@ -3015,6 +3128,7 @@ impl eframe::App for AdminApp {
         self.render_session_command_windows(ui.ctx());
         self.render_execute_windows(ui.ctx());
         self.render_auth_token_prompt(ui.ctx());
+        self.render_about_window(ui.ctx());
         if let Some(log_line) =
             self.client_builder
                 .render(ui.ctx(), &mut self.client_builder_open, &self.config)
