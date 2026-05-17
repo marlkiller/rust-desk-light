@@ -3,7 +3,6 @@ mod world_map_data;
 use super::{ui, ClientRow};
 use crate::windowing;
 use eframe::egui;
-use rdl_protocol::ClientInfo;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -74,30 +73,6 @@ impl ClientMapWindow {
             *selected_client_id = Some(client_id);
         }
     }
-}
-
-pub(super) fn client_location_label(client: &ClientInfo) -> String {
-    client
-        .location
-        .as_ref()
-        .map(|location| {
-            if location.accuracy_meters >= 1_000 {
-                format!(
-                    "{} ({}, ~{} km)",
-                    location.label,
-                    location.source,
-                    location.accuracy_meters / 1_000
-                )
-            } else if location.accuracy_meters > 0 {
-                format!(
-                    "{} ({}, ~{} m)",
-                    location.label, location.source, location.accuracy_meters
-                )
-            } else {
-                format!("{} ({})", location.label, location.source)
-            }
-        })
-        .unwrap_or_else(|| "-".to_string())
 }
 
 struct MapCluster {

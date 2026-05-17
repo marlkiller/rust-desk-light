@@ -7,7 +7,7 @@ mod payload;
 mod ui;
 
 use self::{
-    client_map::{client_location_label, ClientMapWindow},
+    client_map::ClientMapWindow,
     command_result::{
         command_status_notice, command_title, command_window_identity_title, detail_status,
         kill_target_process_succeeded, performance_auto_refresh_due,
@@ -24,9 +24,9 @@ use self::{
     payload::{payload_field, video_stream_payload},
     ui::{
         activity_context_menu, apply_admin_theme, cell_label, centered_cell, compact_id,
-        connection_status_pill, empty_state, last_seen_label, metric, panel, prune_activity_logs,
-        section_title, table_header, timestamped_log, COLOR_BAD, COLOR_BG, COLOR_GOOD, COLOR_MUTED,
-        COLOR_TEXT, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        connection_status_pill, empty_state, panel, prune_activity_logs, section_title,
+        table_header, timestamped_log, COLOR_BAD, COLOR_BG, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT,
+        COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
     },
 };
 use crate::{
@@ -110,7 +110,7 @@ fn run_gui(config: Config) -> eframe::Result {
 
     let viewport = egui::ViewportBuilder::default()
         .with_inner_size([1180.0, 740.0])
-        .with_min_inner_size([980.0, 620.0]);
+        .with_min_inner_size([780.0, 520.0]);
     let viewport = match rust_desk_light_assets::app_window_icon() {
         Some(icon) => viewport.with_icon(icon),
         None => viewport,
@@ -541,11 +541,27 @@ fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
         ClientStatus::Stale => ("Stale", COLOR_WARN),
         ClientStatus::Offline => ("Offline", COLOR_BAD),
     };
-    ui.add(
-        egui::Label::new(egui::RichText::new(text).size(12.0).color(color).strong())
-            .selectable(false)
-            .sense(egui::Sense::hover()),
-    );
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 3.5, color);
+        ui.add(
+            egui::Label::new(egui::RichText::new(text).size(12.0).color(color).strong())
+                .selectable(false)
+                .sense(egui::Sense::hover()),
+        );
+    });
+}
+
+fn overview_metric(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).size(12.0).color(COLOR_MUTED));
+        ui.label(
+            egui::RichText::new(value.into())
+                .size(13.0)
+                .color(COLOR_TEXT)
+                .strong(),
+        );
+    });
 }
 
 impl AdminApp {
@@ -1829,16 +1845,11 @@ impl AdminApp {
     fn render_menu_bar(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
             ui.horizontal(|ui| {
-                section_title(ui, "Menu");
-                ui.separator();
-                ui.menu_button("Global", |ui| {
-                    if ui.button("Client Map").clicked() {
-                        self.client_map_window.open();
-                        ui.close();
-                    }
-                });
-                ui.separator();
+                if ui.button("Client Map").clicked() {
+                    self.client_map_window.open();
+                }
                 if let Some(client_id) = self.selected_client_id.clone() {
+                    ui.separator();
                     let gui_available = self.client_gui_available(&client_id);
                     command_menu::render_context_menu(
                         ui,
@@ -1849,17 +1860,23 @@ impl AdminApp {
                         },
                     );
                 } else {
+                    ui.separator();
                     ui.label(
-                        egui::RichText::new("Select a client to enable command menus")
+                        egui::RichText::new("Select a client for actions")
+                            .size(12.0)
                             .color(COLOR_MUTED),
                     );
                 }
-                ui.menu_button("中文测试", |ui| {
-                    if ui.button("输出中文日志").clicked() {
-                        self.push_log("中文日志测试：菜单和日志应正常显示，不应乱码。");
-                        ui.close();
-                    }
-                });
+                #[cfg(debug_assertions)]
+                {
+                    ui.separator();
+                    ui.menu_button("Debug", |ui| {
+                        if ui.button("输出中文日志").clicked() {
+                            self.push_log("中文日志测试：菜单和日志应正常显示，不应乱码。");
+                            ui.close();
+                        }
+                    });
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     connection_status_pill(ui, self.connected);
                     ui.label(
@@ -1873,28 +1890,21 @@ impl AdminApp {
 
     fn render_overview(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
-            section_title(ui, "Overview");
-            ui.add_space(8.0);
-            ui.columns(4, |columns| {
-                metric(
-                    &mut columns[0],
-                    "Online clients",
-                    self.online_client_count().to_string(),
-                );
-                metric(
-                    &mut columns[1],
-                    "Known clients",
-                    self.clients.len().to_string(),
-                );
-                metric(
-                    &mut columns[2],
-                    "Selected",
-                    self.selected_client_id
-                        .as_deref()
-                        .unwrap_or("None")
-                        .to_string(),
-                );
-                metric(&mut columns[3], "Version", rdl_version::display_version());
+            ui.horizontal_wrapped(|ui| {
+                section_title(ui, "Overview");
+                ui.add_space(14.0);
+                overview_metric(ui, "Online", self.online_client_count().to_string());
+                ui.separator();
+                overview_metric(ui, "Known", self.clients.len().to_string());
+                ui.separator();
+                let selected = self
+                    .selected_client_id
+                    .as_deref()
+                    .map(compact_id)
+                    .unwrap_or_else(|| "None".to_string());
+                overview_metric(ui, "Selected", selected);
+                ui.separator();
+                overview_metric(ui, "Version", rdl_version::display_version());
             });
         });
     }
@@ -1911,7 +1921,7 @@ impl AdminApp {
                     );
                 });
             });
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             ui.scope(|ui| {
                 ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
                 ui.add_sized(
@@ -1921,7 +1931,7 @@ impl AdminApp {
                         .vertical_align(egui::Align::Center),
                 );
             });
-            ui.add_space(10.0);
+            ui.add_space(8.0);
 
             let clients = self.filtered_clients();
             if clients.is_empty() {
@@ -1930,112 +1940,77 @@ impl AdminApp {
             }
 
             let ctx = ui.ctx().clone();
-            egui::ScrollArea::horizontal()
-                .id_salt("admin_clients_horizontal_scroll")
-                .show(ui, |ui| {
-                    egui_extras::TableBuilder::new(ui)
-                        .id_salt("admin_clients_table")
-                        .striped(true)
-                        .sense(egui::Sense::click())
-                        .column(egui_extras::Column::exact(82.0))
-                        .column(egui_extras::Column::exact(180.0))
-                        .column(egui_extras::Column::exact(150.0))
-                        .column(egui_extras::Column::exact(170.0))
-                        .column(egui_extras::Column::exact(150.0))
-                        .column(egui_extras::Column::exact(120.0))
-                        .column(egui_extras::Column::exact(220.0))
-                        .column(egui_extras::Column::exact(180.0))
-                        .column(egui_extras::Column::exact(70.0))
-                        .column(egui_extras::Column::exact(130.0))
-                        .header(24.0, |mut header| {
-                            header.col(|ui| table_header(ui, "Status"));
-                            header.col(|ui| table_header(ui, "Client ID"));
-                            header.col(|ui| table_header(ui, "IP"));
-                            header.col(|ui| table_header(ui, "Fingerprint"));
-                            header.col(|ui| table_header(ui, "Host"));
-                            header.col(|ui| table_header(ui, "User"));
-                            header.col(|ui| table_header(ui, "OS Version"));
-                            header.col(|ui| table_header(ui, "Location"));
-                            header.col(|ui| table_header(ui, "GUI"));
-                            header.col(|ui| table_header(ui, "Last Heartbeat"));
-                        })
-                        .body(|body| {
-                            body.rows(28.0, clients.len(), |mut row| {
-                                let row_data = &clients[row.index()];
-                                let client = &row_data.info;
-                                let selected =
-                                    self.selected_client_id.as_deref() == Some(client.id.as_str());
-                                row.set_selected(selected);
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| client_status_text(ui, row_data.status))
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, compact_id(&client.id));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, &client.peer_addr);
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, compact_id(&client.fingerprint));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, &client.hostname);
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, &client.username);
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, &client.os);
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, client_location_label(client));
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(
-                                            ui,
-                                            if client.gui_available { "Yes" } else { "No" },
-                                        );
-                                    });
-                                });
-                                row.col(|ui| {
-                                    centered_cell(ui, |ui| {
-                                        cell_label(ui, last_seen_label(client.last_seen_epoch_ms));
-                                    });
-                                });
-                                let response = row.response();
-                                if response.hovered() {
-                                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                                if response.clicked() {
-                                    self.selected_client_id = Some(client.id.clone());
-                                }
-                                response.context_menu(|ui| {
-                                    command_menu::render_context_menu(
-                                        ui,
-                                        &client.id,
-                                        client.gui_available,
-                                        &mut |client_id, command| {
-                                            self.send_command(client_id, command);
-                                        },
-                                    );
-                                });
+            egui_extras::TableBuilder::new(ui)
+                .id_salt("admin_clients_table")
+                .striped(false)
+                .sense(egui::Sense::click())
+                .column(egui_extras::Column::exact(86.0))
+                .column(egui_extras::Column::remainder().at_least(140.0).clip(true))
+                .column(egui_extras::Column::remainder().at_least(120.0).clip(true))
+                .column(egui_extras::Column::remainder().at_least(120.0).clip(true))
+                .column(egui_extras::Column::exact(90.0).clip(true))
+                .column(egui_extras::Column::remainder().at_least(130.0).clip(true))
+                .header(24.0, |mut header| {
+                    header.col(|ui| table_header(ui, "Status"));
+                    header.col(|ui| table_header(ui, "Client ID"));
+                    header.col(|ui| table_header(ui, "IP"));
+                    header.col(|ui| table_header(ui, "Host"));
+                    header.col(|ui| table_header(ui, "User"));
+                    header.col(|ui| table_header(ui, "OS Version"));
+                })
+                .body(|body| {
+                    body.rows(30.0, clients.len(), |mut row| {
+                        let row_data = &clients[row.index()];
+                        let client = &row_data.info;
+                        let selected =
+                            self.selected_client_id.as_deref() == Some(client.id.as_str());
+                        row.set_selected(selected);
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| client_status_text(ui, row_data.status))
+                        });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, compact_id(&client.id));
                             });
                         });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, &client.peer_addr);
+                            });
+                        });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, &client.hostname);
+                            });
+                        });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, &client.username);
+                            });
+                        });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, &client.os);
+                            });
+                        });
+                        let response = row.response();
+                        if response.hovered() {
+                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if response.clicked() {
+                            self.selected_client_id = Some(client.id.clone());
+                        }
+                        response.context_menu(|ui| {
+                            command_menu::render_context_menu(
+                                ui,
+                                &client.id,
+                                client.gui_available,
+                                &mut |client_id, command| {
+                                    self.send_command(client_id, command);
+                                },
+                            );
+                        });
+                    });
                 });
         });
     }
@@ -2043,11 +2018,11 @@ impl AdminApp {
     fn render_activity(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
             section_title(ui, "Activity");
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             let output = egui::ScrollArea::vertical()
                 .id_salt("admin_activity_scroll_area")
                 .stick_to_bottom(true)
-                .max_height(180.0)
+                .max_height(120.0)
                 .show(ui, |ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.set_width(ui.available_width());
@@ -2604,17 +2579,24 @@ impl eframe::App for AdminApp {
         let changed = self.drain_events();
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
-        ui.add_space(18.0);
-        ui.vertical_centered_justified(|ui| {
-            ui.set_max_width(1120.0);
-            self.render_menu_bar(ui);
-            ui.add_space(12.0);
-            self.render_overview(ui);
-            ui.add_space(12.0);
-            self.render_clients(ui);
-            ui.add_space(12.0);
-            self.render_activity(ui);
-        });
+        let horizontal_margin = if ui.available_width() < 880.0 { 10 } else { 18 };
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::default()
+                    .inner_margin(egui::Margin::symmetric(horizontal_margin, 18))
+                    .show(ui, |ui| {
+                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                            self.render_menu_bar(ui);
+                            ui.add_space(12.0);
+                            self.render_overview(ui);
+                            ui.add_space(12.0);
+                            self.render_clients(ui);
+                            ui.add_space(12.0);
+                            self.render_activity(ui);
+                        });
+                    });
+            });
         self.render_command_windows(ui.ctx());
         self.render_file_manager_windows(ui.ctx());
         self.render_desktop_windows(ui.ctx());

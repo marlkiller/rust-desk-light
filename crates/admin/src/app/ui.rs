@@ -1,11 +1,11 @@
 use eframe::egui;
 use std::sync::Arc;
 
-pub(super) const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
+pub(super) const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(247, 249, 252);
 pub(super) const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-pub(super) const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
+pub(super) const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(228, 233, 241);
 pub(super) const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-pub(super) const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
+pub(super) const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(98, 111, 130);
 pub(super) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 99, 188);
 pub(super) const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
 pub(super) const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
@@ -18,15 +18,15 @@ pub(super) fn apply_admin_theme(ctx: &egui::Context) {
 
     let mut style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
     style.visuals = egui::Visuals::light();
     style.visuals.window_fill = COLOR_PANEL;
     style.visuals.panel_fill = COLOR_BG;
     style.visuals.widgets.noninteractive.fg_stroke.color = COLOR_TEXT;
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(238, 242, 247);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(226, 234, 244);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(216, 228, 242);
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(216, 232, 252);
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(243, 246, 250);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(235, 241, 248);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(226, 235, 247);
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(235, 244, 255);
     style.visuals.selection.stroke.color = COLOR_ACCENT;
     ctx.set_global_style(style);
 }
@@ -75,9 +75,11 @@ pub(super) fn panel(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui))
     egui::Frame::default()
         .fill(COLOR_PANEL)
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .corner_radius(8.0)
-        .inner_margin(14.0)
-        .show(ui, add_contents);
+        .corner_radius(6.0)
+        .inner_margin(12.0)
+        .show(ui, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), add_contents);
+        });
 }
 
 pub(super) fn section_title(ui: &mut egui::Ui, title: &str) {
@@ -106,11 +108,15 @@ pub(super) fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut eg
 }
 
 pub(super) fn cell_label(ui: &mut egui::Ui, text: impl Into<String>) {
-    ui.add(
-        egui::Label::new(egui::RichText::new(text).size(12.0))
+    let text = text.into();
+    let response = ui.add(
+        egui::Label::new(egui::RichText::new(text.clone()).size(12.0))
             .selectable(false)
             .sense(egui::Sense::hover()),
     );
+    if response.hovered() {
+        response.on_hover_text(text);
+    }
 }
 
 pub(super) fn connection_status_pill(ui: &mut egui::Ui, connected: bool) {
@@ -169,7 +175,7 @@ fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         .fill(color.gamma_multiply(0.10))
         .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.35)))
         .corner_radius(999.0)
-        .inner_margin(egui::Margin::symmetric(12, 6))
+        .inner_margin(egui::Margin::symmetric(10, 5))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).color(color).strong());
         });
@@ -181,48 +187,6 @@ pub(super) fn compact_id(value: &str) -> String {
     } else {
         value.to_string()
     }
-}
-
-pub(super) fn last_seen_label(last_seen_epoch_ms: u128) -> String {
-    if last_seen_epoch_ms == 0 {
-        return "Never".to_string();
-    }
-    format_epoch_utc(last_seen_epoch_ms / 1000)
-}
-
-fn format_epoch_utc(epoch_seconds: u128) -> String {
-    let seconds = epoch_seconds as i64;
-    let days = seconds.div_euclid(86_400);
-    let seconds_of_day = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
-}
-
-fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
-    let days = days_since_epoch + 719_468;
-    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
-    let day_of_era = days - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_param = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_param + 2) / 5 + 1;
-    let month = month_param + if month_param < 10 { 3 } else { -9 };
-    year += if month <= 2 { 1 } else { 0 };
-    (year, month, day)
-}
-
-pub(super) fn metric(ui: &mut egui::Ui, label: &str, value: String) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).color(COLOR_MUTED));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(value).color(COLOR_TEXT).strong());
-        });
-    });
 }
 
 pub(super) fn empty_state(ui: &mut egui::Ui) {
