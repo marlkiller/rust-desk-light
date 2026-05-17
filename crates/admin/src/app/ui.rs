@@ -129,15 +129,6 @@ pub(super) fn cell_label_with_hover(
     }
 }
 
-pub(super) fn connection_status_pill(ui: &mut egui::Ui, connected: bool) {
-    let (text, color) = if connected {
-        ("Online", COLOR_GOOD)
-    } else {
-        ("Reconnecting", COLOR_BAD)
-    };
-    status_badge(ui, text, color);
-}
-
 pub(super) fn timestamped_log(line: impl Into<String>) -> String {
     format!("[{}] {}", activity_time_label(), line.into())
 }
@@ -178,17 +169,6 @@ fn activity_time_label() -> String {
     let minute = (seconds_today % 3600) / 60;
     let second = seconds_today % 60;
     format!("{hour:02}:{minute:02}:{second:02}")
-}
-
-fn status_badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
-    egui::Frame::default()
-        .fill(color.gamma_multiply(0.10))
-        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.35)))
-        .corner_radius(999.0)
-        .inner_margin(egui::Margin::symmetric(10, 5))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).color(color).strong());
-        });
 }
 
 pub(super) fn compact_id(value: &str) -> String {

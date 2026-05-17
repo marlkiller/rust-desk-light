@@ -25,10 +25,10 @@ use self::{
     network::admin_network_loop,
     payload::{payload_field, video_stream_payload},
     ui::{
-        activity_context_menu, apply_admin_theme, cell_label, centered_cell,
-        connection_status_pill, empty_state, panel, prune_activity_logs, section_title,
-        table_header, timestamped_log, COLOR_BAD, COLOR_BG, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED,
-        COLOR_PANEL, COLOR_TEXT, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        activity_context_menu, apply_admin_theme, cell_label, centered_cell, empty_state, panel,
+        prune_activity_logs, section_title, table_header, timestamped_log, COLOR_BAD, COLOR_BG,
+        COLOR_BORDER, COLOR_GOOD, COLOR_MUTED, COLOR_PANEL, COLOR_TEXT, COLOR_WARN,
+        TOOLBAR_CONTROL_HEIGHT,
     },
 };
 use crate::{
@@ -2117,15 +2117,45 @@ impl AdminApp {
                         }
                     });
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    connection_status_pill(ui, self.connected);
+            });
+        });
+    }
+
+    fn render_status_bar(&self, ui: &mut egui::Ui) {
+        let (status_text, notice, color) = if self.connected {
+            ("Online", "Connected to service", COLOR_GOOD)
+        } else {
+            ("Reconnecting", "Waiting for service connection", COLOR_BAD)
+        };
+        egui::Frame::default()
+            .fill(COLOR_PANEL)
+            .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .corner_radius(egui::CornerRadius::same(6))
+            .show(ui, |ui| {
+                ui.set_min_height(26.0);
+                ui.horizontal(|ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 4.0, color);
                     ui.label(
-                        egui::RichText::new(format!("{}:{}", self.config.ip, self.config.port))
-                            .color(COLOR_MUTED),
+                        egui::RichText::new(status_text)
+                            .size(12.0)
+                            .color(COLOR_TEXT)
+                            .strong(),
+                    );
+                    ui.label(egui::RichText::new(notice).size(12.0).color(COLOR_MUTED));
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Service {}:{}",
+                            self.config.ip, self.config.port
+                        ))
+                        .size(12.0)
+                        .color(COLOR_MUTED),
                     );
                 });
             });
-        });
     }
 
     fn render_overview(&mut self, ui: &mut egui::Ui) {
@@ -2939,22 +2969,39 @@ impl eframe::App for AdminApp {
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, COLOR_BG);
         let horizontal_margin = if ui.available_width() < 880.0 { 10 } else { 18 };
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                egui::Frame::default()
-                    .inner_margin(egui::Margin::symmetric(horizontal_margin, 18))
+        let status_bar_height = 44.0;
+        let content_height = (ui.available_height() - status_bar_height - 8.0).max(0.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), content_height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
-                            self.render_menu_bar(ui);
-                            ui.add_space(12.0);
-                            self.render_overview(ui);
-                            ui.add_space(12.0);
-                            self.render_clients(ui);
-                            ui.add_space(12.0);
-                            self.render_activity(ui);
-                        });
+                        egui::Frame::default()
+                            .inner_margin(egui::Margin::symmetric(horizontal_margin, 18))
+                            .show(ui, |ui| {
+                                ui.with_layout(
+                                    egui::Layout::top_down_justified(egui::Align::Min),
+                                    |ui| {
+                                        self.render_menu_bar(ui);
+                                        ui.add_space(12.0);
+                                        self.render_overview(ui);
+                                        ui.add_space(12.0);
+                                        self.render_clients(ui);
+                                        ui.add_space(12.0);
+                                        self.render_activity(ui);
+                                    },
+                                );
+                            });
                     });
+            },
+        );
+        ui.add_space(8.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin::symmetric(horizontal_margin, 0))
+            .show(ui, |ui| {
+                self.render_status_bar(ui);
             });
         self.render_command_windows(ui.ctx());
         self.render_file_manager_windows(ui.ctx());
