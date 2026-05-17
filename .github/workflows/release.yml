@@ -111,6 +111,7 @@ jobs:
           cp target/cli-release/release/rdl-client-cli "dist/$package/"
           cp target/release/rdl-admin-gui "dist/$package/"
           cp README.md "dist/$package/"
+          cp -R config "dist/$package/"
           chmod +x "dist/$package"/rdl-*
           tar -czf "dist/$package.tar.gz" -C "dist/$package" .
 
@@ -125,6 +126,7 @@ jobs:
           Copy-Item "target\cli-release\release\rdl-client-cli.exe" "dist\$package\"
           Copy-Item "target\release\rdl-admin-gui.exe" "dist\$package\"
           Copy-Item "README.md" "dist\$package\"
+          Copy-Item "config" "dist\$package\" -Recurse
           Compress-Archive -Path "dist\$package\*" -DestinationPath "dist\$package.zip"
 
       - name: Upload build artifact
@@ -178,6 +180,7 @@ jobs:
             ├── rdl-client-gui      # GUI client application
             ├── rdl-client-cli      # Terminal-only client application
             ├── rdl-admin-gui       # Administration GUI utility
+            ├── config/             # Server, client, and admin config templates
             └── README.md           # Documentation
             ```
 
@@ -186,6 +189,7 @@ jobs:
             - `rdl-client-gui` - GUI client application (executable binary)
             - `rdl-client-cli` - Terminal-only client application built without GUI dependencies
             - `rdl-admin-gui` - Admin GUI tool (executable binary)
+            - `config/*.template.toml` - Example configuration files for server, client, and admin
 
             All binaries are native Rust release builds optimized for their respective platforms.
 
