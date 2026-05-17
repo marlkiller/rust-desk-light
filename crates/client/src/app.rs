@@ -51,8 +51,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     if gui_available() {
         #[cfg(feature = "gui")]
         {
-            run_gui(config)?;
-            return Ok(());
+            match run_gui(config.clone()) {
+                Ok(()) => return Ok(()),
+                Err(error) => eprintln!("GUI startup failed: {error}; falling back to terminal"),
+            }
         }
     }
     run_terminal(config)?;
@@ -228,6 +230,7 @@ fn client_connection_once(
         "",
         Message::Hello {
             role: Role::Client,
+            auth_token: config.auth_token.clone(),
             id: identity.id.clone(),
             fingerprint: identity.fingerprint.clone(),
             hostname: hostname(),
@@ -923,6 +926,10 @@ fn client_connection_once(
                 },
             },
             Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
+            Message::Error { detail } if detail.starts_with("auth failed") => {
+                event_sink.send(ClientEvent::Log(format!("server: {detail}")));
+                break;
+            }
             other => {
                 event_sink.send(ClientEvent::Log(format!("server: {other:?}")));
             }

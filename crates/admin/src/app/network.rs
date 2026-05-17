@@ -16,16 +16,25 @@ const MAX_INPUTS_PER_NETWORK_POLL: usize = 64;
 const MAX_MESSAGES_PER_NETWORK_POLL: usize = 512;
 
 pub(super) fn admin_network_loop(
-    config: Config,
+    mut config: Config,
     input_rx: Receiver<AdminInput>,
     event_sink: AdminEventSink,
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
 ) -> io::Result<()> {
     let mut delay = INITIAL_RECONNECT_DELAY_MS;
     loop {
+        if config.auth_token.trim().is_empty() {
+            event_sink.send(AdminEvent::AuthTokenRequired);
+            event_sink.send(AdminEvent::Disconnected);
+            thread::sleep(Duration::from_millis(delay));
+            if let Ok(reloaded) = config.reload() {
+                config = reloaded;
+            }
+            delay = (delay * 2).min(MAX_RECONNECT_DELAY_MS);
+            continue;
+        }
         match admin_connection_once(&config, &input_rx, &event_sink, &ignored_file_transfers) {
-            Ok(AdminConnectionExit::Quit) => return Ok(()),
-            Ok(AdminConnectionExit::Disconnected) => delay = INITIAL_RECONNECT_DELAY_MS,
+            Ok(()) => delay = INITIAL_RECONNECT_DELAY_MS,
             Err(error) => {
                 event_sink.send(AdminEvent::Log(format!(
                     "connect failed: {error}; retrying in {delay}ms"
@@ -34,13 +43,11 @@ pub(super) fn admin_network_loop(
         }
         event_sink.send(AdminEvent::Disconnected);
         thread::sleep(Duration::from_millis(delay));
+        if let Ok(reloaded) = config.reload() {
+            config = reloaded;
+        }
         delay = (delay * 2).min(MAX_RECONNECT_DELAY_MS);
     }
-}
-
-enum AdminConnectionExit {
-    Disconnected,
-    Quit,
 }
 
 fn admin_connection_once(
@@ -48,7 +55,7 @@ fn admin_connection_once(
     input_rx: &Receiver<AdminInput>,
     event_sink: &AdminEventSink,
     ignored_file_transfers: &Arc<Mutex<HashSet<(String, u64)>>>,
-) -> io::Result<AdminConnectionExit> {
+) -> io::Result<()> {
     let identity = load_admin_identity();
     let mut stream = TcpStream::connect(format!("{}:{}", config.ip, config.port))?;
     stream.set_nodelay(true)?;
@@ -60,6 +67,7 @@ fn admin_connection_once(
         "",
         Message::Hello {
             role: Role::Admin,
+            auth_token: config.auth_token.clone(),
             id: identity.id,
             fingerprint: identity.fingerprint,
             hostname: hostname(),
@@ -86,12 +94,6 @@ fn admin_connection_once(
             };
             processed_inputs += 1;
             let result = match input {
-                AdminInput::List => send(
-                    &mut stream,
-                    &mut next_message_id,
-                    &session_token,
-                    Message::ListClients,
-                ),
                 AdminInput::Command {
                     target_id,
                     command,
@@ -152,15 +154,11 @@ fn admin_connection_once(
                 AdminInput::Reconnect { reason } => {
                     debug_log!("debug event=admin_reconnect_request reason={reason}");
                     let _ = stream.shutdown(Shutdown::Both);
-                    return Ok(AdminConnectionExit::Disconnected);
-                }
-                AdminInput::Quit => {
-                    let _ = stream.shutdown(Shutdown::Both);
-                    return Ok(AdminConnectionExit::Quit);
+                    return Ok(());
                 }
             };
             if result.is_err() {
-                return Ok(AdminConnectionExit::Disconnected);
+                return Ok(());
             }
         }
 
@@ -176,7 +174,7 @@ fn admin_connection_once(
                 }
                 Err(error) => {
                     event_sink.send(AdminEvent::Log(format!("network read failed: {error}")));
-                    return Ok(AdminConnectionExit::Disconnected);
+                    return Ok(());
                 }
             };
             processed_messages += 1;
@@ -294,6 +292,10 @@ fn wait_for_session(stream: &mut TcpStream, event_sink: &AdminEventSink) -> io::
 
         match message {
             Message::Session { token } => return Ok(token),
+            Message::Error { detail } if detail.starts_with("auth failed") => {
+                event_sink.send(AdminEvent::AuthTokenRejected(detail.clone()));
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, detail));
+            }
             other => {
                 event_sink.send(AdminEvent::Log(format!("server before session: {other:?}")));
             }

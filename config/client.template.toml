@@ -4,3 +4,6 @@
 [server]
 ip = "127.0.0.1"
 port = 5169
+
+[auth]
+# token = "paste-server-token-here"

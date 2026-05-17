@@ -73,13 +73,31 @@ Debug binaries go to `target/debug`; release binaries go to `target/release`. Wi
 
 ## Configuration
 
-Config files are created automatically on first run. Startup arguments override config files.
+Config files are created automatically on first run:
+`~/.config/rust-desk-light/` on macOS/Linux, `%APPDATA%\rust-desk-light\` on
+Windows. The files in `config/` are templates.
 
 ```sh
-rdl-server-cli --config config/server.toml
-rdl-client-gui --config config/client.toml
-rdl-client-cli --config config/client.toml
-rdl-admin-gui --config config/admin.toml
+mkdir -p ~/.config/rust-desk-light
+cp config/server.template.toml ~/.config/rust-desk-light/server.toml
+cp config/client.template.toml ~/.config/rust-desk-light/client.toml
+cp config/admin.template.toml ~/.config/rust-desk-light/admin.toml
+```
+
+Use `--config PATH` for repo-local or custom config files. Startup arguments
+override config files.
+
+Auth uses one shared token across server, admin, and optionally clients. The
+admin must present the token before it can register. If `rdl-server-cli` starts
+without `--auth-token` or `RDL_AUTH_TOKEN`, it generates a token and prints it
+once at startup. Clients only need the token when the server is started with
+`--require-client-auth` or `[auth].require_client_auth = true`.
+
+```sh
+rdl-server-cli --auth-token "change-me"
+rdl-server-cli --require-client-auth --auth-token "change-me"
+rdl-admin-gui --auth-token "change-me"
+rdl-client-gui --auth-token "change-me"
 ```
 
 Useful environment variables:
@@ -88,7 +106,7 @@ Useful environment variables:
 | --- | --- |
 | `RDL_IP` | Default IP used by helper scripts. |
 | `RDL_PORT` | Default port used by helper scripts. |
-| `RDL_FORCE_TERMINAL` | Forces GUI binaries into terminal mode. |
+| `RDL_AUTH_TOKEN` | Shared registration token for server/admin/client. |
 | `RDL_GEOIP_DB` | Path to a MaxMind GeoLite2/GeoIP2 City database. |
 | `RDL_BUILD_VERSION` | Overrides the displayed build version. |
 
@@ -123,7 +141,10 @@ flowchart LR
     Server <-->|"managed connections"| More
 ```
 
-The server is intentionally thin. It authenticates registered peers with server-issued session tokens, keeps a presence table, and routes typed messages between admins and clients. Endpoint actions run on clients, not on the relay.
+The server is intentionally thin. It validates the shared registration token,
+issues per-connection session tokens, keeps a presence table, and routes typed
+messages between admins and clients. Endpoint actions run on clients, not on the
+relay.
 
 ## Transport
 
@@ -148,20 +169,6 @@ The admin map uses a MaxMind GeoLite2/GeoIP2 City database when configured:
 ```
 
 The startup scripts also auto-detect `third_party/geoip/GeoLite2-City.mmdb`. See [GeoLite2 City setup](docs/geolite2-city-setup.md).
-
-## Smoke Test
-
-The smoke flow uses terminal mode so shells and CI can drive the protocol:
-
-```sh
-./scripts/smoke-test.sh
-```
-
-Windows:
-
-```powershell
-.\scripts\smoke-test.bat
-```
 
 ## Release Builds
 

@@ -7,6 +7,7 @@ use std::process::Command;
 pub(crate) struct Config {
     pub(crate) ip: String,
     pub(crate) port: u16,
+    pub(crate) auth_token: String,
     pub(crate) config_path: PathBuf,
     overrides: EndpointOverrides,
 }
@@ -34,6 +35,7 @@ impl Config {
         Ok(Self {
             ip: loaded.endpoint.ip,
             port: loaded.endpoint.port,
+            auth_token: loaded.auth_token.unwrap_or_default(),
             config_path: loaded.config_path,
             overrides,
         })
@@ -43,16 +45,18 @@ impl Config {
     pub(crate) fn reload(&self) -> Result<Self, rdl_config::ConfigError> {
         Self::load(self.overrides.clone())
     }
+
+    pub(crate) fn save_auth_token(&mut self, token: &str) -> Result<(), rdl_config::ConfigError> {
+        rdl_config::write_auth_token_config(ConfigKind::Admin, &self.config_path, token)?;
+        self.auth_token = token.to_string();
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct LocalIdentity {
     pub(crate) id: String,
     pub(crate) fingerprint: String,
-}
-
-pub(crate) fn terminal_mode() -> bool {
-    std::env::var_os("RDL_FORCE_TERMINAL").is_some()
 }
 
 pub(crate) fn hostname() -> String {

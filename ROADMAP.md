@@ -15,7 +15,7 @@ This project is a lightweight Rust remote assistance tool with release binaries 
 - Keep the protocol consistent before adding features.
 - Keep the server simple: register peers, track presence, route messages, and log events.
 - Keep GUI lightweight with `egui/eframe`.
-- Keep headless/terminal mode working for smoke checks and recovery.
+- Keep headless/terminal mode working for recovery and scripted manual checks.
 - Add risky capabilities gradually, with explicit user-visible behavior.
 - Keep UDP scoped to small low-latency media packets unless a larger transport has retransmission, FEC, or codec-level recovery.
 - Prefer small, verifiable milestones over a large professional remote-desktop stack.
@@ -55,7 +55,7 @@ This is the next important milestone. All later features depend on this being st
 - [x] Keep payloads typed in `rdl_protocol`; do not let server/client/admin invent separate encodings.
 - [x] Keep strings as length-prefixed UTF-8 inside the binary payload.
 - [x] Keep command enum values stable and documented.
-- [x] Manually verify binary encode/decode with the smoke flow.
+- [x] Manually verify binary encode/decode with terminal flows.
 - [x] Add protocol errors as first-class messages.
 - [x] Add heartbeat messages: `ping`, `pong`, and last-seen timestamps.
 - [x] Add basic reconnect with backoff for client and admin.
@@ -105,7 +105,7 @@ Reference direction:
 - [x] Add a simple command result panel.
 - [x] Allow command result text selection/copy for plain text outputs.
 - [x] Disable problematic macOS child-window maximize controls and keep child windows out of automatic tabbing.
-- [x] Preserve terminal mode for smoke checks.
+- [x] Preserve terminal mode for recovery and scripted manual checks.
 
 ## Milestone 4: Basic Client Capabilities
 

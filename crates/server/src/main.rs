@@ -29,6 +29,7 @@ enum ServerEvent {
     Registered {
         peer_id: usize,
         role: Role,
+        auth_token: String,
         identity: String,
         fingerprint: String,
         info: Option<ClientInfo>,
@@ -87,6 +88,13 @@ struct Peer {
 }
 
 type FileTransferKey = (String, u64, &'static str);
+
+#[derive(Clone)]
+struct AuthConfig {
+    token: String,
+    generated: bool,
+    require_client_auth: bool,
+}
 
 struct GeoIpLocator {
     reader: Option<maxminddb::Reader<Vec<u8>>>,
@@ -219,14 +227,23 @@ fn main() -> io::Result<()> {
     let (events_tx, events_rx) = mpsc::channel();
 
     println!(
-        "rust-desk-light server listening on {bind_addr} version={} config={} geoip={}",
+        "rust-desk-light server listening on {bind_addr} version={} config={} geoip={} client_auth={}",
         rdl_version::display_version(),
         config.config_path.display(),
-        geoip.status_label()
+        geoip.status_label(),
+        if config.auth.require_client_auth {
+            "required"
+        } else {
+            "optional"
+        }
     );
+    if config.auth.generated {
+        println!("generated auth token: {}", config.auth.token);
+        println!("use this token in rdl-admin-gui; clients need it only when client_auth=required");
+    }
     start_audio_udp_relay(bind_addr.clone());
     thread::spawn(move || accept_loop(listener, events_tx));
-    event_loop(events_rx, geoip);
+    event_loop(events_rx, geoip, config.auth);
     Ok(())
 }
 
@@ -365,6 +382,7 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
         match envelope.message {
             Message::Hello {
                 role,
+                auth_token,
                 id,
                 fingerprint,
                 hostname,
@@ -391,6 +409,7 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
                 let _ = events_tx.send(ServerEvent::Registered {
                     peer_id,
                     role,
+                    auth_token,
                     identity: id,
                     fingerprint,
                     info,
@@ -503,7 +522,7 @@ fn server_message_is_bulk(message: &Message) -> bool {
     )
 }
 
-fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator) {
+fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthConfig) {
     let mut peers: HashMap<usize, Peer> = HashMap::new();
     let mut cancelled_file_transfers = HashSet::<FileTransferKey>::new();
 
@@ -543,10 +562,24 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator) {
             ServerEvent::Registered {
                 peer_id,
                 role,
+                auth_token,
                 identity,
                 fingerprint,
                 info,
             } => {
+                if !registration_auth_valid(&role, &auth_token, &auth) {
+                    println!(
+                        "audit event=auth_reject peer=#{peer_id} role={} identity={}",
+                        role.as_str(),
+                        identity
+                    );
+                    if let Some(peer) = peers.get(&peer_id) {
+                        let _ = peer.sender.send(Message::Error {
+                            detail: "auth failed: invalid or missing token".to_string(),
+                        });
+                    }
+                    continue;
+                }
                 let token = new_session_token(peer_id, &identity, &fingerprint);
                 if let Some(peer) = peers.get_mut(&peer_id) {
                     peer.role = Some(role.clone());
@@ -943,6 +976,24 @@ fn session_token_valid(peer_id: usize, token: &str, peers: &HashMap<usize, Peer>
         .and_then(|peer| peer.session_token.as_deref())
         .map(|expected| !expected.is_empty() && expected == token)
         .unwrap_or(false)
+}
+
+fn registration_auth_valid(role: &Role, auth_token: &str, auth: &AuthConfig) -> bool {
+    let required = *role == Role::Admin || auth.require_client_auth;
+    if !required {
+        return true;
+    }
+    constant_time_eq(auth_token.as_bytes(), auth.token.as_bytes())
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut diff = left.len() ^ right.len();
+    for index in 0..left.len().max(right.len()) {
+        let left_byte = left.get(index).copied().unwrap_or(0);
+        let right_byte = right.get(index).copied().unwrap_or(0);
+        diff |= usize::from(left_byte ^ right_byte);
+    }
+    diff == 0
 }
 
 fn peer_identity(peer_id: usize, peers: &HashMap<usize, Peer>) -> String {
@@ -1372,6 +1423,7 @@ struct Config {
     port: u16,
     config_path: PathBuf,
     geoip_db_path: Option<PathBuf>,
+    auth: AuthConfig,
 }
 
 impl Config {
@@ -1390,11 +1442,22 @@ impl Config {
         let loaded =
             rdl_config::load_endpoint_config(rdl_config::ConfigKind::Server, &parsed.overrides)?;
         let geoip_db_path = parse_geoip_db_path(&args)?;
+        let (auth_token, generated) = loaded
+            .auth_token
+            .clone()
+            .filter(|token| !token.trim().is_empty())
+            .map(|token| (token, false))
+            .unwrap_or_else(|| (generate_auth_token(), true));
         Ok(Self {
             ip: loaded.endpoint.ip,
             port: loaded.endpoint.port,
             config_path: loaded.config_path,
             geoip_db_path,
+            auth: AuthConfig {
+                token: auth_token,
+                generated,
+                require_client_auth: loaded.require_client_auth,
+            },
         })
     }
 }
@@ -1420,9 +1483,32 @@ fn parse_geoip_db_path(args: &[String]) -> Result<Option<PathBuf>, rdl_config::C
     Ok(value)
 }
 
+fn generate_auth_token() -> String {
+    let mut bytes = [0_u8; 24];
+    if getrandom::fill(&mut bytes).is_err() {
+        let fallback = format!(
+            "{}|{}|{}",
+            now_epoch_ms(),
+            std::process::id(),
+            thread::current().name().unwrap_or("server")
+        );
+        let first = simple_hash(&fallback).to_be_bytes();
+        let second = simple_hash(&format!("{fallback}|fallback")).to_be_bytes();
+        let third = simple_hash(&format!("{fallback}|token")).to_be_bytes();
+        bytes[..8].copy_from_slice(&first);
+        bytes[8..16].copy_from_slice(&second);
+        bytes[16..24].copy_from_slice(&third);
+    }
+    let mut token = String::from("rdl-");
+    for byte in bytes {
+        token.push_str(&format!("{byte:02x}"));
+    }
+    token
+}
+
 fn server_help_text() -> String {
     format!(
-        "{}\n\nGeoIP:\n  --geoip-db PATH     Optional MaxMind GeoLite2/GeoIP2 City .mmdb used to place clients on the admin map.\n  RDL_GEOIP_DB=PATH   Environment variable fallback for --geoip-db.",
+        "{}\n\nAuth:\n  --auth-token TOKEN           Shared token required for admin registration.\n  --require-client-auth        Also require the shared token for clients.\n  --no-require-client-auth     Allow clients without the token (default).\n  RDL_AUTH_TOKEN=TOKEN         Environment variable fallback for --auth-token.\n\nGeoIP:\n  --geoip-db PATH              Optional MaxMind GeoLite2/GeoIP2 City .mmdb used to place clients on the admin map.\n  RDL_GEOIP_DB=PATH            Environment variable fallback for --geoip-db.",
         rdl_config::help_text("rdl-server-cli", rdl_config::ConfigKind::Server)
     )
 }

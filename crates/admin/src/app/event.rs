@@ -6,7 +6,6 @@ use rdl_protocol::{
 use std::sync::{mpsc::Sender, Arc, Mutex};
 
 pub(super) enum AdminInput {
-    List,
     Command {
         target_id: String,
         command: CommandKind,
@@ -34,12 +33,13 @@ pub(super) enum AdminInput {
     Reconnect {
         reason: String,
     },
-    Quit,
 }
 
 pub(super) enum AdminEvent {
     Connected,
     Disconnected,
+    AuthTokenRequired,
+    AuthTokenRejected(String),
     Clients(Vec<ClientInfo>),
     Ack {
         client_id: String,

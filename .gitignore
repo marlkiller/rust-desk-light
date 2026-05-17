@@ -1,4 +1,7 @@
 /target/
 *.log
 .DS_Store
-
+/config/admin.toml
+/config/client.toml
+/config/server.toml
+/config/*.local.toml

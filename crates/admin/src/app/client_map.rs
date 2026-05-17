@@ -11,6 +11,7 @@ use std::sync::{
 
 pub(super) struct ClientMapWindow {
     open: bool,
+    os_filter: String,
     close_requested: Arc<AtomicBool>,
 }
 
@@ -18,6 +19,7 @@ impl ClientMapWindow {
     pub(super) fn new() -> Self {
         Self {
             open: false,
+            os_filter: String::new(),
             close_requested: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -45,7 +47,6 @@ impl ClientMapWindow {
         let selected_sink = Arc::new(Mutex::new(None::<String>));
         let selected_out = selected_sink.clone();
         let selected_current = selected_client_id.clone();
-        let clients = filtered_clients(clients, client_filter);
         let viewport_id = egui::ViewportId::from_hash_of("admin_client_map");
         let builder =
             windowing::child_viewport_builder("Client Map", [1040.0, 680.0], [760.0, 540.0]);
@@ -60,9 +61,10 @@ impl ClientMapWindow {
                     windowing::render_child_window_controls(ui);
                     render_map_contents(
                         ui,
-                        &clients,
+                        clients,
                         selected_current.as_deref(),
                         client_filter,
+                        &mut self.os_filter,
                         &selected_sink,
                     );
                 });
@@ -114,6 +116,7 @@ fn render_map_contents(
     clients: &[ClientRow],
     selected_client_id: Option<&str>,
     client_filter: &mut String,
+    os_filter: &mut String,
     selected_sink: &Arc<Mutex<Option<String>>>,
 ) {
     ui::panel(ui, |ui| {
@@ -128,17 +131,14 @@ fn render_map_contents(
             });
         });
         ui.add_space(8.0);
-        ui.scope(|ui| {
-            ui.spacing_mut().interact_size.y = ui::TOOLBAR_CONTROL_HEIGHT;
-            ui.add_sized(
-                [ui.available_width(), ui::TOOLBAR_CONTROL_HEIGHT],
-                egui::TextEdit::singleline(client_filter)
-                    .hint_text("Search by id, fingerprint, host, user, or OS")
-                    .vertical_align(egui::Align::Center),
-            );
-        });
+        let os_options = os_filter_options(clients);
+        if !os_filter.is_empty() && !os_options.iter().any(|option| option == os_filter) {
+            os_filter.clear();
+        }
+        render_map_filter_toolbar(ui, client_filter, os_filter, &os_options);
         ui.add_space(8.0);
 
+        let clients = filtered_clients(clients, client_filter, os_filter);
         let located = clients
             .iter()
             .filter(|row| row.info.location.is_some())
@@ -188,7 +188,7 @@ fn render_map_contents(
             let painter = ui.painter_at(map_rect);
             draw_world_map(&painter, map_rect);
 
-            let clusters = map_clusters(clients, map_rect);
+            let clusters = map_clusters(&clients, map_rect);
             draw_map_summary(&painter, map_rect, located, clusters.len());
             for cluster in &clusters {
                 let selected = cluster
@@ -215,11 +215,46 @@ fn render_map_contents(
     });
 }
 
-fn filtered_clients(clients: &[ClientRow], filter: &str) -> Vec<ClientRow> {
+fn render_map_filter_toolbar(
+    ui: &mut egui::Ui,
+    client_filter: &mut String,
+    os_filter: &mut String,
+    os_options: &[String],
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = ui::TOOLBAR_CONTROL_HEIGHT;
+        let combo_width = ui.available_width().min(210.0);
+        let search_width = (ui.available_width() - combo_width - 8.0).max(180.0);
+        ui.add_sized(
+            [search_width, ui::TOOLBAR_CONTROL_HEIGHT],
+            egui::TextEdit::singleline(client_filter)
+                .hint_text("Search by id, fingerprint, host, user, or OS")
+                .vertical_align(egui::Align::Center),
+        );
+        egui::ComboBox::from_id_salt("client_map_os_filter")
+            .width(combo_width)
+            .selected_text(os_filter_label(os_filter))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(os_filter, String::new(), "All OS");
+                if !os_options.is_empty() {
+                    ui.separator();
+                }
+                for option in os_options {
+                    ui.selectable_value(os_filter, option.clone(), option);
+                }
+            });
+    });
+}
+
+fn filtered_clients(clients: &[ClientRow], filter: &str, os_filter: &str) -> Vec<ClientRow> {
     let filter = filter.trim().to_ascii_lowercase();
+    let os_filter = os_filter.trim();
     clients
         .iter()
         .filter(|row| {
+            if !os_filter.is_empty() && row.info.os.trim() != os_filter {
+                return false;
+            }
             if filter.is_empty() {
                 return true;
             }
@@ -231,6 +266,27 @@ fn filtered_clients(clients: &[ClientRow], filter: &str) -> Vec<ClientRow> {
         })
         .cloned()
         .collect()
+}
+
+fn os_filter_options(clients: &[ClientRow]) -> Vec<String> {
+    let mut options = clients
+        .iter()
+        .filter_map(|row| {
+            let os = row.info.os.trim();
+            (!os.is_empty()).then(|| os.to_string())
+        })
+        .collect::<Vec<_>>();
+    options.sort_by_key(|value| value.to_ascii_lowercase());
+    options.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    options
+}
+
+fn os_filter_label(os_filter: &str) -> String {
+    if os_filter.trim().is_empty() {
+        "OS: All".to_string()
+    } else {
+        format!("OS: {}", truncate_label(os_filter, 24))
+    }
 }
 
 fn draw_world_map(painter: &egui::Painter, rect: egui::Rect) {

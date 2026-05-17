@@ -4,3 +4,7 @@
 [listen]
 ip = "0.0.0.0"
 port = 5169
+
+[auth]
+# token = "change-me"
+require_client_auth = false

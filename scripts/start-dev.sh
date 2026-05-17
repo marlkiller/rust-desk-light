@@ -2,8 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IP="${RDL_IP:-127.0.0.1}"
-PORT="${RDL_PORT:-5169}"
+DEFAULT_IP="127.0.0.1"
+DEFAULT_PORT="5169"
+DEFAULT_AUTH_TOKEN="123456"
+
+IP="${RDL_IP:-$DEFAULT_IP}"
+PORT="${RDL_PORT:-$DEFAULT_PORT}"
+AUTH_TOKEN="${RDL_AUTH_TOKEN:-$DEFAULT_AUTH_TOKEN}"
 LOG_DIR="$ROOT_DIR/target/rdl-dev"
 
 source "$ROOT_DIR/scripts/geoip-db.sh"
@@ -19,7 +24,7 @@ echo "Building rust-desk-light"
 cargo build --workspace --manifest-path "$ROOT_DIR/Cargo.toml"
 
 GEOIP_DB_PATH="$(rdl_find_geoip_db "$ROOT_DIR" || true)"
-SERVER_CMD="cd $(shell_quote "$ROOT_DIR") && ./target/debug/rdl-server-cli --ip $(shell_quote "$IP") --port $(shell_quote "$PORT")"
+SERVER_CMD="cd $(shell_quote "$ROOT_DIR") && ./target/debug/rdl-server-cli --ip $(shell_quote "$IP") --port $(shell_quote "$PORT") --auth-token $(shell_quote "$AUTH_TOKEN")"
 if [[ -n "$GEOIP_DB_PATH" ]]; then
   SERVER_CMD="$SERVER_CMD --geoip-db $(shell_quote "$GEOIP_DB_PATH")"
 fi
@@ -29,6 +34,7 @@ ADMIN_BIN="$ROOT_DIR/target/debug/rdl-admin-gui"
 
 echo "Starting rust-desk-light dev stack"
 echo "server: $IP:$PORT"
+echo "auth token: $AUTH_TOKEN"
 if [[ -n "$GEOIP_DB_PATH" ]]; then
   echo "geoip: $GEOIP_DB_PATH"
 else
@@ -46,9 +52,9 @@ tell application "Terminal"
 end tell
 EOF
     sleep 1
-    "$CLIENT_BIN" --ip "$IP" --port "$PORT" >"$LOG_DIR/client.log" 2>&1 &
+    "$CLIENT_BIN" --ip "$IP" --port "$PORT" --auth-token "$AUTH_TOKEN" >"$LOG_DIR/client.log" 2>&1 &
     sleep 1
-    "$ADMIN_BIN" --ip "$IP" --port "$PORT" >"$LOG_DIR/admin.log" 2>&1 &
+    "$ADMIN_BIN" --ip "$IP" --port "$PORT" --auth-token "$AUTH_TOKEN" >"$LOG_DIR/admin.log" 2>&1 &
     ;;
   Linux)
     if command -v gnome-terminal >/dev/null 2>&1; then
@@ -64,9 +70,9 @@ EOF
       exit 1
     fi
     sleep 1
-    "$CLIENT_BIN" --ip "$IP" --port "$PORT" >"$LOG_DIR/client.log" 2>&1 &
+    "$CLIENT_BIN" --ip "$IP" --port "$PORT" --auth-token "$AUTH_TOKEN" >"$LOG_DIR/client.log" 2>&1 &
     sleep 1
-    "$ADMIN_BIN" --ip "$IP" --port "$PORT" >"$LOG_DIR/admin.log" 2>&1 &
+    "$ADMIN_BIN" --ip "$IP" --port "$PORT" --auth-token "$AUTH_TOKEN" >"$LOG_DIR/admin.log" 2>&1 &
     ;;
   *)
     echo "Unsupported platform for this shell launcher."

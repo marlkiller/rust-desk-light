@@ -11,6 +11,11 @@ LOG_FILE="$LOG_DIR/rdl-server-cli.log"
 . "$ROOT_DIR/scripts/geoip-db.sh"
 
 mkdir -p "$LOG_DIR"
+if [ -f "$LOG_FILE" ]; then
+  LOG_START_LINE="$(wc -l <"$LOG_FILE" | tr -d ' ' || echo 0)"
+else
+  LOG_START_LINE=0
+fi
 
 cd "$ROOT_DIR"
 
@@ -76,6 +81,20 @@ echo "$new_pid" >"$PID_FILE"
 sleep 1
 if kill -0 "$new_pid" 2>/dev/null; then
   echo "rdl-server-cli started pid=$new_pid"
+  if [ -n "${RDL_AUTH_TOKEN:-}" ]; then
+    echo "auth token: $RDL_AUTH_TOKEN"
+  else
+    GENERATED_TOKEN="$(
+      tail -n +"$((LOG_START_LINE + 1))" "$LOG_FILE" 2>/dev/null \
+        | sed -n 's/^generated auth token: //p' \
+        | tail -n 1
+    )"
+    if [ -n "$GENERATED_TOKEN" ]; then
+      echo "auth token: $GENERATED_TOKEN"
+    else
+      echo "auth token: configured by server config or already written to log"
+    fi
+  fi
   echo "log: $LOG_FILE"
 else
   echo "rdl-server-cli failed to start. Last log lines:"

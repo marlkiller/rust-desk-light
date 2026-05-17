@@ -53,6 +53,7 @@ pub(crate) fn acquire_client_process_lock() -> io::Result<ClientProcessLock> {
 pub(crate) struct Config {
     pub(crate) ip: String,
     pub(crate) port: u16,
+    pub(crate) auth_token: String,
     pub(crate) config_path: PathBuf,
     cli_ip: Option<String>,
     cli_port: Option<u16>,
@@ -82,6 +83,7 @@ impl Config {
         Ok(Self {
             ip: loaded.endpoint.ip,
             port: loaded.endpoint.port,
+            auth_token: loaded.auth_token.unwrap_or_default(),
             config_path: loaded.config_path,
             cli_ip: loaded.cli_ip,
             cli_port: loaded.cli_port,
@@ -310,9 +312,6 @@ pub(crate) struct LocalIdentity {
 
 #[cfg(feature = "gui")]
 pub(crate) fn gui_available() -> bool {
-    if std::env::var_os("RDL_FORCE_TERMINAL").is_some() {
-        return false;
-    }
     #[cfg(target_os = "linux")]
     {
         std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
@@ -551,6 +550,7 @@ mod tests {
             config_path: Some(path.clone()),
             ip: Some("192.0.2.10".to_string()),
             port: Some(6000),
+            ..Default::default()
         })
         .unwrap();
 

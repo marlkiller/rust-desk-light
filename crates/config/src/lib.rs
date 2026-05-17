@@ -71,6 +71,8 @@ pub struct EndpointOverrides {
     pub config_path: Option<PathBuf>,
     pub ip: Option<String>,
     pub port: Option<u16>,
+    pub auth_token: Option<String>,
+    pub require_client_auth: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,10 +80,16 @@ pub struct LoadedEndpointConfig {
     pub endpoint: EndpointConfig,
     pub config_path: PathBuf,
     pub config_exists: bool,
+    pub auth_token: Option<String>,
+    pub require_client_auth: bool,
     pub file_ip: Option<String>,
     pub file_port: Option<u16>,
+    pub file_auth_token: Option<String>,
+    pub file_require_client_auth: Option<bool>,
     pub cli_ip: Option<String>,
     pub cli_port: Option<u16>,
+    pub cli_auth_token: Option<String>,
+    pub cli_require_client_auth: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -95,6 +103,7 @@ pub struct ParsedEndpointArgs {
 pub enum ConfigError {
     MissingValue(&'static str),
     InvalidPort { value: String },
+    InvalidBool { key: String, value: String },
     Io { path: PathBuf, error: io::Error },
     Parse { path: PathBuf, message: String },
 }
@@ -104,6 +113,7 @@ impl fmt::Display for ConfigError {
         match self {
             Self::MissingValue(flag) => write!(f, "missing value for {flag}"),
             Self::InvalidPort { value } => write!(f, "invalid port: {value}"),
+            Self::InvalidBool { key, value } => write!(f, "invalid boolean {key}: {value}"),
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
             Self::Parse { path, message } => write!(f, "{}: {message}", path.display()),
         }
@@ -133,6 +143,14 @@ where
                 let value = args.next().ok_or(ConfigError::MissingValue("--port"))?;
                 parsed.overrides.port = Some(parse_port(&value)?);
             }
+            "--auth-token" => {
+                parsed.overrides.auth_token = Some(
+                    args.next()
+                        .ok_or(ConfigError::MissingValue("--auth-token"))?,
+                );
+            }
+            "--require-client-auth" => parsed.overrides.require_client_auth = Some(true),
+            "--no-require-client-auth" => parsed.overrides.require_client_auth = Some(false),
             "--version" | "-V" => parsed.version = true,
             "--help" | "-h" => parsed.help = true,
             _ if arg.starts_with("--config=") => {
@@ -144,6 +162,9 @@ where
             _ if arg.starts_with("--port=") => {
                 let value = &arg["--port=".len()..];
                 parsed.overrides.port = Some(parse_port(value)?);
+            }
+            _ if arg.starts_with("--auth-token=") => {
+                parsed.overrides.auth_token = Some(arg["--auth-token=".len()..].to_string());
             }
             _ => {}
         }
@@ -181,6 +202,10 @@ pub fn load_endpoint_config(
     let mut config_exists = false;
     let mut file_ip = None;
     let mut file_port = None;
+    let mut auth_token = None;
+    let mut require_client_auth = false;
+    let mut file_auth_token = None;
+    let mut file_require_client_auth = None;
 
     match fs::read_to_string(&config_path) {
         Ok(text) => {
@@ -193,6 +218,14 @@ pub fn load_endpoint_config(
             if let Some(value) = document.endpoint_port(kind, "port")? {
                 endpoint.port = value;
                 file_port = Some(value);
+            }
+            if let Some(value) = document.auth_token() {
+                auth_token = Some(value.clone());
+                file_auth_token = Some(value);
+            }
+            if let Some(value) = document.auth_bool("require_client_auth")? {
+                require_client_auth = value;
+                file_require_client_auth = Some(value);
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -210,6 +243,18 @@ pub fn load_endpoint_config(
     if let Some(port) = overrides.port {
         endpoint.port = port;
     }
+    if let Some(token) = std::env::var("RDL_AUTH_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        auth_token = Some(token);
+    }
+    if let Some(value) = overrides.auth_token.as_ref() {
+        auth_token = Some(value.clone());
+    }
+    if let Some(value) = overrides.require_client_auth {
+        require_client_auth = value;
+    }
 
     if !config_exists {
         write_endpoint_config(kind, &config_path, &endpoint)?;
@@ -219,10 +264,16 @@ pub fn load_endpoint_config(
         endpoint,
         config_path,
         config_exists,
+        auth_token,
+        require_client_auth,
         file_ip,
         file_port,
+        file_auth_token,
+        file_require_client_auth,
         cli_ip: overrides.ip.clone(),
         cli_port: overrides.port,
+        cli_auth_token: overrides.auth_token.clone(),
+        cli_require_client_auth: overrides.require_client_auth,
     })
 }
 
@@ -254,9 +305,67 @@ pub fn write_endpoint_config(
     })
 }
 
+pub fn write_auth_token_config(
+    kind: ConfigKind,
+    path: &Path,
+    token: &str,
+) -> Result<(), ConfigError> {
+    let document = match fs::read_to_string(path) {
+        Ok(text) => ConfigDocument::parse(&text, path)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ConfigDocument::default(),
+        Err(error) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                error,
+            })
+        }
+    };
+    let text = document.with_auth_token(token).to_toml_string(kind);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| ConfigError::Io {
+            path: parent.to_path_buf(),
+            error,
+        })?;
+    }
+    fs::write(path, text).map_err(|error| ConfigError::Io {
+        path: path.to_path_buf(),
+        error,
+    })
+}
+
+pub fn write_require_client_auth_config(
+    kind: ConfigKind,
+    path: &Path,
+    required: bool,
+) -> Result<(), ConfigError> {
+    let document = match fs::read_to_string(path) {
+        Ok(text) => ConfigDocument::parse(&text, path)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ConfigDocument::default(),
+        Err(error) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                error,
+            })
+        }
+    };
+    let text = document
+        .with_require_client_auth(required)
+        .to_toml_string(kind);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| ConfigError::Io {
+            path: parent.to_path_buf(),
+            error,
+        })?;
+    }
+    fs::write(path, text).map_err(|error| ConfigError::Io {
+        path: path.to_path_buf(),
+        error,
+    })
+}
+
 pub fn help_text(binary: &str, kind: ConfigKind) -> String {
     format!(
-        "Usage: {binary} [--config PATH] [--ip {}] [--port {}] [--version]\n\nConfig file: {}\nPriority: built-in defaults < config file < startup arguments.",
+        "Usage: {binary} [--config PATH] [--ip {}] [--port {}] [--auth-token TOKEN] [--version]\n\nServer only: [--require-client-auth] [--no-require-client-auth]\nConfig file: {}\nPriority: built-in defaults < config file < environment < startup arguments.",
         kind.default_ip(),
         kind.default_port(),
         default_config_path(kind).display()
@@ -267,6 +376,17 @@ fn parse_port(value: &str) -> Result<u16, ConfigError> {
     value.parse::<u16>().map_err(|_| ConfigError::InvalidPort {
         value: value.to_string(),
     })
+}
+
+fn parse_bool(key: &str, value: &str) -> Result<bool, ConfigError> {
+    match parse_toml_string(value).to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => Ok(true),
+        "false" | "no" | "0" | "off" => Ok(false),
+        _ => Err(ConfigError::InvalidBool {
+            key: key.to_string(),
+            value: value.to_string(),
+        }),
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -354,6 +474,29 @@ impl ConfigDocument {
             .map(|value| parse_toml_string(value))
     }
 
+    fn auth_token(&self) -> Option<String> {
+        self.sections
+            .get("auth")
+            .and_then(|section| section.get("token"))
+            .map(|value| parse_toml_string(value))
+            .or_else(|| {
+                self.top_level
+                    .get("auth_token")
+                    .map(|value| parse_toml_string(value))
+            })
+    }
+
+    fn auth_bool(&self, key: &str) -> Result<Option<bool>, ConfigError> {
+        match self
+            .sections
+            .get("auth")
+            .and_then(|section| section.get(key))
+        {
+            Some(value) => parse_bool(key, value).map(Some),
+            None => Ok(None),
+        }
+    }
+
     fn endpoint_port(&self, kind: ConfigKind, key: &str) -> Result<Option<u16>, ConfigError> {
         match self.endpoint_string(kind, key) {
             Some(value) => parse_port(&value).map(Some),
@@ -368,6 +511,18 @@ impl ConfigDocument {
             .or_default();
         section.insert("ip".to_string(), format_toml_string(&endpoint.ip));
         section.insert("port".to_string(), endpoint.port.to_string());
+        self
+    }
+
+    fn with_auth_token(mut self, token: &str) -> Self {
+        let section = self.sections.entry("auth".to_string()).or_default();
+        section.insert("token".to_string(), format_toml_string(token));
+        self
+    }
+
+    fn with_require_client_auth(mut self, required: bool) -> Self {
+        let section = self.sections.entry("auth".to_string()).or_default();
+        section.insert("require_client_auth".to_string(), required.to_string());
         self
     }
 
@@ -566,6 +721,7 @@ mod tests {
                 config_path: Some(path.clone()),
                 ip: Some("10.0.0.7".to_string()),
                 port: Some(7777),
+                ..EndpointOverrides::default()
             },
         )
         .unwrap();

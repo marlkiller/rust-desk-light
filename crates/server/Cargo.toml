@@ -10,6 +10,7 @@ name = "rdl-server-cli"
 path = "src/main.rs"
 
 [dependencies]
+getrandom = "0.3.4"
 maxminddb = "0.28.1"
 rust-desk-light-config = { path = "../config" }
 rust-desk-light-protocol = { path = "../protocol" }

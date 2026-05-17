@@ -4,7 +4,6 @@ mod event;
 mod file_transfer;
 mod network;
 mod payload;
-mod terminal;
 mod ui;
 
 use self::{
@@ -23,18 +22,15 @@ use self::{
     },
     network::admin_network_loop,
     payload::{payload_field, video_stream_payload},
-    terminal::run_terminal,
     ui::{
         activity_context_menu, apply_admin_theme, cell_label, centered_cell, compact_id,
         connection_status_pill, empty_state, last_seen_label, metric, panel, prune_activity_logs,
         section_title, table_header, timestamped_log, COLOR_BAD, COLOR_BG, COLOR_GOOD, COLOR_MUTED,
-        COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        COLOR_TEXT, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
     },
 };
 use crate::{
-    command_menu, live_control, remote_management,
-    runtime::{terminal_mode, Config},
-    user_interaction, windowing,
+    command_menu, live_control, remote_management, runtime::Config, user_interaction, windowing,
 };
 use eframe::egui;
 use rdl_protocol::{
@@ -65,11 +61,7 @@ const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
-    if terminal_mode() {
-        run_terminal(config)?;
-    } else {
-        run_gui(config)?;
-    }
+    run_gui(config)?;
     Ok(())
 }
 
@@ -371,6 +363,9 @@ struct AdminApp {
     file_transfer_cancel_flags: Arc<Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     ignored_file_transfers: Arc<Mutex<HashSet<(String, u64)>>>,
     log_lines: Vec<String>,
+    auth_token_prompt_open: bool,
+    auth_token_input: String,
+    auth_token_error: String,
 }
 
 #[derive(Clone)]
@@ -571,6 +566,8 @@ impl AdminApp {
         if let Ok(mut handle) = repaint_handle.lock() {
             *handle = Some(cc.egui_ctx.clone());
         }
+        let initial_auth_token = config.auth_token.clone();
+        let auth_token_prompt_open = initial_auth_token.trim().is_empty();
         Self {
             config,
             input_tx,
@@ -606,6 +603,9 @@ impl AdminApp {
                 "admin gui started version={}",
                 rdl_version::display_version()
             ))],
+            auth_token_prompt_open,
+            auth_token_input: initial_auth_token,
+            auth_token_error: String::new(),
         }
     }
 
@@ -637,6 +637,16 @@ impl AdminApp {
                     for client in &mut self.clients {
                         client.status = ClientStatus::Offline;
                     }
+                }
+                AdminEvent::AuthTokenRequired => {
+                    self.auth_token_prompt_open = true;
+                    self.auth_token_error = "Server requires an auth token.".to_string();
+                    self.auth_token_input.clear();
+                }
+                AdminEvent::AuthTokenRejected(detail) => {
+                    self.auth_token_prompt_open = true;
+                    self.auth_token_error = detail;
+                    self.auth_token_input.clear();
                 }
                 AdminEvent::Clients(clients) => {
                     self.merge_clients(clients);
@@ -833,6 +843,62 @@ impl AdminApp {
             }
         }
         changed
+    }
+
+    fn render_auth_token_prompt(&mut self, ctx: &egui::Context) {
+        if !self.auth_token_prompt_open {
+            return;
+        }
+
+        egui::Window::new("Auth Token")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("Enter the shared server token to connect.")
+                        .color(COLOR_TEXT),
+                );
+                ui.add_space(8.0);
+                let response = ui.add_sized(
+                    [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
+                    egui::TextEdit::singleline(&mut self.auth_token_input)
+                        .password(true)
+                        .hint_text("Auth token")
+                        .vertical_align(egui::Align::Center),
+                );
+                if !self.auth_token_error.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&self.auth_token_error)
+                            .size(12.0)
+                            .color(COLOR_BAD),
+                    );
+                }
+                ui.add_space(8.0);
+                let submit = ui.button("Save and reconnect").clicked()
+                    || (response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
+                if submit {
+                    let token = self.auth_token_input.trim().to_string();
+                    if token.is_empty() {
+                        self.auth_token_error = "Token cannot be empty.".to_string();
+                    } else {
+                        match self.config.save_auth_token(&token) {
+                            Ok(()) => {
+                                self.auth_token_prompt_open = false;
+                                self.auth_token_error.clear();
+                                self.push_log("saved auth token");
+                                let _ = self.input_tx.send(AdminInput::Reconnect {
+                                    reason: "auth token updated".to_string(),
+                                });
+                            }
+                            Err(error) => {
+                                self.auth_token_error = format!("Save failed: {error}");
+                            }
+                        }
+                    }
+                }
+            });
     }
 
     fn handle_pending_audio_frame(&mut self, client_id: &str, frame: PendingAudioFrame) {
@@ -2560,6 +2626,7 @@ impl eframe::App for AdminApp {
         self.render_interaction_command_windows(ui.ctx());
         self.render_session_command_windows(ui.ctx());
         self.render_execute_windows(ui.ctx());
+        self.render_auth_token_prompt(ui.ctx());
         self.client_map_window.render(
             ui.ctx(),
             &self.clients,

@@ -3525,6 +3525,7 @@ version = "0.1.0"
 name = "rust-desk-light-server"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "maxminddb",
  "rust-desk-light-config",
  "rust-desk-light-protocol",

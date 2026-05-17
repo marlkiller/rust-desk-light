@@ -848,6 +848,7 @@ pub struct ClientInfo {
 pub enum Message {
     Hello {
         role: Role,
+        auth_token: String,
         id: String,
         fingerprint: String,
         hostname: String,
@@ -963,6 +964,7 @@ impl Message {
         match self {
             Self::Hello {
                 role,
+                auth_token,
                 id,
                 fingerprint,
                 hostname,
@@ -971,6 +973,7 @@ impl Message {
                 gui_available,
             } => {
                 writer.u8(role.to_code());
+                writer.string(auth_token);
                 writer.string(id);
                 writer.string(fingerprint);
                 writer.string(hostname);
@@ -1128,6 +1131,7 @@ impl Message {
         let message = match kind {
             1 => Self::Hello {
                 role: Role::from_code(reader.u8()?)?,
+                auth_token: reader.string()?,
                 id: reader.string()?,
                 fingerprint: reader.string()?,
                 hostname: reader.string()?,
