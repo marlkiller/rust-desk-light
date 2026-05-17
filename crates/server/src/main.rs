@@ -237,10 +237,14 @@ fn main() -> io::Result<()> {
             "optional"
         }
     );
+    println!("auth token: {}", config.auth.token);
     if config.auth.generated {
-        println!("generated auth token: {}", config.auth.token);
-        println!("use this token in rdl-admin-gui; clients need it only when client_auth=required");
+        println!(
+            "saved generated auth token to config: {}",
+            config.config_path.display()
+        );
     }
+    println!("use this token in rdl-admin-gui; clients need it only when client_auth=required");
     start_audio_udp_relay(bind_addr.clone());
     thread::spawn(move || accept_loop(listener, events_tx));
     event_loop(events_rx, geoip, config.auth);
@@ -1448,6 +1452,13 @@ impl Config {
             .filter(|token| !token.trim().is_empty())
             .map(|token| (token, false))
             .unwrap_or_else(|| (generate_auth_token(), true));
+        if generated {
+            rdl_config::write_auth_token_config(
+                rdl_config::ConfigKind::Server,
+                &loaded.config_path,
+                &auth_token,
+            )?;
+        }
         Ok(Self {
             ip: loaded.endpoint.ip,
             port: loaded.endpoint.port,

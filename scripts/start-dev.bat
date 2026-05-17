@@ -8,7 +8,7 @@ popd
 
 set "DEFAULT_IP=127.0.0.1"
 set "DEFAULT_PORT=5169"
-set "DEFAULT_AUTH_TOKEN=123456"
+set "DEFAULT_AUTH_TOKEN=change-me"
 
 if "%RDL_IP%"=="" (set "IP=%DEFAULT_IP%") else (set "IP=%RDL_IP%")
 if "%RDL_PORT%"=="" (set "PORT=%DEFAULT_PORT%") else (set "PORT=%RDL_PORT%")

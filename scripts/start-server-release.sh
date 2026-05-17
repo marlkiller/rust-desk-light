@@ -4,6 +4,7 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 IP="${RDL_IP:-0.0.0.0}"
 PORT="${RDL_PORT:-5169}"
+AUTH_TOKEN="${RDL_AUTH_TOKEN:-change-me}"
 LOG_DIR="${RDL_LOG_DIR:-$ROOT_DIR/target/rdl-server-cli}"
 PID_FILE="$LOG_DIR/rdl-server-cli.pid"
 LOG_FILE="$LOG_DIR/rdl-server-cli.log"
@@ -69,11 +70,11 @@ stop_existing
 if [ -n "$GEOIP_DB_PATH" ]; then
   echo "Using GeoIP database: $GEOIP_DB_PATH"
   echo "Starting rdl-server-cli on $IP:$PORT"
-  nohup "$SERVER_BIN" --ip "$IP" --port "$PORT" --geoip-db "$GEOIP_DB_PATH" >>"$LOG_FILE" 2>&1 &
+  nohup "$SERVER_BIN" --ip "$IP" --port "$PORT" --auth-token "$AUTH_TOKEN" --geoip-db "$GEOIP_DB_PATH" >>"$LOG_FILE" 2>&1 &
 else
   echo "No GeoIP database found; starting without client map locations"
   echo "Starting rdl-server-cli on $IP:$PORT"
-  nohup "$SERVER_BIN" --ip "$IP" --port "$PORT" >>"$LOG_FILE" 2>&1 &
+  nohup "$SERVER_BIN" --ip "$IP" --port "$PORT" --auth-token "$AUTH_TOKEN" >>"$LOG_FILE" 2>&1 &
 fi
 new_pid="$!"
 echo "$new_pid" >"$PID_FILE"
@@ -81,20 +82,7 @@ echo "$new_pid" >"$PID_FILE"
 sleep 1
 if kill -0 "$new_pid" 2>/dev/null; then
   echo "rdl-server-cli started pid=$new_pid"
-  if [ -n "${RDL_AUTH_TOKEN:-}" ]; then
-    echo "auth token: $RDL_AUTH_TOKEN"
-  else
-    GENERATED_TOKEN="$(
-      tail -n +"$((LOG_START_LINE + 1))" "$LOG_FILE" 2>/dev/null \
-        | sed -n 's/^generated auth token: //p' \
-        | tail -n 1
-    )"
-    if [ -n "$GENERATED_TOKEN" ]; then
-      echo "auth token: $GENERATED_TOKEN"
-    else
-      echo "auth token: configured by server config or already written to log"
-    fi
-  fi
+  echo "auth token: $AUTH_TOKEN"
   echo "log: $LOG_FILE"
 else
   echo "rdl-server-cli failed to start. Last log lines:"

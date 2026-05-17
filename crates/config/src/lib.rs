@@ -705,6 +705,42 @@ mod tests {
     }
 
     #[test]
+    fn writes_auth_token_without_losing_other_sections() {
+        let path = std::env::temp_dir().join(format!(
+            "rdl-config-token-test-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"
+            [listen]
+            ip = "0.0.0.0"
+            port = 5169
+
+            [ui]
+            theme = "light"
+            "#,
+        )
+        .unwrap();
+
+        write_auth_token_config(ConfigKind::Server, &path, "rdl-test-token").unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[listen]"));
+        assert!(text.contains("ip = \"0.0.0.0\""));
+        assert!(text.contains("port = 5169"));
+        assert!(text.contains("[auth]"));
+        assert!(text.contains("token = \"rdl-test-token\""));
+        assert!(text.contains("[ui]"));
+        assert!(text.contains("theme = \"light\""));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn load_initializes_missing_config_file() {
         let path = std::env::temp_dir().join(format!(
             "rdl-config-test-{}-{}.toml",

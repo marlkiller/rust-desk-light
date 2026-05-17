@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_IP="127.0.0.1"
 DEFAULT_PORT="5169"
-DEFAULT_AUTH_TOKEN="123456"
+DEFAULT_AUTH_TOKEN="change-me"
 
 IP="${RDL_IP:-$DEFAULT_IP}"
 PORT="${RDL_PORT:-$DEFAULT_PORT}"
