@@ -218,6 +218,10 @@ Tagged builds use the git tag; local builds use the workspace version unless `RD
 - Linux remote desktop testing details live in [Ubuntu X11 remote desktop testing](docs/ubuntu-x11-remote-desktop-testing.md).
 - Current milestones and planned work live in [ROADMAP.md](ROADMAP.md).
 
+## Community
+
+Feedback from the [LINUX DO](https://linux.do/) community is welcome.
+
 ## License
 
 This project is licensed under the Apache License 2.0.
