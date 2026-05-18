@@ -19,7 +19,7 @@ use self::{
         update_command_window, CommandResultRenderState, CommandResultStatus, CommandResultWindow,
         StartupAddForm,
     },
-    event::{AdminEvent, AdminEventSink, AdminInput},
+    event::{AdminEvent, AdminEventSink, AdminInput, ReconnectEndpoint},
     file_transfer::{
         file_transfer_message, run_file_upload_transfer, sanitize_log_value,
         send_file_transfer_input, send_upload_cancel, should_log_admin_file_transfer_event,
@@ -1152,6 +1152,11 @@ impl AdminApp {
                 self.push_log(format!("saved server connection {ip}:{port} from settings"));
                 let _ = self.input_tx.send(AdminInput::Reconnect {
                     reason: "server connection updated from settings".to_string(),
+                    endpoint: Some(ReconnectEndpoint {
+                        ip: ip.clone(),
+                        port,
+                        auth_token: token.clone(),
+                    }),
                 });
             }
             Err(error) => {
@@ -3076,6 +3081,7 @@ impl AdminApp {
                     if should_reconnect_after_cancel {
                         let _ = input_tx.send(AdminInput::Reconnect {
                             reason: format!("cancelled download transfer id={transfer_id}"),
+                            endpoint: None,
                         });
                     }
                 });

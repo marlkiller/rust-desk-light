@@ -1,4 +1,4 @@
-use super::event::{AdminEvent, AdminEventSink, AdminInput};
+use super::event::{AdminEvent, AdminEventSink, AdminInput, ReconnectEndpoint};
 use crate::runtime::{hostname, load_admin_identity, os_label, username, Config};
 use rdl_protocol::{write_envelope_with_token, EnvelopeDecoder, FileTransferAction, Message, Role};
 use std::collections::HashSet;
@@ -16,7 +16,7 @@ const MAX_INPUTS_PER_NETWORK_POLL: usize = 64;
 const MAX_MESSAGES_PER_NETWORK_POLL: usize = 512;
 
 enum ConnectionEnd {
-    ReconnectRequested,
+    ReconnectRequested(Option<ReconnectEndpoint>),
 }
 
 pub(super) fn admin_network_loop(
@@ -27,12 +27,18 @@ pub(super) fn admin_network_loop(
 ) -> io::Result<()> {
     let mut first_attempt = true;
     let mut wait_for_user = false;
+    let mut skip_reload_once = false;
     loop {
         if wait_for_user {
-            wait_for_reconnect_request(&input_rx);
+            if let Some(endpoint) = wait_for_reconnect_request(&input_rx) {
+                apply_reconnect_endpoint(&mut config, endpoint);
+                skip_reload_once = true;
+            }
         }
         if first_attempt {
             first_attempt = false;
+        } else if skip_reload_once {
+            skip_reload_once = false;
         } else if let Ok(reloaded) = config.reload() {
             config = reloaded;
         }
@@ -44,7 +50,11 @@ pub(super) fn admin_network_loop(
             continue;
         }
         match admin_connection_once(&config, &input_rx, &event_sink, &ignored_file_transfers) {
-            Ok(ConnectionEnd::ReconnectRequested) => {
+            Ok(ConnectionEnd::ReconnectRequested(endpoint)) => {
+                if let Some(endpoint) = endpoint {
+                    apply_reconnect_endpoint(&mut config, endpoint);
+                    skip_reload_once = true;
+                }
                 event_sink.send(AdminEvent::Disconnected);
                 wait_for_user = false;
             }
@@ -64,13 +74,20 @@ pub(super) fn admin_network_loop(
     }
 }
 
-fn wait_for_reconnect_request(input_rx: &Receiver<AdminInput>) {
+fn wait_for_reconnect_request(input_rx: &Receiver<AdminInput>) -> Option<ReconnectEndpoint> {
     while let Ok(input) = input_rx.recv() {
-        if let AdminInput::Reconnect { reason } = input {
+        if let AdminInput::Reconnect { reason, endpoint } = input {
             debug_log!("debug event=admin_reconnect_request reason={reason}");
-            break;
+            return endpoint;
         }
     }
+    None
+}
+
+fn apply_reconnect_endpoint(config: &mut Config, endpoint: ReconnectEndpoint) {
+    config.ip = endpoint.ip;
+    config.port = endpoint.port;
+    config.auth_token = endpoint.auth_token;
 }
 
 fn admin_connection_once(
@@ -174,10 +191,10 @@ fn admin_connection_once(
                 AdminInput::FileTransfer(message) => {
                     send(&mut stream, &mut next_message_id, &session_token, message)
                 }
-                AdminInput::Reconnect { reason } => {
+                AdminInput::Reconnect { reason, endpoint } => {
                     debug_log!("debug event=admin_reconnect_request reason={reason}");
                     let _ = stream.shutdown(Shutdown::Both);
-                    return Ok(ConnectionEnd::ReconnectRequested);
+                    return Ok(ConnectionEnd::ReconnectRequested(endpoint));
                 }
             };
             result?;

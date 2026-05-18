@@ -1175,6 +1175,7 @@ enum StartupClientAutostartStatus {
     Unknown,
 }
 
+#[derive(Clone, Copy)]
 struct StartupClientAutostartStyle {
     label: &'static str,
     fill: egui::Color32,
@@ -1189,13 +1190,13 @@ fn startup_client_autostart_style(
         StartupClientAutostartStatus::Enabled => StartupClientAutostartStyle {
             label: "Client Autostart: On",
             fill: egui::Color32::from_rgb(224, 246, 235),
-            stroke: egui::Color32::from_rgb(151, 213, 181),
+            stroke: COLOR_BORDER,
             text: COLOR_GOOD,
         },
         StartupClientAutostartStatus::Disabled => StartupClientAutostartStyle {
             label: "Client Autostart: Off",
             fill: egui::Color32::from_rgb(255, 238, 238),
-            stroke: egui::Color32::from_rgb(235, 178, 178),
+            stroke: COLOR_BORDER,
             text: COLOR_BAD,
         },
         StartupClientAutostartStatus::Unknown => StartupClientAutostartStyle {
@@ -1278,6 +1279,7 @@ fn startup_row_is_client_autostart(headers: &[String], row: &[String]) -> bool {
         "rustdesklightclient"
             | "rustdesklightclientdesktop"
             | "rustdesklightclientdesktopdisabled"
+            | "rustdesklightclientservice"
             | "comrustdesklightclientplist"
             | "comrustdesklightclientplistdisabled"
     )
@@ -1911,6 +1913,25 @@ mod tests {
                 "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "RustDeskLightClient",
                 "C:\\Users\\me\\AppData\\Local\\rust-desk-light\\rdl-client.exe",
+                "Enabled",
+            ])],
+        };
+
+        assert_eq!(
+            startup_client_autostart_status(&table),
+            StartupClientAutostartStatus::Enabled
+        );
+    }
+
+    #[test]
+    fn startup_client_autostart_status_detects_linux_systemd_service() {
+        let table = ResultTable {
+            headers: strings(["Scope", "Source", "Name", "Command", "Status"]),
+            rows: vec![strings([
+                "System",
+                "systemd",
+                "rust-desk-light-client.service",
+                "-",
                 "Enabled",
             ])],
         };

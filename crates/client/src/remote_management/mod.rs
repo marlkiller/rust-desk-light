@@ -564,6 +564,16 @@ emit() {
   count=$((count + 1))
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
 }
+emit_systemd_client_unit() {
+  scope="$1"
+  source="$2"
+  shift 2
+  status="$(systemctl "$@" is-enabled rust-desk-light-client.service 2>/dev/null || true)"
+  case "$status" in
+    enabled|enabled-runtime|linked|linked-runtime) emit "$scope" "$source" "rust-desk-light-client.service" "-" "Enabled" ;;
+    disabled|masked) emit "$scope" "$source" "rust-desk-light-client.service" "-" "Disabled" ;;
+  esac
+}
 for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
   [ -d "$dir" ] || continue
   case "$dir" in
@@ -584,13 +594,15 @@ for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
   done
 done
 if command -v systemctl >/dev/null 2>&1; then
-  system_rows="$(systemctl list-unit-files --type=service --state=enabled,disabled --no-legend --no-pager 2>/dev/null | head -n 160 | awk 'NF > 0 { status=tolower($2); if (status == "enabled") status="Enabled"; else if (status == "disabled") status="Disabled"; printf "System\tsystemd\t%s\t-\t%s\n", $1, status }')"
+  emit_systemd_client_unit "System" "systemd"
+  system_rows="$(systemctl list-unit-files --type=service --state=enabled,disabled --no-legend --no-pager 2>/dev/null | head -n 160 | awk 'NF > 0 && $1 != "rust-desk-light-client.service" { status=tolower($2); if (status == "enabled") status="Enabled"; else if (status == "disabled") status="Disabled"; printf "System\tsystemd\t%s\t-\t%s\n", $1, status }')"
   if [ -n "$system_rows" ]; then
     printf '%s\n' "$system_rows"
     row_count="$(printf '%s\n' "$system_rows" | wc -l | tr -d ' ')"
     count=$((count + row_count))
   fi
-  user_rows="$(systemctl --user list-unit-files --type=service --state=enabled,disabled --no-legend --no-pager 2>/dev/null | head -n 80 | awk 'NF > 0 { status=tolower($2); if (status == "enabled") status="Enabled"; else if (status == "disabled") status="Disabled"; printf "CurrentUser\tsystemd-user\t%s\t-\t%s\n", $1, status }')"
+  emit_systemd_client_unit "CurrentUser" "systemd-user" --user
+  user_rows="$(systemctl --user list-unit-files --type=service --state=enabled,disabled --no-legend --no-pager 2>/dev/null | head -n 80 | awk 'NF > 0 && $1 != "rust-desk-light-client.service" { status=tolower($2); if (status == "enabled") status="Enabled"; else if (status == "disabled") status="Disabled"; printf "CurrentUser\tsystemd-user\t%s\t-\t%s\n", $1, status }')"
   if [ -n "$user_rows" ]; then
     printf '%s\n' "$user_rows"
     row_count="$(printf '%s\n' "$user_rows" | wc -l | tr -d ' ')"

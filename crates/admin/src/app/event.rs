@@ -5,6 +5,13 @@ use rdl_protocol::{
 };
 use std::sync::{mpsc::Sender, Arc, Mutex};
 
+#[derive(Clone)]
+pub(super) struct ReconnectEndpoint {
+    pub(super) ip: String,
+    pub(super) port: u16,
+    pub(super) auth_token: String,
+}
+
 pub(super) enum AdminInput {
     Command {
         target_id: String,
@@ -32,6 +39,7 @@ pub(super) enum AdminInput {
     FileTransfer(Message),
     Reconnect {
         reason: String,
+        endpoint: Option<ReconnectEndpoint>,
     },
 }
 

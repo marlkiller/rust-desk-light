@@ -1,4 +1,4 @@
-use crate::support::run_powershell;
+use crate::support::{run_command, run_powershell};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,6 +10,7 @@ const WINDOWS_RUN_KEY: &str = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersi
 const WINDOWS_RUN_DISABLED_KEY: &str =
     "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunDisabled";
 const MACOS_LAUNCH_AGENT_LABEL: &str = "com.rust-desk-light.client";
+const LINUX_SYSTEMD_SERVICE_NAME: &str = "rust-desk-light-client.service";
 
 pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     let paths = AutostartPaths::detect()?;
@@ -27,6 +28,8 @@ struct AutostartPaths {
     current_exe: PathBuf,
     target_exe: PathBuf,
     entry_path: String,
+    config_path: PathBuf,
+    home_dir: PathBuf,
 }
 
 impl AutostartPaths {
@@ -40,17 +43,19 @@ impl AutostartPaths {
             .unwrap_or_else(|| default_exe_name().into());
         let target_dir = stable_client_dir()?;
         let target_exe = target_dir.join(file_name);
+        let home_dir = home_dir()?;
+        let config_path = current_client_config_path();
         let entry_path = if cfg!(target_os = "windows") {
             format!("{WINDOWS_RUN_KEY}\\{WINDOWS_RUN_VALUE}")
         } else if cfg!(target_os = "macos") {
-            home_dir()?
+            home_dir
                 .join("Library")
                 .join("LaunchAgents")
                 .join(format!("{MACOS_LAUNCH_AGENT_LABEL}.plist"))
                 .display()
                 .to_string()
         } else {
-            home_dir()?
+            home_dir
                 .join(".config")
                 .join("autostart")
                 .join(format!("{AUTOSTART_ITEM_NAME}.desktop"))
@@ -62,6 +67,8 @@ impl AutostartPaths {
             current_exe,
             target_exe,
             entry_path,
+            config_path,
+            home_dir,
         })
     }
 }
@@ -104,7 +111,7 @@ fn disable_autostart(paths: &AutostartPaths) -> Result<(), String> {
     } else if cfg!(target_os = "macos") {
         rename_autostart_entry_disabled(paths)
     } else {
-        rename_autostart_entry_disabled(paths)
+        linux_disable_autostart(paths)
     }
 }
 
@@ -162,27 +169,185 @@ Write-Output "ok"
 }
 
 fn linux_enable_autostart(paths: &AutostartPaths) -> Result<(), String> {
-    let entry_path = Path::new(&paths.entry_path);
-    let disabled_path = disabled_entry_path(entry_path);
-    if let Some(parent) = entry_path.parent() {
+    if !linux_systemctl_available() {
+        return Err(
+            "Linux client autostart requires systemd/systemctl; desktop autostart is not used"
+                .to_string(),
+        );
+    }
+
+    if linux_is_root_user() {
+        linux_enable_systemd_service(
+            &linux_system_service_path(),
+            &["daemon-reload"],
+            &["enable", LINUX_SYSTEMD_SERVICE_NAME],
+            linux_systemd_service_unit(
+                &paths.target_exe,
+                &paths.config_path,
+                &paths.home_dir,
+                true,
+            ),
+            "enable Linux systemd client service",
+        )?;
+    } else {
+        linux_enable_systemd_service(
+            &linux_user_service_path()?,
+            &["--user", "daemon-reload"],
+            &["--user", "enable", LINUX_SYSTEMD_SERVICE_NAME],
+            linux_systemd_service_unit(
+                &paths.target_exe,
+                &paths.config_path,
+                &paths.home_dir,
+                false,
+            ),
+            "enable Linux user systemd client service",
+        )?;
+    }
+
+    remove_legacy_linux_desktop_entries(paths)
+}
+
+fn linux_disable_autostart(paths: &AutostartPaths) -> Result<(), String> {
+    let mut errors = Vec::new();
+    let system_service_path = linux_system_service_path();
+    if system_service_path.exists() {
+        if let Err(error) = systemctl_result(
+            run_command("systemctl", &["disable", LINUX_SYSTEMD_SERVICE_NAME], 40),
+            "disable Linux systemd client service",
+        ) {
+            errors.push(error);
+        }
+    }
+
+    let user_service_path = linux_user_service_path()?;
+    if user_service_path.exists() {
+        if let Err(error) = systemctl_result(
+            run_command(
+                "systemctl",
+                &["--user", "disable", LINUX_SYSTEMD_SERVICE_NAME],
+                40,
+            ),
+            "disable Linux user systemd client service",
+        ) {
+            errors.push(error);
+        }
+    }
+
+    if let Err(error) = remove_legacy_linux_desktop_entries(paths) {
+        errors.push(error);
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn linux_enable_systemd_service(
+    service_path: &Path,
+    daemon_reload_args: &[&str],
+    enable_args: &[&str],
+    unit: String,
+    context: &str,
+) -> Result<(), String> {
+    if let Some(parent) = service_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
-                "create autostart directory {} failed: {error}",
+                "create systemd service directory {} failed: {error}",
                 parent.display()
             )
         })?;
     }
-    let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=rust-desk-light Client\nExec={}\nHidden=false\nX-GNOME-Autostart-enabled=true\n",
-        desktop_exec_value(&paths.target_exe)
-    );
-    fs::write(entry_path, entry).map_err(|error| {
+    fs::write(service_path, unit).map_err(|error| {
         format!(
-            "write autostart entry {} failed: {error}",
-            entry_path.display()
+            "write systemd service {} failed: {error}",
+            service_path.display()
         )
     })?;
-    remove_file_if_exists(&disabled_path, "remove disabled autostart entry")
+    systemctl_result(
+        run_command("systemctl", daemon_reload_args, 40),
+        "reload systemd units",
+    )?;
+    systemctl_result(run_command("systemctl", enable_args, 40), context)
+}
+
+fn linux_systemd_service_unit(
+    target_exe: &Path,
+    config_path: &Path,
+    home_dir: &Path,
+    system_service: bool,
+) -> String {
+    let install_target = if system_service {
+        "multi-user.target"
+    } else {
+        "default.target"
+    };
+    let network_unit = if system_service {
+        "Wants=network-online.target\nAfter=network-online.target\n"
+    } else {
+        ""
+    };
+    format!(
+        "[Unit]\nDescription=rust-desk-light Client\n{network_unit}\n[Service]\nType=simple\nEnvironment=HOME={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy={install_target}\n",
+        systemd_unit_value(home_dir),
+        systemd_exec_command(target_exe, config_path)
+    )
+}
+
+fn systemd_exec_command(target_exe: &Path, config_path: &Path) -> String {
+    format!(
+        "{} --config {}",
+        systemd_unit_value(target_exe),
+        systemd_unit_value(config_path)
+    )
+}
+
+fn systemd_unit_value(path: &Path) -> String {
+    quote_path(path)
+}
+
+fn linux_systemctl_available() -> bool {
+    !command_output_failed(&run_command("systemctl", &["--version"], 4), "systemctl")
+}
+
+fn linux_is_root_user() -> bool {
+    std::env::var("USER")
+        .map(|value| value == "root")
+        .unwrap_or(false)
+        || run_command("id", &["-u"], 4)
+            .lines()
+            .next()
+            .map(|line| line.trim() == "0")
+            .unwrap_or(false)
+}
+
+fn linux_system_service_path() -> PathBuf {
+    PathBuf::from("/etc/systemd/system").join(LINUX_SYSTEMD_SERVICE_NAME)
+}
+
+fn linux_user_service_path() -> Result<PathBuf, String> {
+    let config_home = match std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.to_string_lossy().is_empty())
+        .map(PathBuf::from)
+    {
+        Some(path) => path,
+        None => home_dir()?.join(".config"),
+    };
+    Ok(config_home
+        .join("systemd")
+        .join("user")
+        .join(LINUX_SYSTEMD_SERVICE_NAME))
+}
+
+fn remove_legacy_linux_desktop_entries(paths: &AutostartPaths) -> Result<(), String> {
+    let entry_path = Path::new(&paths.entry_path);
+    let disabled_path = disabled_entry_path(entry_path);
+    remove_file_if_exists(entry_path, "remove legacy desktop autostart entry")?;
+    remove_file_if_exists(
+        &disabled_path,
+        "remove legacy disabled desktop autostart entry",
+    )
 }
 
 fn macos_enable_autostart(paths: &AutostartPaths) -> Result<(), String> {
@@ -252,15 +417,40 @@ fn remove_file_if_exists(path: &Path, context: &str) -> Result<(), String> {
 }
 
 fn powershell_result(output: String, context: &str) -> Result<(), String> {
+    command_result(output, "powershell", context)
+}
+
+fn systemctl_result(output: String, context: &str) -> Result<(), String> {
+    command_result(output, "systemctl", context)
+}
+
+fn command_result(output: String, program: &str, context: &str) -> Result<(), String> {
     let text = output.trim();
-    let lower = text.to_ascii_lowercase();
-    if lower.starts_with("powershell exited with error")
-        || lower.starts_with("powershell failed:")
-        || lower.contains(" timed out")
-    {
+    if command_output_failed(text, program) {
         Err(format!("{context} failed: {text}"))
     } else {
         Ok(())
+    }
+}
+
+fn command_output_failed(output: &str, program: &str) -> bool {
+    let lower = output.trim().to_ascii_lowercase();
+    lower.starts_with(&format!("{program} exited with error"))
+        || lower.starts_with(&format!("{program} failed:"))
+        || lower.contains(" timed out")
+}
+
+fn current_client_config_path() -> PathBuf {
+    let path = rdl_config::parse_endpoint_args(std::env::args().skip(1))
+        .ok()
+        .and_then(|parsed| parsed.overrides.config_path)
+        .unwrap_or_else(|| rdl_config::default_config_path(rdl_config::ConfigKind::Client));
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|current_dir| current_dir.join(&path))
+            .unwrap_or(path)
     }
 }
 
@@ -304,7 +494,7 @@ fn default_exe_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "rdl-client-gui.exe"
     } else {
-        "rdl-client-gui"
+        "rdl-client-cli"
     }
 }
 
@@ -319,10 +509,6 @@ fn same_path(left: &Path, right: &Path) -> bool {
 }
 
 fn windows_run_command(path: &Path) -> String {
-    quote_path(path)
-}
-
-fn desktop_exec_value(path: &Path) -> String {
     quote_path(path)
 }
 
@@ -350,7 +536,7 @@ fn encode_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{disabled_entry_path, quote_path};
+    use super::{disabled_entry_path, linux_systemd_service_unit, quote_path};
     use std::path::Path;
 
     #[test]
@@ -369,5 +555,33 @@ mod tests {
             )),
             Path::new("/home/me/.config/autostart/rust-desk-light-client.desktop.disabled")
         );
+    }
+
+    #[test]
+    fn linux_system_service_unit_runs_client_cli_at_boot() {
+        let unit = linux_systemd_service_unit(
+            Path::new("/root/.local/share/rust-desk-light/rdl-client-cli"),
+            Path::new("/root/.config/rust-desk-light/client.toml"),
+            Path::new("/root"),
+            true,
+        );
+
+        assert!(unit.contains("Environment=HOME=\"/root\"\n"));
+        assert!(unit.contains("ExecStart=\"/root/.local/share/rust-desk-light/rdl-client-cli\" --config \"/root/.config/rust-desk-light/client.toml\""));
+        assert!(unit.contains("Restart=always\n"));
+        assert!(unit.contains("WantedBy=multi-user.target\n"));
+    }
+
+    #[test]
+    fn linux_user_service_unit_uses_default_target() {
+        let unit = linux_systemd_service_unit(
+            Path::new("/home/me/.local/share/rust-desk-light/rdl-client-cli"),
+            Path::new("/home/me/.config/rust-desk-light/client.toml"),
+            Path::new("/home/me"),
+            false,
+        );
+
+        assert!(unit.contains("WantedBy=default.target\n"));
+        assert!(!unit.contains("WantedBy=multi-user.target\n"));
     }
 }
