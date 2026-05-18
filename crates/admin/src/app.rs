@@ -5,6 +5,7 @@ mod event;
 mod file_transfer;
 mod network;
 mod payload;
+mod settings;
 mod ui;
 
 use self::{
@@ -25,6 +26,7 @@ use self::{
     },
     network::admin_network_loop,
     payload::{payload_field, video_stream_payload},
+    settings::{SettingsAction, SettingsState},
     ui::{
         activity_context_menu, apply_admin_theme, cell_label, centered_cell, empty_state, panel,
         prune_activity_logs, section_title, table_header, timestamped_log, COLOR_BAD, COLOR_BG,
@@ -381,11 +383,7 @@ struct AdminApp {
     log_lines: Vec<String>,
     client_online_toasts: VecDeque<ClientOnlineToast>,
     client_list_initialized: bool,
-    auth_token_prompt_open: bool,
-    server_ip_input: String,
-    server_port_input: String,
-    auth_token_input: String,
-    auth_token_error: String,
+    settings: SettingsState,
     about_open: bool,
 }
 
@@ -664,6 +662,29 @@ fn form_label(ui: &mut egui::Ui, label: &str) {
     );
 }
 
+fn parse_connection_settings(
+    ip: &str,
+    port_text: &str,
+    token: &str,
+) -> Result<(String, u16, String), String> {
+    let ip = ip.trim().to_string();
+    let port_text = port_text.trim();
+    let token = token.trim().to_string();
+
+    if ip.is_empty() {
+        return Err("Server IP cannot be empty.".to_string());
+    }
+    let port = match port_text.parse::<u16>() {
+        Ok(port) if port > 0 => port,
+        _ => return Err("Server port must be 1-65535.".to_string()),
+    };
+    if token.is_empty() {
+        return Err("Token cannot be empty.".to_string());
+    }
+
+    Ok((ip, port, token))
+}
+
 fn info_icon_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(STATUS_BAR_CONTENT_HEIGHT, STATUS_BAR_CONTENT_HEIGHT),
@@ -799,12 +820,9 @@ impl AdminApp {
         if let Ok(mut handle) = repaint_handle.lock() {
             *handle = Some(cc.egui_ctx.clone());
         }
-        let initial_auth_token = config.auth_token.clone();
-        let initial_server_ip = config.ip.clone();
-        let initial_server_port = config.port.to_string();
         let startup_config_notice = config.startup_config_notice().to_string();
-        let auth_token_prompt_open = initial_auth_token.trim().is_empty();
         let client_builder = ClientBuilderState::new(&config);
+        let settings = SettingsState::new(&config);
         Self {
             config,
             input_tx,
@@ -847,11 +865,7 @@ impl AdminApp {
             ],
             client_online_toasts: VecDeque::new(),
             client_list_initialized: false,
-            auth_token_prompt_open,
-            server_ip_input: initial_server_ip,
-            server_port_input: initial_server_port,
-            auth_token_input: initial_auth_token,
-            auth_token_error: String::new(),
+            settings,
             about_open: false,
         }
     }
@@ -873,8 +887,7 @@ impl AdminApp {
             match event {
                 AdminEvent::Connected => {
                     self.connected = true;
-                    self.auth_token_prompt_open = false;
-                    self.auth_token_error.clear();
+                    self.settings.finish_reconnect_success();
                     self.push_log("connected to server");
                 }
                 AdminEvent::Disconnected => {
@@ -895,25 +908,25 @@ impl AdminApp {
                     detail,
                 } => {
                     self.connected = false;
-                    self.auth_token_prompt_open = true;
-                    self.server_ip_input = ip;
-                    self.server_port_input = port.to_string();
-                    self.auth_token_input = auth_token;
-                    self.auth_token_error = detail;
+                    self.settings
+                        .open_with_connection_error(ip, port, auth_token, detail);
                 }
                 AdminEvent::AuthTokenRequired => {
-                    self.auth_token_prompt_open = true;
-                    self.server_ip_input = self.config.ip.clone();
-                    self.server_port_input = self.config.port.to_string();
-                    self.auth_token_input = self.config.auth_token.clone();
-                    self.auth_token_error = "Server requires an auth token.".to_string();
+                    let detail = "Server requires an auth token.";
+                    self.settings.open_with_connection_error(
+                        self.config.ip.clone(),
+                        self.config.port,
+                        self.config.auth_token.clone(),
+                        detail,
+                    );
                 }
                 AdminEvent::AuthTokenRejected(detail) => {
-                    self.auth_token_prompt_open = true;
-                    self.server_ip_input = self.config.ip.clone();
-                    self.server_port_input = self.config.port.to_string();
-                    self.auth_token_error = detail;
-                    self.auth_token_input = self.config.auth_token.clone();
+                    self.settings.open_with_connection_error(
+                        self.config.ip.clone(),
+                        self.config.port,
+                        self.config.auth_token.clone(),
+                        detail,
+                    );
                 }
                 AdminEvent::Clients(clients) => {
                     self.merge_clients(clients);
@@ -1112,100 +1125,60 @@ impl AdminApp {
         changed
     }
 
-    fn render_auth_token_prompt(&mut self, ctx: &egui::Context) {
-        if !self.auth_token_prompt_open {
-            return;
+    fn handle_settings_action(&mut self, action: SettingsAction) {
+        match action {
+            SettingsAction::SaveConnection { ip, port, token } => {
+                self.save_settings_connection(ip, port, token);
+            }
+            SettingsAction::SavePreferences { theme, language } => {
+                self.save_settings_preferences(theme, language);
+            }
         }
-
-        egui::Window::new("Server Connection")
-            .collapsible(false)
-            .resizable(false)
-            .default_width(420.0)
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new("Check the server connection settings and reconnect.")
-                        .color(COLOR_TEXT),
-                );
-                ui.add_space(8.0);
-
-                form_label(ui, "Server IP");
-                let ip_response = ui.add_sized(
-                    [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-                    egui::TextEdit::singleline(&mut self.server_ip_input)
-                        .hint_text("127.0.0.1")
-                        .vertical_align(egui::Align::Center),
-                );
-                ui.add_space(6.0);
-
-                form_label(ui, "Server Port");
-                let port_response = ui.add_sized(
-                    [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-                    egui::TextEdit::singleline(&mut self.server_port_input)
-                        .hint_text("5169")
-                        .vertical_align(egui::Align::Center),
-                );
-                ui.add_space(6.0);
-
-                form_label(ui, "Token");
-                let token_response = ui.add_sized(
-                    [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-                    egui::TextEdit::singleline(&mut self.auth_token_input)
-                        .password(true)
-                        .hint_text("Auth token")
-                        .vertical_align(egui::Align::Center),
-                );
-                if !self.auth_token_error.is_empty() {
-                    ui.label(
-                        egui::RichText::new(&self.auth_token_error)
-                            .size(12.0)
-                            .color(COLOR_BAD),
-                    );
-                }
-                ui.add_space(8.0);
-                let submit = ui.button("Save and reconnect").clicked()
-                    || ((ip_response.lost_focus()
-                        || port_response.lost_focus()
-                        || token_response.lost_focus())
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter)));
-                if submit {
-                    self.save_connection_and_reconnect();
-                }
-            });
     }
 
-    fn save_connection_and_reconnect(&mut self) {
-        let ip = self.server_ip_input.trim().to_string();
-        let port_text = self.server_port_input.trim().to_string();
-        let token = self.auth_token_input.trim().to_string();
-
-        if ip.is_empty() {
-            self.auth_token_error = "Server IP cannot be empty.".to_string();
-            return;
-        }
-        let port = match port_text.parse::<u16>() {
-            Ok(port) if port > 0 => port,
-            _ => {
-                self.auth_token_error = "Server port must be 1-65535.".to_string();
+    fn save_settings_connection(&mut self, ip: String, port: String, token: String) {
+        let (ip, port, token) = match parse_connection_settings(&ip, &port, &token) {
+            Ok(value) => value,
+            Err(error) => {
+                self.settings.set_error(error);
                 return;
             }
         };
-        if token.is_empty() {
-            self.auth_token_error = "Token cannot be empty.".to_string();
-            return;
-        }
 
         match self.config.save_server_connection(&ip, port, &token) {
             Ok(()) => {
-                self.auth_token_prompt_open = false;
-                self.auth_token_error.clear();
-                self.push_log(format!("saved server connection {ip}:{port}"));
+                self.settings.sync_connection(&self.config);
+                self.settings.set_reconnect_pending();
+                self.push_log(format!("saved server connection {ip}:{port} from settings"));
                 let _ = self.input_tx.send(AdminInput::Reconnect {
-                    reason: "server connection updated".to_string(),
+                    reason: "server connection updated from settings".to_string(),
                 });
             }
             Err(error) => {
-                self.auth_token_error = format!("Save failed: {error}");
+                self.settings.set_error(format!("Save failed: {error}"));
             }
+        }
+    }
+
+    fn save_settings_preferences(&mut self, theme: String, language: String) {
+        match self.config.save_ui_preferences(&theme, &language) {
+            Ok(()) => {
+                self.settings
+                    .set_notice("Theme/language saved to config. Runtime support is TODO.");
+                self.push_log(format!(
+                    "saved admin preferences theme={theme} language={language}"
+                ));
+            }
+            Err(error) => {
+                self.settings
+                    .set_error(format!("Save preferences failed: {error}"));
+            }
+        }
+    }
+
+    fn render_settings_window(&mut self, ctx: &egui::Context) {
+        if let Some(action) = settings::render_settings_window(ctx, &mut self.settings) {
+            self.handle_settings_action(action);
         }
     }
 
@@ -2307,14 +2280,25 @@ impl AdminApp {
                     );
                 }
                 #[cfg(debug_assertions)]
-                {
-                    ui.separator();
-                    ui.menu_button("Debug", |ui| {
-                        if ui.button("输出中文日志").clicked() {
-                            self.push_log("中文日志测试：菜单和日志应正常显示，不应乱码。");
-                            ui.close();
-                        }
-                    });
+                let mut debug_log_requested = false;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    #[cfg(debug_assertions)]
+                    {
+                        ui.menu_button("Debug", |ui| {
+                            if ui.button("输出中文日志").clicked() {
+                                debug_log_requested = true;
+                                ui.close();
+                            }
+                        });
+                        ui.separator();
+                    }
+                    if ui.button("Setting").clicked() {
+                        self.settings.open();
+                    }
+                });
+                #[cfg(debug_assertions)]
+                if debug_log_requested {
+                    self.push_log("中文日志测试：菜单和日志应正常显示，不应乱码。");
                 }
             });
         });
@@ -3246,7 +3230,7 @@ impl eframe::App for AdminApp {
         self.render_interaction_command_windows(ui.ctx());
         self.render_session_command_windows(ui.ctx());
         self.render_execute_windows(ui.ctx());
-        self.render_auth_token_prompt(ui.ctx());
+        self.render_settings_window(ui.ctx());
         self.render_about_window(ui.ctx());
         if let Some(log_line) =
             self.client_builder

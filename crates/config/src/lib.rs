@@ -426,6 +426,37 @@ pub fn write_require_client_auth_config(
     })
 }
 
+pub fn write_ui_config(
+    kind: ConfigKind,
+    path: &Path,
+    theme: &str,
+    language: &str,
+) -> Result<(), ConfigError> {
+    let document = match fs::read_to_string(path) {
+        Ok(text) => ConfigDocument::parse(&text, path)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => ConfigDocument::default(),
+        Err(error) => {
+            return Err(ConfigError::Io {
+                path: path.to_path_buf(),
+                error,
+            })
+        }
+    };
+    let text = document
+        .with_ui_config(theme, language)
+        .to_toml_string(kind);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| ConfigError::Io {
+            path: parent.to_path_buf(),
+            error,
+        })?;
+    }
+    fs::write(path, text).map_err(|error| ConfigError::Io {
+        path: path.to_path_buf(),
+        error,
+    })
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EmbeddedEndpointConfig {
     pub ip: Option<String>,
@@ -950,6 +981,13 @@ impl ConfigDocument {
         self
     }
 
+    fn with_ui_config(mut self, theme: &str, language: &str) -> Self {
+        let section = self.sections.entry("ui".to_string()).or_default();
+        section.insert("theme".to_string(), format_toml_string(theme));
+        section.insert("language".to_string(), format_toml_string(language));
+        self
+    }
+
     fn to_toml_string(&self, kind: ConfigKind) -> String {
         let mut out = String::new();
         out.push_str("# rust-desk-light configuration\n");
@@ -1163,6 +1201,36 @@ mod tests {
         assert!(text.contains("token = \"rdl-test-token\""));
         assert!(text.contains("[ui]"));
         assert!(text.contains("theme = \"light\""));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn writes_ui_config_without_losing_other_sections() {
+        let path = std::env::temp_dir().join(format!(
+            "rdl-config-ui-test-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"
+            [server]
+            ip = "10.0.0.1"
+            port = 5169
+            "#,
+        )
+        .unwrap();
+
+        write_ui_config(ConfigKind::Admin, &path, "dark", "zh-CN").unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[server]"));
+        assert!(text.contains("[ui]"));
+        assert!(text.contains("theme = \"dark\""));
+        assert!(text.contains("language = \"zh-CN\""));
         let _ = fs::remove_file(path);
     }
 

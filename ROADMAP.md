@@ -41,6 +41,11 @@
 - [ ] Show a local visible "being remotely controlled" indicator on the client.
 - [ ] Support raw keyboard events for shortcuts, arrows, function keys, and modifiers.
 
+### Admin UI
+
+- [ ] Wire saved admin theme config into runtime UI styling.
+- [ ] Add admin i18n resources and apply the saved language config.
+
 ### File Transfer
 
 - [ ] Improve conflict handling: overwrite, skip, rename.

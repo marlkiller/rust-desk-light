@@ -73,6 +73,15 @@ impl Config {
         );
         Ok(())
     }
+
+    pub(crate) fn save_ui_preferences(
+        &mut self,
+        theme: &str,
+        language: &str,
+    ) -> Result<(), rdl_config::ConfigError> {
+        rdl_config::write_ui_config(ConfigKind::Admin, &self.config_path, theme, language)?;
+        Ok(())
+    }
 }
 
 fn admin_startup_config_notice(loaded: &rdl_config::LoadedEndpointConfig) -> String {
