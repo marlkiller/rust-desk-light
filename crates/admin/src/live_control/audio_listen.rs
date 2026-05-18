@@ -1,4 +1,7 @@
-use crate::windowing;
+use crate::{
+    theme::{COLOR_BAD, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED, COLOR_PANEL, COLOR_WARN},
+    windowing,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 use std::collections::{HashMap, VecDeque};
@@ -9,14 +12,7 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
-const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const MAX_AUDIO_BUFFER_MS: usize = 220;
 const MIN_AUDIO_PREBUFFER_MS: usize = 40;
 const MAX_AUDIO_PREBUFFER_MS: usize = 120;
@@ -341,7 +337,7 @@ pub(crate) fn render_windows(
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     render_toolbar(ui, &devices, &selected_device, &running, &queued_for_ui);
@@ -549,7 +545,7 @@ fn render_meter(ui: &mut egui::Ui, peak: f32, notice: &str) {
     );
     let meter_rect = rect.shrink2(egui::vec2(18.0, 28.0));
     ui.painter()
-        .rect_filled(meter_rect, 4.0, egui::Color32::from_rgb(232, 237, 244));
+        .rect_filled(meter_rect, 4.0, crate::theme::COLOR_METER_BG);
     let fill_width = meter_rect.width() * peak.clamp(0.0, 1.0);
     let fill_rect =
         egui::Rect::from_min_size(meter_rect.min, egui::vec2(fill_width, meter_rect.height()));

@@ -1,7 +1,10 @@
-use crate::windowing;
+use crate::{
+    theme::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, COLOR_WARN},
+    windowing,
+};
 use chrono::{Local, TimeZone};
 use eframe::egui;
-use egui_extras::{Column, Size, StripBuilder, TableBuilder};
+use egui_extras::{Column, Size, StripBuilder};
 use rdl_protocol::{FileTransferAction, FileTransferDirection, Message};
 use rfd::FileDialog;
 use std::fs;
@@ -13,15 +16,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
-const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 const TRANSFER_COLUMN_WIDTH: f32 = 100.0;
 const TRANSFER_BUTTON_WIDTH: f32 = 84.0;
 const TRANSFER_TABLE_HEIGHT: f32 = 150.0;
@@ -485,7 +480,7 @@ pub(crate) fn render_windows(
                     close_requested.store(true, Ordering::Relaxed);
                 }
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                    .frame(crate::theme::page_frame())
                     .show_inside(ui, |ui| {
                         windowing::render_child_window_controls(ui);
                         let content_height =
@@ -639,40 +634,36 @@ fn render_remote_panel(
     notice: &Arc<Mutex<String>>,
     transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("Remote")
-                        .size(13.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                render_remote_toolbar(ui, current_path, path_input, outbound, status);
-                ui.add_space(6.0);
-                render_entries_table(
-                    ui,
-                    entries_id,
-                    current_path,
-                    entries,
-                    selected_name,
-                    rename_to,
-                    pending_delete,
-                    pending_rename,
-                    pending_new_folder,
-                    new_folder_name,
-                    outbound,
-                    status,
-                    local_path,
-                    notice,
-                    transfers,
-                );
-            });
+    crate::theme::panel_frame_with_margin(8.0).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Remote")
+                    .size(13.0)
+                    .color(COLOR_TEXT)
+                    .strong(),
+            );
+            render_remote_toolbar(ui, current_path, path_input, outbound, status);
+            ui.add_space(6.0);
+            render_entries_table(
+                ui,
+                entries_id,
+                current_path,
+                entries,
+                selected_name,
+                rename_to,
+                pending_delete,
+                pending_rename,
+                pending_new_folder,
+                new_folder_name,
+                outbound,
+                status,
+                local_path,
+                notice,
+                transfers,
+            );
         });
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -693,40 +684,36 @@ fn render_local_panel(
     notice: &Arc<Mutex<String>>,
     transfers: &Arc<Mutex<Vec<FileTransferRow>>>,
 ) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            ui.set_min_size(ui.available_size());
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("Local")
-                        .size(13.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                render_local_toolbar(ui, local_path, local_entries, selected_local_name);
-                ui.add_space(6.0);
-                render_local_entries_table(
-                    ui,
-                    entries_id,
-                    local_path,
-                    local_entries,
-                    selected_local_name,
-                    local_rename_to,
-                    local_new_folder_name,
-                    pending_local_delete,
-                    pending_local_rename,
-                    pending_local_new_folder,
-                    current_path,
-                    outbound,
-                    status,
-                    notice,
-                    transfers,
-                );
-            });
+    crate::theme::panel_frame_with_margin(8.0).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Local")
+                    .size(13.0)
+                    .color(COLOR_TEXT)
+                    .strong(),
+            );
+            render_local_toolbar(ui, local_path, local_entries, selected_local_name);
+            ui.add_space(6.0);
+            render_local_entries_table(
+                ui,
+                entries_id,
+                local_path,
+                local_entries,
+                selected_local_name,
+                local_rename_to,
+                local_new_folder_name,
+                pending_local_delete,
+                pending_local_rename,
+                pending_local_new_folder,
+                current_path,
+                outbound,
+                status,
+                notice,
+                transfers,
+            );
         });
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1268,12 +1255,7 @@ fn file_table<R>(
     let name_width =
         (available_width - select_width - type_width - size_width - modified_width - 24.0)
             .max(140.0);
-    let table = TableBuilder::new(ui)
-        .id_salt(id)
-        .striped(true)
-        .resizable(true)
-        .sense(egui::Sense::click())
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+    let table = crate::theme::clickable_table(ui, id, true)
         .column(Column::exact(select_width))
         .column(Column::initial(type_width).at_least(38.0).clip(true))
         .column(Column::initial(name_width).at_least(140.0).clip(true))
@@ -1324,124 +1306,113 @@ fn render_transfer_table(
         .lock()
         .map(|value| value.clone())
         .unwrap_or_default();
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            ui.set_min_height(TRANSFER_TABLE_HEIGHT - 18.0);
-            ui.horizontal(|ui| {
+    crate::theme::panel_frame_with_margin(8.0).show(ui, |ui| {
+        ui.set_min_height(TRANSFER_TABLE_HEIGHT - 18.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Transfers")
+                    .size(13.0)
+                    .color(COLOR_TEXT)
+                    .strong(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    egui::RichText::new("Transfers")
-                        .size(13.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("Right click a row to delete")
-                            .size(12.0)
-                            .color(COLOR_MUTED),
-                    );
-                });
-            });
-            ui.add_space(6.0);
-            if rows.is_empty() {
-                ui.label(
-                    egui::RichText::new("No file transfers")
+                    egui::RichText::new("Right click a row to delete")
                         .size(12.0)
                         .color(COLOR_MUTED),
                 );
-                return;
-            }
-
-            let available_width = ui.available_width().max(720.0);
-            let id_width = 64.0;
-            let direction_width = 86.0;
-            let progress_width = 150.0;
-            let status_width = 112.0;
-            let message_width = 180.0;
-            let name_width = (available_width
-                - id_width
-                - direction_width
-                - progress_width
-                - status_width
-                - message_width
-                - 30.0)
-                .max(180.0);
-
-            TableBuilder::new(ui)
-                .id_salt("file_transfer_table_resizable")
-                .striped(true)
-                .resizable(true)
-                .sense(egui::Sense::click())
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(id_width).at_least(48.0).clip(true))
-                .column(Column::initial(direction_width).at_least(76.0).clip(true))
-                .column(Column::initial(name_width).at_least(160.0).clip(true))
-                .column(Column::initial(progress_width).at_least(110.0).clip(true))
-                .column(Column::initial(status_width).at_least(92.0).clip(true))
-                .column(Column::initial(message_width).at_least(120.0).clip(true))
-                .header(24.0, |mut header| {
-                    header.col(|ui| table_header_label(ui, "ID"));
-                    header.col(|ui| table_header_label(ui, "Direction"));
-                    header.col(|ui| table_header_label(ui, "Item"));
-                    header.col(|ui| table_header_label(ui, "Progress"));
-                    header.col(|ui| table_header_label(ui, "Status"));
-                    header.col(|ui| table_header_label(ui, "Message"));
-                })
-                .body(|mut body| {
-                    for row_data in rows {
-                        body.row(24.0, |mut row| {
-                            row.col(|ui| table_text(ui, &row_data.transfer_id.to_string()));
-                            row.col(|ui| {
-                                table_text(ui, transfer_direction_label(row_data.direction))
-                            });
-                            row.col(|ui| {
-                                let response = ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&row_data.name)
-                                            .size(12.0)
-                                            .color(COLOR_TEXT),
-                                    )
-                                    .selectable(false)
-                                    .sense(egui::Sense::hover()),
-                                );
-                                response.on_hover_text(format!(
-                                    "{}\n{}",
-                                    row_data.source, row_data.destination
-                                ));
-                            });
-                            row.col(|ui| table_text(ui, &transfer_progress_label(&row_data)));
-                            row.col(|ui| {
-                                let color = transfer_status_color(row_data.status);
-                                ui.label(
-                                    egui::RichText::new(transfer_status_label(row_data.status))
-                                        .size(12.0)
-                                        .color(color)
-                                        .strong(),
-                                );
-                            });
-                            row.col(|ui| table_text(ui, &row_data.message));
-                            let response = row.response();
-                            if response.hovered() {
-                                response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
-                            response.context_menu(|ui| {
-                                if ui.button("Delete").clicked() {
-                                    if transfer_can_stop(row_data.status) {
-                                        queue_cancel_transfer(outbound, transfers, &row_data);
-                                    }
-                                    if let Ok(mut rows) = transfers.lock() {
-                                        rows.retain(|row| row.transfer_id != row_data.transfer_id);
-                                    }
-                                    ui.close();
-                                }
-                            });
-                        });
-                    }
-                });
+            });
         });
+        ui.add_space(6.0);
+        if rows.is_empty() {
+            ui.label(
+                egui::RichText::new("No file transfers")
+                    .size(12.0)
+                    .color(COLOR_MUTED),
+            );
+            return;
+        }
+
+        let available_width = ui.available_width().max(720.0);
+        let id_width = 64.0;
+        let direction_width = 86.0;
+        let progress_width = 150.0;
+        let status_width = 112.0;
+        let message_width = 180.0;
+        let name_width = (available_width
+            - id_width
+            - direction_width
+            - progress_width
+            - status_width
+            - message_width
+            - 30.0)
+            .max(180.0);
+
+        crate::theme::clickable_table(ui, "file_transfer_table_resizable", true)
+            .column(Column::initial(id_width).at_least(48.0).clip(true))
+            .column(Column::initial(direction_width).at_least(76.0).clip(true))
+            .column(Column::initial(name_width).at_least(160.0).clip(true))
+            .column(Column::initial(progress_width).at_least(110.0).clip(true))
+            .column(Column::initial(status_width).at_least(92.0).clip(true))
+            .column(Column::initial(message_width).at_least(120.0).clip(true))
+            .header(24.0, |mut header| {
+                header.col(|ui| table_header_label(ui, "ID"));
+                header.col(|ui| table_header_label(ui, "Direction"));
+                header.col(|ui| table_header_label(ui, "Item"));
+                header.col(|ui| table_header_label(ui, "Progress"));
+                header.col(|ui| table_header_label(ui, "Status"));
+                header.col(|ui| table_header_label(ui, "Message"));
+            })
+            .body(|mut body| {
+                for row_data in rows {
+                    body.row(24.0, |mut row| {
+                        row.col(|ui| table_text(ui, &row_data.transfer_id.to_string()));
+                        row.col(|ui| table_text(ui, transfer_direction_label(row_data.direction)));
+                        row.col(|ui| {
+                            let response = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&row_data.name)
+                                        .size(12.0)
+                                        .color(COLOR_TEXT),
+                                )
+                                .selectable(false)
+                                .sense(egui::Sense::hover()),
+                            );
+                            response.on_hover_text(format!(
+                                "{}\n{}",
+                                row_data.source, row_data.destination
+                            ));
+                        });
+                        row.col(|ui| table_text(ui, &transfer_progress_label(&row_data)));
+                        row.col(|ui| {
+                            let color = transfer_status_color(row_data.status);
+                            ui.label(
+                                egui::RichText::new(transfer_status_label(row_data.status))
+                                    .size(12.0)
+                                    .color(color)
+                                    .strong(),
+                            );
+                        });
+                        row.col(|ui| table_text(ui, &row_data.message));
+                        let response = row.response();
+                        if response.hovered() {
+                            response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("Delete").clicked() {
+                                if transfer_can_stop(row_data.status) {
+                                    queue_cancel_transfer(outbound, transfers, &row_data);
+                                }
+                                if let Ok(mut rows) = transfers.lock() {
+                                    rows.retain(|row| row.transfer_id != row_data.transfer_id);
+                                }
+                                ui.close();
+                            }
+                        });
+                    });
+                }
+            });
+    });
 }
 
 fn queue_cancel_transfer(
@@ -1636,25 +1607,10 @@ fn render_status_bar(
         FileStatus::Done => ("Done", COLOR_GOOD),
         FileStatus::Failed => ("Failed", COLOR_BAD),
     };
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .corner_radius(egui::CornerRadius::same(6))
-        .show(ui, |ui| {
-            ui.set_min_height(26.0);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.0, color);
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(12.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                ui.label(egui::RichText::new(notice).size(12.0).color(COLOR_MUTED));
-            });
-        });
+    crate::theme::status_frame().show(ui, |ui| {
+        ui.set_min_height(26.0);
+        crate::theme::render_status_line(ui, label, color, &notice, |_| {});
+    });
 }
 
 fn render_pending_dialogs(

@@ -4,12 +4,10 @@ use std::sync::{
     Arc, Mutex,
 };
 
-pub(super) const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-pub(super) const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-pub(super) const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-pub(super) const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-pub(super) const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+use crate::theme::COLOR_TEXT;
+pub(super) use crate::theme::{COLOR_BORDER, COLOR_MUTED, COLOR_PANEL};
+
+pub(super) const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 const INLINE_LABEL_WIDTH: f32 = 86.0;
 pub(super) const CODE_ROW_HEIGHT: f32 = 18.0;
 const STATUS_BAR_HEIGHT: f32 = 42.0;
@@ -21,12 +19,7 @@ pub(super) fn render_status_panel(ui: &mut egui::Ui, result_status: &Arc<Mutex<S
     )))
     .exact_size(STATUS_BAR_HEIGHT)
     .show_separator_line(false)
-    .frame(
-        egui::Frame::default()
-            .fill(COLOR_BG)
-            .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-            .inner_margin(egui::Margin::symmetric(8, 6)),
-    )
+    .frame(crate::theme::footer_frame())
     .show_inside(ui, |ui| render_status_bar(ui, result_status));
 }
 

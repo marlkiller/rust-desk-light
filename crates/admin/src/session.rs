@@ -1,4 +1,7 @@
-use crate::windowing;
+use crate::{
+    theme::{COLOR_MUTED, COLOR_TEXT},
+    windowing,
+};
 use eframe::egui;
 use rdl_protocol::CommandKind;
 use std::sync::{
@@ -6,13 +9,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 
 pub(crate) struct SessionCommandWindow {
     pub(crate) client_id: String,
@@ -139,7 +136,7 @@ pub(crate) fn render_windows(
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     render_form(
@@ -221,17 +218,14 @@ fn render_form(
     confirmed: &Arc<AtomicBool>,
     send_requested: &Arc<AtomicBool>,
 ) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
+    crate::theme::panel_frame()
         .corner_radius(8.0)
         .inner_margin(12.0)
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.label(
-                    egui::RichText::new(risk_text(command))
+                    crate::theme::danger_text(risk_text(command))
                         .size(13.0)
-                        .color(COLOR_BAD)
                         .strong(),
                 );
                 ui.add_space(10.0);

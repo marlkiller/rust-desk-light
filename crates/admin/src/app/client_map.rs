@@ -55,7 +55,7 @@ impl ClientMapWindow {
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(ui::COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     render_map_contents(
@@ -278,10 +278,7 @@ fn draw_world_map(painter: &egui::Painter, rect: egui::Rect) {
     painter.rect_stroke(
         rect.shrink(1.0),
         7.0,
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 170),
-        ),
+        egui::Stroke::new(1.0, crate::theme::map_palette().border_highlight),
         egui::StrokeKind::Inside,
     );
 }
@@ -317,18 +314,11 @@ fn render_map_stats_bar(
 }
 
 fn draw_stat_chip(painter: &egui::Painter, rect: egui::Rect, label: &str, value: usize) {
-    painter.rect_filled(
-        rect,
-        8.0,
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180),
-    );
+    painter.rect_filled(rect, 8.0, crate::theme::map_palette().stat_chip_bg);
     painter.rect_stroke(
         rect,
         8.0,
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(208, 218, 229, 180),
-        ),
+        egui::Stroke::new(1.0, crate::theme::map_palette().stat_chip_border),
         egui::StrokeKind::Inside,
     );
     painter.text(
@@ -348,13 +338,8 @@ fn draw_stat_chip(painter: &egui::Painter, rect: egui::Rect, label: &str, value:
 }
 
 fn draw_ocean(painter: &egui::Painter, rect: egui::Rect) {
-    painter.rect_filled(rect, 8.0, egui::Color32::from_rgb(226, 239, 249));
-    let bands = [
-        egui::Color32::from_rgba_unmultiplied(214, 231, 245, 120),
-        egui::Color32::from_rgba_unmultiplied(236, 246, 251, 120),
-        egui::Color32::from_rgba_unmultiplied(219, 235, 247, 120),
-        egui::Color32::from_rgba_unmultiplied(241, 248, 252, 120),
-    ];
+    painter.rect_filled(rect, 8.0, crate::theme::map_palette().ocean);
+    let bands = crate::theme::map_palette().ocean_bands;
     for index in 0..12 {
         let top = rect.top() + rect.height() * index as f32 / 12.0;
         let bottom = rect.top() + rect.height() * (index + 1) as f32 / 12.0;
@@ -393,7 +378,7 @@ fn draw_graticule(painter: &egui::Painter, rect: egui::Rect) {
             egui::pos2(rect.left(), equator_y),
             egui::pos2(rect.right(), equator_y),
         ],
-        egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(95, 132, 154, 80)),
+        egui::Stroke::new(1.2, crate::theme::map_palette().equator),
     );
 
     for lon in (-120_i32..=120_i32).step_by(60) {
@@ -410,22 +395,16 @@ fn draw_graticule(painter: &egui::Painter, rect: egui::Rect) {
             egui::Align2::CENTER_BOTTOM,
             label,
             egui::FontId::proportional(9.0),
-            egui::Color32::from_rgba_unmultiplied(74, 92, 110, 120),
+            crate::theme::map_palette().graticule_label,
         );
     }
 }
 
 fn graticule_stroke(major: bool) -> egui::Stroke {
     if major {
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(112, 145, 168, 70),
-        )
+        egui::Stroke::new(1.0, crate::theme::map_palette().graticule_major)
     } else {
-        egui::Stroke::new(
-            0.8,
-            egui::Color32::from_rgba_unmultiplied(112, 145, 168, 38),
-        )
+        egui::Stroke::new(0.8, crate::theme::map_palette().graticule_minor)
     }
 }
 
@@ -433,18 +412,12 @@ fn draw_land_shapes(painter: &egui::Painter, rect: egui::Rect) {
     draw_land_mesh(
         painter,
         rect.translate(egui::vec2(0.0, 1.6)),
-        egui::Color32::from_rgba_unmultiplied(69, 88, 80, 32),
+        crate::theme::map_palette().land_shadow,
     );
-    draw_land_mesh(painter, rect, egui::Color32::from_rgb(221, 231, 214));
+    draw_land_mesh(painter, rect, crate::theme::map_palette().land);
 
-    let coast_glow = egui::Stroke::new(
-        2.2,
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 95),
-    );
-    let coast = egui::Stroke::new(
-        0.9,
-        egui::Color32::from_rgba_unmultiplied(126, 151, 126, 170),
-    );
+    let coast_glow = egui::Stroke::new(2.2, crate::theme::map_palette().coast_glow);
+    let coast = egui::Stroke::new(0.9, crate::theme::map_palette().coast);
     for polygon in world_map_data::LAND_POLYGONS {
         let points = projected_polygon_points(rect, polygon.points);
         painter.add(egui::Shape::closed_line(points.clone(), coast_glow));
@@ -493,7 +466,7 @@ fn draw_map_labels(painter: &egui::Painter, rect: egui::Rect) {
             egui::Align2::CENTER_CENTER,
             label.text,
             egui::FontId::proportional(label.size),
-            egui::Color32::from_rgba_unmultiplied(76, 91, 77, label.alpha),
+            crate::theme::map_label_color(label.alpha),
         );
     }
 }
@@ -513,18 +486,11 @@ fn draw_map_summary(
         rect.left_top() + egui::vec2(14.0, 14.0),
         egui::vec2(190.0, 34.0),
     );
-    painter.rect_filled(
-        badge_rect,
-        8.0,
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 218),
-    );
+    painter.rect_filled(badge_rect, 8.0, crate::theme::map_palette().summary_bg);
     painter.rect_stroke(
         badge_rect,
         8.0,
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(188, 202, 214, 165),
-        ),
+        egui::Stroke::new(1.0, crate::theme::map_palette().summary_border),
         egui::StrokeKind::Inside,
     );
     painter.text(
@@ -547,12 +513,12 @@ fn draw_map_cluster(painter: &egui::Painter, cluster: &MapCluster, selected: boo
     painter.circle_filled(
         cluster.pos,
         radius + 8.0,
-        egui::Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), 32),
+        crate::theme::with_alpha(fill, 32),
     );
     painter.circle_filled(
         cluster.pos + egui::vec2(0.0, 1.5),
         radius + 2.0,
-        egui::Color32::from_rgba_unmultiplied(25, 36, 48, 45),
+        crate::theme::map_palette().cluster_shadow,
     );
     painter.circle_filled(cluster.pos, radius, fill);
     painter.circle_stroke(
@@ -586,17 +552,14 @@ fn draw_map_cluster_label(
 ) {
     let rect = cluster_label_rect(map_rect, cluster);
     let fill = if selected {
-        egui::Color32::from_rgba_unmultiplied(229, 239, 253, 235)
+        crate::theme::map_palette().cluster_label_selected_bg
     } else {
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220)
+        crate::theme::map_palette().cluster_label_bg
     };
     let stroke = if selected {
         egui::Stroke::new(1.0, ui::COLOR_ACCENT.gamma_multiply(0.55))
     } else {
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(188, 202, 214, 165),
-        )
+        egui::Stroke::new(1.0, crate::theme::map_palette().summary_border)
     };
 
     painter.rect_filled(rect, 7.0, fill);
@@ -678,20 +641,13 @@ fn draw_cluster_hover_card(
     painter.rect_filled(
         rect.translate(egui::vec2(0.0, 1.5)),
         9.0,
-        egui::Color32::from_rgba_unmultiplied(19, 30, 42, 45),
+        crate::theme::map_palette().hover_shadow,
     );
-    painter.rect_filled(
-        rect,
-        9.0,
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 242),
-    );
+    painter.rect_filled(rect, 9.0, crate::theme::map_palette().hover_bg);
     painter.rect_stroke(
         rect,
         9.0,
-        egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgba_unmultiplied(172, 190, 208, 210),
-        ),
+        egui::Stroke::new(1.0, crate::theme::map_palette().hover_border),
         egui::StrokeKind::Inside,
     );
     painter.text(

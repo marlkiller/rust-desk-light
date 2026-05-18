@@ -1,4 +1,7 @@
-use crate::windowing;
+use crate::{
+    theme::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, COLOR_WARN},
+    windowing,
+};
 use eframe::egui;
 use rdl_protocol::{
     default_static_command_preset_id, static_command_preset_label, static_command_presets,
@@ -9,15 +12,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
-const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 
 pub(crate) struct TerminalWindow {
     pub(crate) client_id: String,
@@ -245,7 +240,7 @@ pub(crate) fn render_windows(
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     render_toolbar(
@@ -268,19 +263,15 @@ pub(crate) fn render_windows(
                         - status_height
                         - 16.0)
                         .max(120.0);
-                    egui::Frame::default()
-                        .fill(COLOR_PANEL)
-                        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                        .inner_margin(10.0)
-                        .show(ui, |ui| {
-                            ui.set_min_height(history_height);
-                            ui.set_max_height(history_height);
-                            egui::ScrollArea::vertical()
-                                .id_salt(("admin_remote_terminal_history", &history_id))
-                                .stick_to_bottom(true)
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| render_history(ui, &lines));
-                        });
+                    crate::theme::panel_frame_with_margin(10.0).show(ui, |ui| {
+                        ui.set_min_height(history_height);
+                        ui.set_max_height(history_height);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("admin_remote_terminal_history", &history_id))
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| render_history(ui, &lines));
+                    });
                     ui.add_space(8.0);
                     render_input(
                         ui,
@@ -582,29 +573,10 @@ fn render_status_bar(
     } else {
         format!("cwd: {current_dir}")
     };
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .corner_radius(egui::CornerRadius::same(6))
-        .show(ui, |ui| {
-            ui.set_min_height(26.0);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.0, color);
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(12.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                ui.label(
-                    egui::RichText::new(progress_text)
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                );
-            });
-        });
+    crate::theme::status_frame().show(ui, |ui| {
+        ui.set_min_height(26.0);
+        crate::theme::render_status_line(ui, label, color, &progress_text, |_| {});
+    });
 }
 
 fn apply_history_delta(

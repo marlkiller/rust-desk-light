@@ -1,4 +1,7 @@
-use crate::windowing;
+use crate::{
+    theme::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_WARN},
+    windowing,
+};
 use base64::Engine;
 use eframe::egui;
 use std::path::Path;
@@ -8,16 +11,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const DEFAULT_QUALITY: &str = "medium";
-const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
@@ -396,7 +391,7 @@ pub(crate) fn render_windows(
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     render_toolbar(
@@ -698,70 +693,64 @@ fn render_frame(
     placeholder: &str,
     queued: &Arc<Mutex<Vec<String>>>,
 ) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            let available = ui.available_size();
-            let Some(texture) = texture else {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new(placeholder).color(COLOR_MUTED));
-                });
-                return;
-            };
-            let Some((screen_w, screen_h, image_w, image_h)) = frame_info else {
-                return;
-            };
-            let scale = (available.x / image_w as f32)
-                .min(available.y / image_h as f32)
-                .max(0.1);
-            let size = egui::vec2(image_w as f32 * scale, image_h as f32 * scale);
-            let image = egui::Image::new(texture)
-                .fit_to_exact_size(size)
-                .sense(egui::Sense::click_and_drag());
-            let response = ui.add(image);
-            if mouse_follow.load(Ordering::Relaxed) && response.hovered() {
-                if let Some((x, y)) =
-                    hovered_remote_point(&response, screen_origin, screen_w, screen_h)
+    crate::theme::panel_frame_with_margin(8.0).show(ui, |ui| {
+        let available = ui.available_size();
+        let Some(texture) = texture else {
+            ui.centered_and_justified(|ui| {
+                ui.label(egui::RichText::new(placeholder).color(COLOR_MUTED));
+            });
+            return;
+        };
+        let Some((screen_w, screen_h, image_w, image_h)) = frame_info else {
+            return;
+        };
+        let scale = (available.x / image_w as f32)
+            .min(available.y / image_h as f32)
+            .max(0.1);
+        let size = egui::vec2(image_w as f32 * scale, image_h as f32 * scale);
+        let image = egui::Image::new(texture)
+            .fit_to_exact_size(size)
+            .sense(egui::Sense::click_and_drag());
+        let response = ui.add(image);
+        if mouse_follow.load(Ordering::Relaxed) && response.hovered() {
+            if let Some((x, y)) = hovered_remote_point(&response, screen_origin, screen_w, screen_h)
+            {
+                if mouse_target_changed(last_mouse_target, (x, y))
+                    && mouse_move_due(last_mouse_move)
                 {
-                    if mouse_target_changed(last_mouse_target, (x, y))
-                        && mouse_move_due(last_mouse_move)
-                    {
-                        set_last_mouse_target(last_mouse_target, Some((x, y)));
-                        queue_ui_payload(queued, format!("action=move\nx={x}\ny={y}"));
-                    }
-                }
-            } else {
-                set_last_mouse_target(last_mouse_target, None);
-            }
-            if mouse_click.load(Ordering::Relaxed)
-                && response.clicked_by(egui::PointerButton::Primary)
-            {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let rel_x =
-                        ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
-                    let rel_y =
-                        ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
-                    let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
-                    let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
-                    queue_ui_payload(queued, format!("action=click\nbutton=left\nx={x}\ny={y}"));
+                    set_last_mouse_target(last_mouse_target, Some((x, y)));
+                    queue_ui_payload(queued, format!("action=move\nx={x}\ny={y}"));
                 }
             }
-            if mouse_click.load(Ordering::Relaxed)
-                && response.clicked_by(egui::PointerButton::Secondary)
-            {
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let rel_x =
-                        ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
-                    let rel_y =
-                        ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
-                    let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
-                    let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
-                    queue_ui_payload(queued, format!("action=click\nbutton=right\nx={x}\ny={y}"));
-                }
+        } else {
+            set_last_mouse_target(last_mouse_target, None);
+        }
+        if mouse_click.load(Ordering::Relaxed) && response.clicked_by(egui::PointerButton::Primary)
+        {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let rel_x =
+                    ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
+                let rel_y =
+                    ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
+                let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
+                let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+                queue_ui_payload(queued, format!("action=click\nbutton=left\nx={x}\ny={y}"));
             }
-        });
+        }
+        if mouse_click.load(Ordering::Relaxed)
+            && response.clicked_by(egui::PointerButton::Secondary)
+        {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let rel_x =
+                    ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
+                let rel_y =
+                    ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
+                let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
+                let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+                queue_ui_payload(queued, format!("action=click\nbutton=right\nx={x}\ny={y}"));
+            }
+        }
+    });
 }
 
 fn hovered_remote_point(
@@ -818,63 +807,32 @@ fn render_status_bar(ui: &mut egui::Ui, status: DesktopStatus, notice: &str, sta
         DesktopStatus::Live => ("Live", COLOR_GOOD),
         DesktopStatus::Failed => ("Failed", COLOR_BAD),
     };
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .corner_radius(egui::CornerRadius::same(6))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.0, color);
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(12.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                ui.label(egui::RichText::new(notice).size(12.0).color(COLOR_MUTED));
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("FPS {:.1}", stats.fps))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                );
-                ui.label(
-                    egui::RichText::new(format!("Frames {}", stats.frame_count))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                );
-                if stats.screen_width > 0 && stats.screen_height > 0 {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{}x{}",
-                            stats.screen_width, stats.screen_height
-                        ))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                    );
-                }
-                if stats.encoded_bytes > 0 {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} {}",
-                            human_bytes(stats.encoded_bytes),
-                            stats.format
-                        ))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                    );
-                }
-                if let Some(latency_ms) = stats.latency_ms {
-                    ui.label(
-                        egui::RichText::new(format!("RTT {} ms", latency_ms))
-                            .size(12.0)
-                            .color(COLOR_MUTED),
-                    );
-                }
-            });
+    crate::theme::status_frame().show(ui, |ui| {
+        crate::theme::render_status_line(ui, label, color, notice, |ui| {
+            ui.separator();
+            ui.label(crate::theme::muted_text(format!("FPS {:.1}", stats.fps)));
+            ui.label(crate::theme::muted_text(format!(
+                "Frames {}",
+                stats.frame_count
+            )));
+            if stats.screen_width > 0 && stats.screen_height > 0 {
+                ui.label(crate::theme::muted_text(format!(
+                    "{}x{}",
+                    stats.screen_width, stats.screen_height
+                )));
+            }
+            if stats.encoded_bytes > 0 {
+                ui.label(crate::theme::muted_text(format!(
+                    "{} {}",
+                    human_bytes(stats.encoded_bytes),
+                    stats.format
+                )));
+            }
+            if let Some(latency_ms) = stats.latency_ms {
+                ui.label(crate::theme::muted_text(format!("RTT {} ms", latency_ms)));
+            }
         });
+    });
 }
 
 fn human_bytes(bytes: usize) -> String {

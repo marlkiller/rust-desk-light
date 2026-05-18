@@ -1,16 +1,12 @@
 use eframe::egui;
 use std::sync::Arc;
 
-pub(super) const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(247, 249, 252);
-pub(super) const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-pub(super) const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(228, 233, 241);
-pub(super) const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-pub(super) const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(98, 111, 130);
-pub(super) const COLOR_ACCENT: egui::Color32 = egui::Color32::from_rgb(35, 99, 188);
-pub(super) const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-pub(super) const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-pub(super) const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
-pub(super) const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+pub(super) use crate::theme::{
+    COLOR_ACCENT, COLOR_BAD, COLOR_BG, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED, COLOR_PANEL,
+    COLOR_SELECTION_BG, COLOR_TEXT, COLOR_WARN, COLOR_WIDGET_ACTIVE, COLOR_WIDGET_HOVERED,
+    COLOR_WIDGET_IDLE,
+};
+pub(super) const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 const ACTIVITY_LOG_LIMIT: usize = 300;
 
 pub(super) fn apply_admin_theme(ctx: &egui::Context) {
@@ -23,11 +19,15 @@ pub(super) fn apply_admin_theme(ctx: &egui::Context) {
     style.visuals.window_fill = COLOR_PANEL;
     style.visuals.panel_fill = COLOR_BG;
     style.visuals.widgets.noninteractive.fg_stroke.color = COLOR_TEXT;
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(243, 246, 250);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(235, 241, 248);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(226, 235, 247);
-    style.visuals.selection.bg_fill = egui::Color32::from_rgb(235, 244, 255);
+    style.visuals.widgets.inactive.bg_fill = COLOR_WIDGET_IDLE;
+    style.visuals.widgets.hovered.bg_fill = COLOR_WIDGET_HOVERED;
+    style.visuals.widgets.active.bg_fill = COLOR_WIDGET_ACTIVE;
+    style.visuals.selection.bg_fill = COLOR_SELECTION_BG;
     style.visuals.selection.stroke.color = COLOR_ACCENT;
+    #[cfg(debug_assertions)]
+    {
+        style.debug.warn_if_rect_changes_id = false;
+    }
     ctx.set_global_style(style);
 }
 
@@ -72,10 +72,7 @@ fn load_system_cjk_font() -> Option<Vec<u8>> {
 }
 
 pub(super) fn panel(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .corner_radius(6.0)
+    crate::theme::panel_frame()
         .inner_margin(12.0)
         .show(ui, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), add_contents);
@@ -92,12 +89,7 @@ pub(super) fn section_title(ui: &mut egui::Ui, title: &str) {
 }
 
 pub(super) fn table_header(ui: &mut egui::Ui, title: &str) {
-    ui.label(
-        egui::RichText::new(title)
-            .size(12.0)
-            .color(COLOR_MUTED)
-            .strong(),
-    );
+    ui.label(crate::theme::muted_text(title).strong());
 }
 
 pub(super) fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {

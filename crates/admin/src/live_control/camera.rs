@@ -1,4 +1,7 @@
-use crate::windowing;
+use crate::{
+    theme::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_WARN},
+    windowing,
+};
 use base64::Engine;
 use eframe::egui;
 use rfd::FileDialog;
@@ -9,16 +12,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const DEFAULT_QUALITY: &str = "medium";
-const TOOLBAR_CONTROL_HEIGHT: f32 = 24.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 
 pub(crate) struct CameraWindow {
@@ -310,7 +305,7 @@ pub(crate) fn render_windows(
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     render_toolbar(
@@ -558,27 +553,23 @@ fn render_frame(
     frame_info: Option<(u32, u32)>,
     placeholder: &str,
 ) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            let available = ui.available_size();
-            let Some(texture) = texture else {
-                ui.centered_and_justified(|ui| {
-                    ui.label(egui::RichText::new(placeholder).color(COLOR_MUTED));
-                });
-                return;
-            };
-            let Some((width, height)) = frame_info else {
-                return;
-            };
-            let scale = (available.x / width as f32)
-                .min(available.y / height as f32)
-                .max(0.1);
-            let size = egui::vec2(width as f32 * scale, height as f32 * scale);
-            ui.add(egui::Image::new(texture).fit_to_exact_size(size));
-        });
+    crate::theme::panel_frame_with_margin(8.0).show(ui, |ui| {
+        let available = ui.available_size();
+        let Some(texture) = texture else {
+            ui.centered_and_justified(|ui| {
+                ui.label(egui::RichText::new(placeholder).color(COLOR_MUTED));
+            });
+            return;
+        };
+        let Some((width, height)) = frame_info else {
+            return;
+        };
+        let scale = (available.x / width as f32)
+            .min(available.y / height as f32)
+            .max(0.1);
+        let size = egui::vec2(width as f32 * scale, height as f32 * scale);
+        ui.add(egui::Image::new(texture).fit_to_exact_size(size));
+    });
 }
 
 fn render_status_bar(ui: &mut egui::Ui, status: CameraStatus, notice: &str, stats: &CameraStats) {
@@ -588,60 +579,32 @@ fn render_status_bar(ui: &mut egui::Ui, status: CameraStatus, notice: &str, stat
         CameraStatus::Live => ("Live", COLOR_GOOD),
         CameraStatus::Failed => ("Failed", COLOR_BAD),
     };
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .corner_radius(egui::CornerRadius::same(6))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.0, color);
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(12.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                ui.label(egui::RichText::new(notice).size(12.0).color(COLOR_MUTED));
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("FPS {:.1}", stats.fps))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                );
-                ui.label(
-                    egui::RichText::new(format!("Frames {}", stats.frame_count))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                );
-                if stats.width > 0 && stats.height > 0 {
-                    ui.label(
-                        egui::RichText::new(format!("{}x{}", stats.width, stats.height))
-                            .size(12.0)
-                            .color(COLOR_MUTED),
-                    );
-                }
-                if stats.encoded_bytes > 0 {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} {}",
-                            human_bytes(stats.encoded_bytes),
-                            stats.format
-                        ))
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                    );
-                }
-                if let Some(latency_ms) = stats.latency_ms {
-                    ui.label(
-                        egui::RichText::new(format!("RTT {} ms", latency_ms))
-                            .size(12.0)
-                            .color(COLOR_MUTED),
-                    );
-                }
-            });
+    crate::theme::status_frame().show(ui, |ui| {
+        crate::theme::render_status_line(ui, label, color, notice, |ui| {
+            ui.separator();
+            ui.label(crate::theme::muted_text(format!("FPS {:.1}", stats.fps)));
+            ui.label(crate::theme::muted_text(format!(
+                "Frames {}",
+                stats.frame_count
+            )));
+            if stats.width > 0 && stats.height > 0 {
+                ui.label(crate::theme::muted_text(format!(
+                    "{}x{}",
+                    stats.width, stats.height
+                )));
+            }
+            if stats.encoded_bytes > 0 {
+                ui.label(crate::theme::muted_text(format!(
+                    "{} {}",
+                    human_bytes(stats.encoded_bytes),
+                    stats.format
+                )));
+            }
+            if let Some(latency_ms) = stats.latency_ms {
+                ui.label(crate::theme::muted_text(format!("RTT {} ms", latency_ms)));
+            }
         });
+    });
 }
 
 fn handle_frame(window: &mut CameraWindow, frame: CameraFrame, latency_ms: Option<u128>) {

@@ -23,6 +23,7 @@ mod live_control;
 mod remote_management;
 mod runtime;
 mod session;
+mod theme;
 mod user_interaction;
 mod windowing;
 

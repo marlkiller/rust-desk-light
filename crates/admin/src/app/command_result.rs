@@ -8,7 +8,7 @@ use super::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use egui_extras::Column;
 use rdl_protocol::CommandKind;
 use std::hash::{Hash, Hasher};
 use std::sync::{
@@ -151,29 +151,10 @@ pub(super) fn render_command_window_status_bar(
 ) {
     let (status_text, default_progress_text, color) = command_window_status(status);
     let progress_text = notice.unwrap_or(default_progress_text);
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .corner_radius(egui::CornerRadius::same(6))
-        .show(ui, |ui| {
-            ui.set_min_height(26.0);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.0, color);
-                ui.label(
-                    egui::RichText::new(status_text)
-                        .size(12.0)
-                        .color(COLOR_TEXT)
-                        .strong(),
-                );
-                ui.label(
-                    egui::RichText::new(progress_text)
-                        .size(12.0)
-                        .color(COLOR_MUTED),
-                );
-            });
-        });
+    crate::theme::status_frame().show(ui, |ui| {
+        ui.set_min_height(26.0);
+        crate::theme::render_status_line(ui, status_text, color, progress_text, |_| {});
+    });
 }
 
 fn command_window_status(
@@ -480,7 +461,7 @@ fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
         detail,
         &["cpu_percent", "cpupercent", "LoadPercent", "LoadPercentage"],
     )
-    .map(|value| percent_metric("CPU", value, egui::Color32::from_rgb(35, 99, 188)))
+    .map(|value| percent_metric("CPU", value, crate::theme::COLOR_METRIC_CPU))
     .or_else(|| {
         let load = parse_load_average(detail)?;
         let cores = std::thread::available_parallelism()
@@ -491,7 +472,7 @@ fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
             label: "CPU Load",
             percent: clamp_percent(load * 100.0 / cores),
             value: format!("{load:.2} load"),
-            color: egui::Color32::from_rgb(35, 99, 188),
+            color: crate::theme::COLOR_METRIC_CPU,
         })
     })
 }
@@ -504,13 +485,13 @@ fn parse_memory_metric(detail: &str) -> Option<PerformanceMetric> {
     .or_else(|| parse_windows_memory_percent(detail))
     .or_else(|| parse_linux_memory_percent(detail))
     .or_else(|| parse_macos_memory_percent(detail))
-    .map(|value| percent_metric("Memory", value, egui::Color32::from_rgb(24, 135, 84)))
+    .map(|value| percent_metric("Memory", value, crate::theme::COLOR_METRIC_MEMORY))
 }
 
 fn parse_disk_metric(detail: &str) -> Option<PerformanceMetric> {
     parse_named_number(detail, &["disk_percent", "diskpercent", "DiskPercent"])
         .or_else(|| parse_df_disk_percent(detail))
-        .map(|value| percent_metric("Disk", value, egui::Color32::from_rgb(179, 116, 28)))
+        .map(|value| percent_metric("Disk", value, crate::theme::COLOR_METRIC_DISK))
 }
 
 fn percent_metric(label: &'static str, value: f32, color: egui::Color32) -> PerformanceMetric {
@@ -1008,12 +989,11 @@ fn render_result_table(
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
         .corner_radius(6.0)
         .show(ui, |ui| {
-            let mut table_builder = TableBuilder::new(ui)
-                .id_salt(command_result_table_id(command, &table.headers))
-                .striped(true)
-                .resizable(true)
-                .sense(egui::Sense::click())
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
+            let mut table_builder = crate::theme::clickable_table(
+                ui,
+                command_result_table_id(command, &table.headers),
+                true,
+            );
             for (width, spec) in widths.iter().zip(specs.iter()) {
                 table_builder =
                     table_builder.column(Column::initial(*width).at_least(spec.min).clip(true));
@@ -1189,19 +1169,19 @@ fn startup_client_autostart_style(
     match status {
         StartupClientAutostartStatus::Enabled => StartupClientAutostartStyle {
             label: "Client Autostart: On",
-            fill: egui::Color32::from_rgb(224, 246, 235),
+            fill: crate::theme::COLOR_SUCCESS_BG,
             stroke: COLOR_BORDER,
             text: COLOR_GOOD,
         },
         StartupClientAutostartStatus::Disabled => StartupClientAutostartStyle {
             label: "Client Autostart: Off",
-            fill: egui::Color32::from_rgb(255, 238, 238),
+            fill: crate::theme::COLOR_DANGER_BG,
             stroke: COLOR_BORDER,
             text: COLOR_BAD,
         },
         StartupClientAutostartStatus::Unknown => StartupClientAutostartStyle {
             label: "Client Autostart: Unknown",
-            fill: egui::Color32::from_rgb(243, 246, 250),
+            fill: crate::theme::COLOR_NEUTRAL_BG,
             stroke: COLOR_BORDER,
             text: COLOR_MUTED,
         },

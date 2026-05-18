@@ -5,10 +5,7 @@ use std::sync::{
     Arc, Mutex,
 };
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const TOOLBAR_CONTROL_HEIGHT: f32 = 28.0;
+const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 const CHAT_FRAME_VERTICAL_MARGIN: f32 = 20.0;
 const BOTTOM_SAFE_SPACE: f32 = 6.0;
 
@@ -124,7 +121,7 @@ pub(crate) fn render_windows(
                 close_requested.store(true, Ordering::Relaxed);
             }
             egui::CentralPanel::default()
-                .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(12.0))
+                .frame(crate::theme::page_frame())
                 .show_inside(ui, |ui| {
                     windowing::render_child_window_controls(ui);
                     let history_height = (ui.available_height()
@@ -133,19 +130,15 @@ pub(crate) fn render_windows(
                         - 8.0
                         - BOTTOM_SAFE_SPACE)
                         .max(80.0);
-                    egui::Frame::default()
-                        .fill(COLOR_PANEL)
-                        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-                        .inner_margin(10.0)
-                        .show(ui, |ui| {
-                            ui.set_min_height(history_height);
-                            ui.set_max_height(history_height);
-                            egui::ScrollArea::vertical()
-                                .id_salt(("admin_text_chat_history", &history_id))
-                                .stick_to_bottom(true)
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| render_messages(ui, &messages));
-                        });
+                    crate::theme::panel_frame_with_margin(10.0).show(ui, |ui| {
+                        ui.set_min_height(history_height);
+                        ui.set_max_height(history_height);
+                        egui::ScrollArea::vertical()
+                            .id_salt(("admin_text_chat_history", &history_id))
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| render_messages(ui, &messages));
+                    });
                     ui.add_space(8.0);
                     render_input(ui, &draft, &outbound_queue);
                     ui.add_space(BOTTOM_SAFE_SPACE);

@@ -1,4 +1,10 @@
-use crate::windowing;
+use crate::{
+    theme::{
+        COLOR_BAD, COLOR_BG, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED, COLOR_PANEL, COLOR_TEXT,
+        COLOR_WARN,
+    },
+    windowing,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 use std::collections::VecDeque;
@@ -10,14 +16,6 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-const COLOR_BG: egui::Color32 = egui::Color32::from_rgb(246, 248, 251);
-const COLOR_PANEL: egui::Color32 = egui::Color32::from_rgb(255, 255, 255);
-const COLOR_BORDER: egui::Color32 = egui::Color32::from_rgb(222, 228, 236);
-const COLOR_TEXT: egui::Color32 = egui::Color32::from_rgb(24, 33, 47);
-const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(96, 108, 124);
-const COLOR_GOOD: egui::Color32 = egui::Color32::from_rgb(24, 135, 84);
-const COLOR_BAD: egui::Color32 = egui::Color32::from_rgb(190, 58, 58);
-const COLOR_WARN: egui::Color32 = egui::Color32::from_rgb(179, 116, 28);
 const MAX_AUDIO_BUFFER_MS: usize = 300;
 const MIN_AUDIO_PREBUFFER_MS: usize = 60;
 const MAX_CAPTURE_QUEUE_MS: u64 = 240;
@@ -506,7 +504,7 @@ fn meter(ui: &mut egui::Ui, label: &str, peak: f32) {
         let desired = egui::vec2((ui.available_width() - 8.0).max(80.0), 10.0);
         let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
         ui.painter()
-            .rect_filled(rect, 4.0, egui::Color32::from_rgb(232, 237, 244));
+            .rect_filled(rect, 4.0, crate::theme::COLOR_METER_BG);
         let fill = egui::Rect::from_min_size(
             rect.min,
             egui::vec2(rect.width() * peak.clamp(0.0, 1.0), rect.height()),
@@ -569,7 +567,7 @@ fn speaker_label(muted: bool) -> &'static str {
 fn call_button(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> egui::Response {
     let fill = color.gamma_multiply(0.92);
     let text = egui::RichText::new(label)
-        .color(egui::Color32::WHITE)
+        .color(crate::theme::COLOR_ON_ACCENT)
         .strong();
     ui.add_sized(
         [132.0, 42.0],

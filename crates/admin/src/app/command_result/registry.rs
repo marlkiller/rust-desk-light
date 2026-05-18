@@ -1,12 +1,12 @@
 use super::{
     filtered_table_rows, normalized_table_header, parse_result_table, stable_hash,
     table_cell_label, table_row_key, table_value, DisplayTableRow, ResultTable, COLOR_BORDER,
-    COLOR_MUTED, COLOR_PANEL, COLOR_TEXT, TABLE_BODY_CELL_HEIGHT, TABLE_BODY_TEXT_SIZE,
+    COLOR_MUTED, COLOR_TEXT, TABLE_BODY_CELL_HEIGHT, TABLE_BODY_TEXT_SIZE,
     TABLE_HEADER_CELL_HEIGHT, TABLE_HEADER_TEXT_SIZE,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
-use egui_extras::{Column, TableBuilder};
+use egui_extras::Column;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -146,7 +146,7 @@ fn render_registry_tree_panel(
     width: f32,
 ) {
     egui::Frame::default()
-        .fill(egui::Color32::from_rgb(250, 252, 255))
+        .fill(crate::theme::COLOR_PANEL_SUBTLE)
         .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(8, 8))
@@ -318,10 +318,7 @@ fn render_registry_values_panel(
     selected_state: &Option<String>,
     table_selected_row: &Arc<Mutex<Option<String>>>,
 ) {
-    egui::Frame::default()
-        .fill(COLOR_PANEL)
-        .stroke(egui::Stroke::new(1.0, COLOR_BORDER))
-        .corner_radius(egui::CornerRadius::same(6))
+    crate::theme::panel_frame()
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_min_width(430.0);
@@ -368,13 +365,8 @@ fn render_registry_values_table(
         return;
     }
 
-    TableBuilder::new(ui)
-        .id_salt(("registry_values_table", stable_hash(&path_text)))
-        .striped(true)
-        .resizable(true)
+    crate::theme::clickable_table(ui, ("registry_values_table", stable_hash(&path_text)), true)
         .auto_shrink([false, true])
-        .sense(egui::Sense::click())
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .column(Column::initial(170.0).at_least(110.0).clip(true))
         .column(Column::initial(92.0).at_least(72.0).clip(true))
         .column(Column::remainder().at_least(220.0).clip(true))
