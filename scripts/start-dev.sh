@@ -6,22 +6,22 @@ DEFAULT_IP="127.0.0.1"
 DEFAULT_PORT="5169"
 DEFAULT_AUTH_TOKEN="change-me"
 
-BUILD_MODE="${1:-debug}"
+BUILD_MODE="${1:-release}"
 case "$BUILD_MODE" in
-  debug | --debug)
-    BUILD_PROFILE="debug"
-    CARGO_PROFILE_ARGS=()
-    TARGET_PROFILE_DIR="debug"
-    ;;
   release | --release | -r)
     BUILD_PROFILE="release"
     CARGO_PROFILE_ARGS=(--release)
     TARGET_PROFILE_DIR="release"
     ;;
+  debug | --debug)
+    BUILD_PROFILE="debug"
+    CARGO_PROFILE_ARGS=()
+    TARGET_PROFILE_DIR="debug"
+    ;;
   -h | --help)
     echo "Usage: $0 [debug|release|--debug|--release|-r]"
     echo
-    echo "Defaults to debug. Use release for smoother local live-control testing."
+    echo "Defaults to release. Use debug for faster local rebuilds."
     exit 0
     ;;
   *)

@@ -11,15 +11,15 @@ set "DEFAULT_PORT=5169"
 set "DEFAULT_AUTH_TOKEN=change-me"
 
 set "BUILD_MODE=%~1"
-if "%BUILD_MODE%"=="" set "BUILD_MODE=debug"
-set "BUILD_PROFILE=debug"
-set "CARGO_PROFILE_ARGS="
-set "TARGET_PROFILE_DIR=debug"
+if "%BUILD_MODE%"=="" set "BUILD_MODE=release"
+set "BUILD_PROFILE=release"
+set "CARGO_PROFILE_ARGS=--release"
+set "TARGET_PROFILE_DIR=release"
+if /I "%BUILD_MODE%"=="release" goto build_mode_done
+if /I "%BUILD_MODE%"=="--release" goto build_mode_done
+if /I "%BUILD_MODE%"=="-r" goto build_mode_done
 if /I "%BUILD_MODE%"=="debug" goto build_mode_done
 if /I "%BUILD_MODE%"=="--debug" goto build_mode_done
-if /I "%BUILD_MODE%"=="release" goto build_mode_release
-if /I "%BUILD_MODE%"=="--release" goto build_mode_release
-if /I "%BUILD_MODE%"=="-r" goto build_mode_release
 if /I "%BUILD_MODE%"=="--help" goto usage
 if /I "%BUILD_MODE%"=="-h" goto usage
 echo Unknown build mode: %BUILD_MODE%
@@ -29,15 +29,20 @@ exit /b 2
 :usage
 echo Usage: %~nx0 [debug^|release^|--debug^|--release^|-r]
 echo.
-echo Defaults to debug. Use release for smoother local live-control testing.
+echo Defaults to release. Use debug for faster local rebuilds.
 exit /b 0
 
-:build_mode_release
-set "BUILD_PROFILE=release"
-set "CARGO_PROFILE_ARGS=--release"
-set "TARGET_PROFILE_DIR=release"
-
 :build_mode_done
+if /I "%BUILD_MODE%"=="debug" (
+    set "BUILD_PROFILE=debug"
+    set "CARGO_PROFILE_ARGS="
+    set "TARGET_PROFILE_DIR=debug"
+)
+if /I "%BUILD_MODE%"=="--debug" (
+    set "BUILD_PROFILE=debug"
+    set "CARGO_PROFILE_ARGS="
+    set "TARGET_PROFILE_DIR=debug"
+)
 if "%RDL_IP%"=="" (set "IP=%DEFAULT_IP%") else (set "IP=%RDL_IP%")
 if "%RDL_PORT%"=="" (set "PORT=%DEFAULT_PORT%") else (set "PORT=%RDL_PORT%")
 if "%RDL_AUTH_TOKEN%"=="" (
