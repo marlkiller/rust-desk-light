@@ -49,12 +49,6 @@ pub(crate) mod capture {
     pub(crate) struct CaptureStream {
         screen: Screen,
         quality: QualityProfile,
-        screen_dc: HDC,
-        memory_dc: HDC,
-        bitmap: HBITMAP,
-        old_object: HGDIOBJ,
-        buffer: Vec<u8>,
-        info: BITMAPINFO,
     }
 
     impl CaptureStream {
@@ -68,86 +62,29 @@ pub(crate) mod capture {
             if screen.width == 0 || screen.height == 0 {
                 return Err("selected screen has invalid size".to_string());
             }
-            let width = screen.width;
-            let height = screen.height;
-            let buffer_len = width
-                .checked_mul(height)
-                .and_then(|pixels| pixels.checked_mul(4))
-                .ok_or_else(|| "selected screen is too large".to_string())?
-                as usize;
-            unsafe {
-                let screen_dc = GetDC(null_mut());
-                if screen_dc.is_null() {
-                    return Err("GetDC failed".to_string());
-                }
-                let memory_dc = CreateCompatibleDC(screen_dc);
-                if memory_dc.is_null() {
-                    ReleaseDC(null_mut(), screen_dc);
-                    return Err("CreateCompatibleDC failed".to_string());
-                }
-                let bitmap = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
-                if bitmap.is_null() {
-                    DeleteDC(memory_dc);
-                    ReleaseDC(null_mut(), screen_dc);
-                    return Err("CreateCompatibleBitmap failed".to_string());
-                }
-                let old_object = SelectObject(memory_dc, bitmap as HGDIOBJ);
-                if old_object.is_null() {
-                    DeleteObject(bitmap as HGDIOBJ);
-                    DeleteDC(memory_dc);
-                    ReleaseDC(null_mut(), screen_dc);
-                    return Err("SelectObject failed".to_string());
-                }
-                Ok(Self {
-                    screen,
-                    quality: quality_profile(quality),
-                    screen_dc,
-                    memory_dc,
-                    bitmap,
-                    old_object,
-                    buffer: vec![0u8; buffer_len],
-                    info: BITMAPINFO {
-                        bmiHeader: BITMAPINFOHEADER {
-                            biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                            biWidth: width as i32,
-                            biHeight: -(height as i32),
-                            biPlanes: 1,
-                            biBitCount: 32,
-                            biCompression: BI_RGB,
-                            biSizeImage: 0,
-                            biXPelsPerMeter: 0,
-                            biYPelsPerMeter: 0,
-                            biClrUsed: 0,
-                            biClrImportant: 0,
-                        },
-                        bmiColors: [zeroed()],
-                    },
-                })
-            }
+            Ok(Self {
+                screen,
+                quality: quality_profile(quality),
+            })
         }
 
         pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
-            self.capture_to_bitmap()?;
-            let dib_lines = unsafe {
-                GetDIBits(
-                    self.memory_dc,
-                    self.bitmap,
-                    0,
-                    self.screen.height,
-                    self.buffer.as_mut_ptr() as *mut c_void,
-                    &mut self.info,
-                    DIB_RGB_COLORS,
+            let rgba = capture_rgba(
+                self.screen.x,
+                self.screen.y,
+                self.screen.width,
+                self.screen.height,
+            )
+            .map_err(|error| {
+                format!(
+                    "{error} screen={} origin={},{} size={}x{}",
+                    self.screen.index,
+                    self.screen.x,
+                    self.screen.y,
+                    self.screen.width,
+                    self.screen.height
                 )
-            };
-            if dib_lines == 0 {
-                return Err("GetDIBits failed".to_string());
-            }
-            let mut rgba = self.buffer.clone();
-            for pixel in rgba.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-                pixel[3] = 255;
-            }
-
+            })?;
             let image = RgbaImage::from_raw(self.screen.width, self.screen.height, rgba)
                 .ok_or_else(|| "captured frame buffer has invalid size".to_string())?;
             let scale = (self.quality.max_width as f32 / self.screen.width as f32).min(1.0);
@@ -175,90 +112,6 @@ pub(crate) mod capture {
                 format: "jpeg".to_string(),
                 bytes: encoded,
             })
-        }
-
-        fn capture_to_bitmap(&mut self) -> Result<(), String> {
-            match self.bit_blt(SRCCOPY | CAPTUREBLT, "BitBlt CAPTUREBLT") {
-                Ok(()) => return Ok(()),
-                Err(first_error) => {
-                    if self.bit_blt(SRCCOPY, "BitBlt SRCCOPY").is_ok() {
-                        return Ok(());
-                    }
-                    self.refresh_screen_dc().map_err(|refresh_error| {
-                        format!("{first_error}; screen dc refresh failed: {refresh_error}")
-                    })?;
-                }
-            }
-
-            match self.bit_blt(SRCCOPY | CAPTUREBLT, "BitBlt CAPTUREBLT after dc refresh") {
-                Ok(()) => Ok(()),
-                Err(refreshed_error) => self
-                    .bit_blt(SRCCOPY, "BitBlt SRCCOPY after dc refresh")
-                    .map_err(|fallback_error| format!("{refreshed_error}; {fallback_error}")),
-            }
-        }
-
-        fn bit_blt(&self, raster_op: u32, label: &str) -> Result<(), String> {
-            let ok = unsafe {
-                BitBlt(
-                    self.memory_dc,
-                    0,
-                    0,
-                    self.screen.width as i32,
-                    self.screen.height as i32,
-                    self.screen_dc,
-                    self.screen.x,
-                    self.screen.y,
-                    raster_op,
-                )
-            };
-            if ok != 0 {
-                return Ok(());
-            }
-            Err(format!(
-                "{} failed: error={} screen={} origin={},{} size={}x{}",
-                label,
-                last_error_code(),
-                self.screen.index,
-                self.screen.x,
-                self.screen.y,
-                self.screen.width,
-                self.screen.height
-            ))
-        }
-
-        fn refresh_screen_dc(&mut self) -> Result<(), String> {
-            unsafe {
-                if !self.screen_dc.is_null() {
-                    ReleaseDC(null_mut(), self.screen_dc);
-                    self.screen_dc = null_mut();
-                }
-                let screen_dc = GetDC(null_mut());
-                if screen_dc.is_null() {
-                    return Err(format!("GetDC failed: error={}", last_error_code()));
-                }
-                self.screen_dc = screen_dc;
-            }
-            Ok(())
-        }
-    }
-
-    impl Drop for CaptureStream {
-        fn drop(&mut self) {
-            unsafe {
-                if !self.old_object.is_null() {
-                    SelectObject(self.memory_dc, self.old_object);
-                }
-                if !self.bitmap.is_null() {
-                    DeleteObject(self.bitmap as HGDIOBJ);
-                }
-                if !self.memory_dc.is_null() {
-                    DeleteDC(self.memory_dc);
-                }
-                if !self.screen_dc.is_null() {
-                    ReleaseDC(null_mut(), self.screen_dc);
-                }
-            }
         }
     }
 
@@ -302,6 +155,104 @@ pub(crate) mod capture {
             return Err("no display monitors found".to_string());
         }
         Ok(screens)
+    }
+
+    fn capture_rgba(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, String> {
+        let buffer_len = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "selected screen is too large".to_string())?
+            as usize;
+        unsafe {
+            let screen_dc = GetDC(null_mut());
+            if screen_dc.is_null() {
+                return Err(format!("GetDC failed: error={}", last_error_code()));
+            }
+            let memory_dc = CreateCompatibleDC(screen_dc);
+            if memory_dc.is_null() {
+                ReleaseDC(null_mut(), screen_dc);
+                return Err(format!(
+                    "CreateCompatibleDC failed: error={}",
+                    last_error_code()
+                ));
+            }
+            let bitmap = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
+            if bitmap.is_null() {
+                DeleteDC(memory_dc);
+                ReleaseDC(null_mut(), screen_dc);
+                return Err(format!(
+                    "CreateCompatibleBitmap failed: error={}",
+                    last_error_code()
+                ));
+            }
+            let old_object = SelectObject(memory_dc, bitmap as HGDIOBJ);
+            if old_object.is_null() {
+                DeleteObject(bitmap as HGDIOBJ);
+                DeleteDC(memory_dc);
+                ReleaseDC(null_mut(), screen_dc);
+                return Err(format!("SelectObject failed: error={}", last_error_code()));
+            }
+
+            let blit_ok = BitBlt(
+                memory_dc,
+                0,
+                0,
+                width as i32,
+                height as i32,
+                screen_dc,
+                x,
+                y,
+                SRCCOPY | CAPTUREBLT,
+            );
+            let blit_error = last_error_code();
+            let mut buffer = vec![0u8; buffer_len];
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [zeroed()],
+            };
+            let dib_lines = if blit_ok != 0 {
+                GetDIBits(
+                    memory_dc,
+                    bitmap as HBITMAP,
+                    0,
+                    height,
+                    buffer.as_mut_ptr() as *mut c_void,
+                    &mut info,
+                    DIB_RGB_COLORS,
+                )
+            } else {
+                0
+            };
+            let dib_error = last_error_code();
+            SelectObject(memory_dc, old_object);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteDC(memory_dc);
+            ReleaseDC(null_mut(), screen_dc);
+
+            if blit_ok == 0 {
+                return Err(format!("BitBlt failed: error={blit_error}"));
+            }
+            if dib_lines == 0 {
+                return Err(format!("GetDIBits failed: error={dib_error}"));
+            }
+            for pixel in buffer.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            Ok(buffer)
+        }
     }
 
     unsafe extern "system" fn enum_monitor(
