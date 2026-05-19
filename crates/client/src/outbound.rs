@@ -1,8 +1,6 @@
 use crate::live_control::realtime_video::RealtimeVideoReceiver;
 use crate::payload::sanitize_log_value;
-use rdl_protocol::{
-    write_envelope_with_token, FileTransferAction, FileTransferDirection, Message, Role,
-};
+use rdl_protocol::{write_envelope_with_token, FileTransferAction, Message, Role};
 use std::io;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -48,9 +46,12 @@ fn file_transfer_reply_is_bulk(message: &Message) -> bool {
     matches!(
         message,
         Message::FileTransfer {
-            direction: FileTransferDirection::Download,
-            action: FileTransferAction::Directory
+            action: FileTransferAction::Start
+                | FileTransferAction::Directory
                 | FileTransferAction::Chunk
+                | FileTransferAction::Progress
+                | FileTransferAction::Finish
+                | FileTransferAction::Cancel
                 | FileTransferAction::Complete,
             ..
         }

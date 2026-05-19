@@ -794,14 +794,14 @@ fn write_upload_directory<F>(
 where
     F: FnMut(Message) -> io::Result<()>,
 {
-    let Some(target) = upload_target_path(transfer_id, &path, &relative_path) else {
+    let Some(target) = upload_target_path(transfer_id, &relative_path) else {
         return send(transfer_error(
             client_id.to_string(),
             transfer_id,
             FileTransferDirection::Upload,
             path,
             relative_path,
-            "upload directory failed: invalid path".to_string(),
+            "upload directory failed: no active upload or invalid path".to_string(),
         ));
     };
     match fs::create_dir_all(&target) {
@@ -832,14 +832,14 @@ fn write_upload_chunk<F>(
 where
     F: FnMut(Message) -> io::Result<()>,
 {
-    let Some(target) = upload_target_path(transfer_id, &path, &relative_path) else {
+    let Some(target) = upload_target_path(transfer_id, &relative_path) else {
         return send(transfer_error(
             client_id.to_string(),
             transfer_id,
             FileTransferDirection::Upload,
             path,
             relative_path,
-            "upload chunk failed: invalid path".to_string(),
+            "upload chunk failed: no active upload or invalid path".to_string(),
         ));
     };
     if upload_cancelled(transfer_id) {
@@ -908,6 +908,19 @@ where
         ));
     };
     let cancelled = state.cancelled.load(Ordering::Relaxed);
+    if !cancelled && state.total_bytes > 0 && state.transferred_bytes < state.total_bytes {
+        return send(transfer_error(
+            client_id.to_string(),
+            transfer_id,
+            FileTransferDirection::Upload,
+            path,
+            String::new(),
+            format!(
+                "upload finish failed: incomplete transfer {}/{} bytes",
+                state.transferred_bytes, state.total_bytes
+            ),
+        ));
+    }
     send(transfer_message(
         client_id.to_string(),
         transfer_id,
@@ -960,16 +973,11 @@ where
     ))
 }
 
-fn upload_target_path(
-    transfer_id: u64,
-    fallback_root: &str,
-    relative_path: &str,
-) -> Option<PathBuf> {
+fn upload_target_path(transfer_id: u64, relative_path: &str) -> Option<PathBuf> {
     let root = upload_transfers()
         .lock()
         .ok()
-        .and_then(|transfers| transfers.get(&transfer_id).map(|state| state.root.clone()))
-        .unwrap_or_else(|| resolve_path(fallback_root));
+        .and_then(|transfers| transfers.get(&transfer_id).map(|state| state.root.clone()))?;
     safe_join(&root, relative_path)
 }
 

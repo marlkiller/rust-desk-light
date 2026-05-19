@@ -93,9 +93,13 @@ pub(crate) fn message_is_bulk(message: &Message) -> bool {
     matches!(
         message,
         Message::FileTransfer {
-            action: FileTransferAction::Directory
+            action: FileTransferAction::Start
+                | FileTransferAction::Directory
                 | FileTransferAction::Chunk
-                | FileTransferAction::Progress,
+                | FileTransferAction::Progress
+                | FileTransferAction::Finish
+                | FileTransferAction::Cancel
+                | FileTransferAction::Complete,
             ..
         } | Message::ProxyData { .. }
     )
