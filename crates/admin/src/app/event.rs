@@ -14,6 +14,7 @@ pub(crate) struct ReconnectEndpoint {
 }
 
 pub(crate) enum AdminInput {
+    ListClients,
     Command {
         target_id: String,
         command: CommandKind,

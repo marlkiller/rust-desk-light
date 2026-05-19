@@ -134,6 +134,12 @@ fn admin_connection_once(
             };
             processed_inputs += 1;
             let result = match input {
+                AdminInput::ListClients => send(
+                    &mut stream,
+                    &mut next_message_id,
+                    &session_token,
+                    Message::ListClients,
+                ),
                 AdminInput::Command {
                     target_id,
                     command,

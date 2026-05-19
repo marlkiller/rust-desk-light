@@ -44,6 +44,15 @@ impl AdminApp {
             ui.horizontal(|ui| {
                 section_title(ui, t("Clients"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_enabled(self.connected, egui::Button::new(t("Refresh")))
+                        .on_hover_text(t("Refresh table content"))
+                        .clicked()
+                    {
+                        let _ = self.input_tx.send(AdminInput::ListClients);
+                        self.push_log("refresh clients requested");
+                    }
+                    ui.add_space(8.0);
                     ui.label(crate::theme::muted_text(t(
                         "Right click a row for commands",
                     )));

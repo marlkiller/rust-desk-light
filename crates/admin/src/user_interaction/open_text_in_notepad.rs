@@ -11,7 +11,10 @@ pub(super) fn payload_for(file_name: &str, text: &str) -> String {
 }
 
 pub(super) fn default_fields() -> (String, String) {
-    ("rdl-note.txt".to_string(), String::new())
+    (
+        "rdl-note.txt".to_string(),
+        t("Hello from Rust Desk Light.").to_string(),
+    )
 }
 
 pub(super) fn title_label() -> &'static str {

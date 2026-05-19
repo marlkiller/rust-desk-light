@@ -161,17 +161,25 @@ pub(super) fn set_code_template_if_empty(code_text: &Arc<Mutex<String>>, languag
 
 fn set_code_template(code_text: &Arc<Mutex<String>>, language: &str) {
     if let Ok(mut value) = code_text.lock() {
-        *value = template_for_language(language).to_string();
+        *value = template_for_language(language);
     }
 }
 
-fn template_for_language(language: &str) -> &'static str {
+fn template_for_language(language: &str) -> String {
     match language {
-        "python" | "python3" => "print(\"hello from rust-desk-light\")\n",
-        "node" => "console.log(\"hello from rust-desk-light\");\n",
-        "powershell" => "Write-Output \"hello from rust-desk-light\"\n",
-        "bash" | "sh" => "echo \"hello from rust-desk-light\"\n",
-        _ => "",
+        "python" | "python3" => {
+            format!("print(\"hello from rust-desk-light ({language})\")\n")
+        }
+        "node" => {
+            format!("console.log(\"hello from rust-desk-light ({language})\");\n")
+        }
+        "powershell" => {
+            format!("Write-Output \"hello from rust-desk-light ({language})\"\n")
+        }
+        "bash" | "sh" => {
+            format!("echo \"hello from rust-desk-light ({language})\"\n")
+        }
+        _ => String::new(),
     }
 }
 

@@ -292,6 +292,7 @@ fn zh(key: &'static str) -> &'static str {
             "GeoIP 可能已配置，但当前客户端没有公网 IP 位置。本地、局域网、VPN、代理和中继地址无法标注到地图上。"
         }
         "Hang Up" => "挂断",
+        "Hello from Rust Desk Light." => "来自 Rust Desk Light 的消息。",
         "High" => "高",
         "Host" => "主机",
         "Host unreachable" => "主机不可达",

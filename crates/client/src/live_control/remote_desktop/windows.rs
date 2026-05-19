@@ -303,33 +303,99 @@ pub(crate) mod capture {
 }
 
 pub(crate) mod input {
+    use std::mem::size_of;
+
+    use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        mouse_event, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
-        MOUSEEVENTF_RIGHTUP,
+        SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+        MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::SetCursorPos;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN,
+    };
 
     pub(crate) fn move_mouse(x: i32, y: i32) -> String {
-        let ok = unsafe { SetCursorPos(x, y) };
-        if ok == 0 {
-            return "remote_desktop_error\nmessage=SetCursorPos failed".to_string();
+        if let Err(error) = send_mouse_inputs(&[move_input(x, y)]) {
+            return format!("remote_desktop_error\nmessage={error}");
         }
         format!("remote_desktop_input\nmessage=mouse moved {x} {y}")
     }
 
     pub(crate) fn click(x: i32, y: i32, button: &str) -> String {
-        let ok = unsafe { SetCursorPos(x, y) };
-        if ok == 0 {
-            return "remote_desktop_error\nmessage=SetCursorPos failed".to_string();
-        }
         let (down, up) = match button {
             "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
             _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         };
-        unsafe {
-            mouse_event(down, 0, 0, 0, 0);
-            mouse_event(up, 0, 0, 0, 0);
+        if let Err(error) =
+            send_mouse_inputs(&[move_input(x, y), button_input(down), button_input(up)])
+        {
+            return format!("remote_desktop_error\nmessage={error}");
         }
         format!("remote_desktop_input\nmessage=click {button} {x} {y}")
+    }
+
+    fn move_input(x: i32, y: i32) -> INPUT {
+        let (dx, dy) = absolute_virtual_desktop_point(x, y);
+        mouse_input(
+            dx,
+            dy,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        )
+    }
+
+    fn button_input(flags: u32) -> INPUT {
+        mouse_input(0, 0, flags)
+    }
+
+    fn mouse_input(dx: i32, dy: i32, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx,
+                    dy,
+                    mouseData: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn absolute_virtual_desktop_point(x: i32, y: i32) -> (i32, i32) {
+        let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
+        let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
+        let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) }.max(1);
+        let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) }.max(1);
+        let right = left.saturating_add(width.saturating_sub(1));
+        let bottom = top.saturating_add(height.saturating_sub(1));
+        let x = x.clamp(left, right);
+        let y = y.clamp(top, bottom);
+        let dx = ((x.saturating_sub(left)) as i64 * 65_535 / width.saturating_sub(1).max(1) as i64)
+            as i32;
+        let dy = ((y.saturating_sub(top)) as i64 * 65_535 / height.saturating_sub(1).max(1) as i64)
+            as i32;
+        (dx, dy)
+    }
+
+    fn send_mouse_inputs(inputs: &[INPUT]) -> Result<(), String> {
+        let sent = unsafe {
+            SendInput(
+                inputs.len() as u32,
+                inputs.as_ptr(),
+                size_of::<INPUT>() as i32,
+            )
+        };
+        if sent == inputs.len() as u32 {
+            return Ok(());
+        }
+        let code = unsafe { GetLastError() };
+        Err(format!(
+            "SendInput failed: sent {sent}/{} events, error={code}",
+            inputs.len()
+        ))
     }
 }

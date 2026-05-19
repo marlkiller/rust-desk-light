@@ -11,7 +11,10 @@ pub(super) fn payload_for(title: &str, body: &str) -> String {
 }
 
 pub(super) fn default_fields() -> (String, String) {
-    ("Rust Desk Light".to_string(), String::new())
+    (
+        "Rust Desk Light".to_string(),
+        t("Hello from Rust Desk Light.").to_string(),
+    )
 }
 
 pub(super) fn body_label() -> &'static str {

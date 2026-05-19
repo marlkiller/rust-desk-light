@@ -110,7 +110,7 @@ fn client_os_emoji(os: &str) -> &'static str {
     } else if os.contains("macos") || os.contains("darwin") || os.contains("os x") {
         "🍎"
     } else if os.contains("windows") || os.starts_with("win") {
-        "🪟"
+        "💻"
     } else if os.contains("linux")
         || os.contains("ubuntu")
         || os.contains("debian")
