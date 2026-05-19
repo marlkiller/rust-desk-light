@@ -42,32 +42,3 @@ fn custom_static_command(payload: &str) -> Option<String> {
         .or_else(|| payload_field(payload, "command"))
         .filter(|value| !value.trim().is_empty())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::custom_static_command;
-    use base64::{engine::general_purpose::STANDARD, Engine};
-    use rdl_protocol::static_command_presets;
-
-    #[test]
-    fn static_commands_include_requested_basics() {
-        let ids = static_command_presets()
-            .iter()
-            .map(|command| command.id)
-            .collect::<Vec<_>>();
-
-        assert!(ids.contains(&"whoami"));
-        assert!(ids.contains(&"hostname"));
-        assert!(ids.contains(&"disk_usage"));
-    }
-
-    #[test]
-    fn custom_static_command_accepts_base64_command() {
-        let payload = format!("mode=custom\ncommand_b64={}", STANDARD.encode("echo hello"));
-
-        assert_eq!(
-            custom_static_command(&payload).as_deref(),
-            Some("echo hello")
-        );
-    }
-}

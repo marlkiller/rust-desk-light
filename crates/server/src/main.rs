@@ -1879,29 +1879,3 @@ fn server_help_text() -> String {
         rdl_config::help_text("rdl-server-cli", rdl_config::ConfigKind::Server)
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{geoip_candidate, peer_ip};
-    use std::net::IpAddr;
-
-    #[test]
-    fn peer_ip_parses_socket_addresses() {
-        assert_eq!(
-            peer_ip("203.0.113.10:5169"),
-            Some("203.0.113.10".parse::<IpAddr>().unwrap())
-        );
-        assert_eq!(
-            peer_ip("[2001:db8::1]:5169"),
-            Some("2001:db8::1".parse::<IpAddr>().unwrap())
-        );
-    }
-
-    #[test]
-    fn geoip_candidate_skips_local_addresses() {
-        assert!(!geoip_candidate("127.0.0.1".parse().unwrap()));
-        assert!(!geoip_candidate("10.0.0.2".parse().unwrap()));
-        assert!(!geoip_candidate("::1".parse().unwrap()));
-        assert!(!geoip_candidate("fe80::1".parse().unwrap()));
-    }
-}

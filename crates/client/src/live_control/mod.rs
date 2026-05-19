@@ -12,7 +12,7 @@ pub(crate) use audio_listen::{
     AudioInputStream, AudioOutputPlayer, AudioOutputSink, CapturedAudioFrame,
 };
 #[cfg(feature = "gui")]
-pub(crate) use camera::CameraVideoFrame;
+pub(crate) use camera::{CameraCapture, CameraVideoFrame};
 #[cfg(feature = "gui")]
 pub(crate) use remote_desktop::{RemoteDesktopCapture, RemoteDesktopVideoFrame};
 
@@ -127,6 +127,9 @@ pub(crate) fn open_remote_desktop_capture(
 }
 
 #[cfg(not(feature = "gui"))]
+pub(crate) struct CameraCapture;
+
+#[cfg(not(feature = "gui"))]
 pub(crate) fn open_remote_desktop_capture(
     _screen_index: usize,
     _quality: &str,
@@ -149,17 +152,25 @@ pub(crate) fn capture_remote_desktop_stream_frame(
 }
 
 #[cfg(feature = "gui")]
-pub(crate) fn capture_camera_video_frame(
-    device: usize,
-    quality: &str,
-) -> Result<CameraVideoFrame, String> {
-    camera::capture_video_frame(device, quality)
+pub(crate) fn open_camera_capture(device: usize, quality: &str) -> Result<CameraCapture, String> {
+    CameraCapture::new(device, quality)
 }
 
 #[cfg(not(feature = "gui"))]
-pub(crate) fn capture_camera_video_frame(
-    _device: usize,
-    _quality: &str,
+pub(crate) fn open_camera_capture(_device: usize, _quality: &str) -> Result<CameraCapture, String> {
+    Err(gui_unavailable_message())
+}
+
+#[cfg(feature = "gui")]
+pub(crate) fn capture_camera_stream_frame(
+    capture: &mut CameraCapture,
+) -> Result<CameraVideoFrame, String> {
+    capture.capture_frame()
+}
+
+#[cfg(not(feature = "gui"))]
+pub(crate) fn capture_camera_stream_frame(
+    _capture: &mut CameraCapture,
 ) -> Result<CameraVideoFrame, String> {
     Err(gui_unavailable_message())
 }

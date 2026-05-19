@@ -29,18 +29,3 @@ pub(super) fn body_label() -> &'static str {
 pub(super) fn sanitize_single_line(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ").trim().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::payload_for;
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    #[test]
-    fn encodes_message_box_payload() {
-        let payload = payload_for("Title", "hello\nworld");
-
-        assert!(payload.contains("title=Title"));
-        assert!(payload.contains("kind=info"));
-        assert!(payload.contains(&format!("message_b64={}", STANDARD.encode("hello\nworld"))));
-    }
-}

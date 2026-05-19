@@ -2,12 +2,16 @@ use crate::i18n::t;
 use eframe::egui;
 use rdl_protocol::CommandKind;
 
+const CONTEXT_MENU_MIN_WIDTH: f32 = 220.0;
+const SUBMENU_MIN_WIDTH: f32 = 240.0;
+
 pub fn render_context_menu(
     ui: &mut egui::Ui,
     client_id: &str,
     gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
+    prepare_menu_ui(ui, CONTEXT_MENU_MIN_WIDTH);
     render_session(ui, client_id, send_command);
     render_remote_management(ui, client_id, send_command);
     render_live_control(ui, client_id, gui_available, send_command);
@@ -63,12 +67,19 @@ pub fn render_toolbar_actions(
 }
 
 pub fn render_unavailable_client_menu(ui: &mut egui::Ui, client_id: &str, status: &str) {
-    ui.label(egui::RichText::new(format!("{} {status}", t("Client"))).strong());
-    ui.label(t(
-        "Remote commands are disabled until this client reconnects.",
-    ));
+    prepare_menu_ui(ui, CONTEXT_MENU_MIN_WIDTH);
+    ui.add(
+        egui::Label::new(egui::RichText::new(format!("{} {status}", t("Client"))).strong())
+            .wrap_mode(egui::TextWrapMode::Extend),
+    );
+    ui.add(
+        egui::Label::new(t(
+            "Remote commands are disabled until this client reconnects.",
+        ))
+        .wrap_mode(egui::TextWrapMode::Extend),
+    );
     ui.separator();
-    if ui.button(t("Copy Client ID")).clicked() {
+    if ui.add(menu_button(t("Copy Client ID"))).clicked() {
         ui.ctx().copy_text(client_id.to_string());
         ui.close();
     }
@@ -80,6 +91,7 @@ fn render_session(
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.menu_button(menu_title("🔐", "Session"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
         menu_command(
             ui,
             client_id,
@@ -148,6 +160,7 @@ fn render_remote_management(
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.menu_button(menu_title("🛠", "Remote Management"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
         menu_command(
             ui,
             client_id,
@@ -240,6 +253,7 @@ fn render_live_control(
     let response = ui
         .add_enabled_ui(gui_available, |ui| {
             ui.menu_button(menu_title("📡", "Live Control"), |ui| {
+                prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
                 menu_command(
                     ui,
                     client_id,
@@ -273,6 +287,7 @@ fn render_user_interaction(
     let response = ui
         .add_enabled_ui(gui_available, |ui| {
             ui.menu_button(menu_title("💬", "User Interaction"), |ui| {
+                prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
                 menu_command(
                     ui,
                     client_id,
@@ -324,6 +339,7 @@ fn render_system_info(
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.menu_button(menu_title("ℹ", "System Info"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
         menu_command(
             ui,
             client_id,
@@ -348,6 +364,7 @@ fn render_execute(
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.menu_button(menu_title("▶", "Execute"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
         menu_command(
             ui,
             client_id,
@@ -394,6 +411,7 @@ fn render_plugins(
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.menu_button(menu_title("🔌", "Plugins"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
         menu_command(
             ui,
             client_id,
@@ -439,10 +457,21 @@ fn menu_command(
     } else {
         format!("{label} (TODO)")
     };
-    if ui.button(format!("{icon} {label}")).clicked() {
+    if ui.add(menu_button(format!("{icon} {label}"))).clicked() {
         send_command(client_id, command);
         ui.close();
     }
+}
+
+fn prepare_menu_ui(ui: &mut egui::Ui, min_width: f32) {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+    ui.set_min_width(min_width);
+}
+
+fn menu_button(label: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    egui::Button::new(label)
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .min_size(egui::vec2(SUBMENU_MIN_WIDTH, 0.0))
 }
 
 fn menu_title(icon: &str, label: &'static str) -> String {

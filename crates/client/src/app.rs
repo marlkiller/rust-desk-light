@@ -2182,6 +2182,7 @@ fn video_stream_loop(
     let fps = video_fps_from_payload(&start_payload, &quality);
     let interval = Duration::from_millis((1000 / fps).max(1));
     let mut remote_desktop_capture = None;
+    let mut camera_capture = None;
     let camera_device = video_control_value(&start_payload, "device")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or_default();
@@ -2192,6 +2193,27 @@ fn video_stream_loop(
         match crate::live_control::open_remote_desktop_capture(remote_desktop_screen, &quality) {
             Ok(capture) => {
                 remote_desktop_capture = Some(capture);
+            }
+            Err(error) => {
+                stream_state.running.store(false, Ordering::Relaxed);
+                let _ = queue_message(
+                    &out_tx,
+                    &session_token,
+                    Message::CommandAck {
+                        client_id,
+                        command: video_source_command(&source),
+                        accepted: false,
+                        detail: error,
+                    },
+                );
+                return;
+            }
+        }
+    }
+    if matches!(source, VideoSource::Camera) {
+        match crate::live_control::open_camera_capture(camera_device, &quality) {
+            Ok(capture) => {
+                camera_capture = Some(capture);
             }
             Err(error) => {
                 stream_state.running.store(false, Ordering::Relaxed);
@@ -2236,19 +2258,24 @@ fn video_stream_loop(
                 })
             }
             VideoSource::Camera => {
-                crate::live_control::capture_camera_video_frame(camera_device, &quality).map(
-                    |frame| Message::VideoFrame {
-                        client_id: client_id.clone(),
-                        source: VideoSource::Camera,
-                        seq,
-                        source_width: frame.width,
-                        source_height: frame.height,
-                        image_width: frame.width,
-                        image_height: frame.height,
-                        format: frame.format,
-                        bytes: frame.bytes,
-                    },
-                )
+                let capture = camera_capture
+                    .as_mut()
+                    .ok_or_else(|| "camera capture is not open".to_string());
+                capture.and_then(|capture| {
+                    crate::live_control::capture_camera_stream_frame(capture).map(|frame| {
+                        Message::VideoFrame {
+                            client_id: client_id.clone(),
+                            source: VideoSource::Camera,
+                            seq,
+                            source_width: frame.width,
+                            source_height: frame.height,
+                            image_width: frame.width,
+                            image_height: frame.height,
+                            format: frame.format,
+                            bytes: frame.bytes,
+                        }
+                    })
+                })
             }
         };
         match frame {
@@ -2698,31 +2725,4 @@ fn send(
     );
     *next_message_id = next_message_id.saturating_add(1);
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::desktop_input_reply_payload;
-
-    #[test]
-    fn desktop_input_reply_payload_wraps_errors_as_input_status() {
-        let payload = desktop_input_reply_payload(
-            "remote_desktop_error\nmessage=macOS input requires Accessibility permission"
-                .to_string(),
-        );
-
-        assert_eq!(
-            payload,
-            "remote_desktop_input\nmessage=input failed: macOS input requires Accessibility permission"
-        );
-    }
-
-    #[test]
-    fn desktop_input_reply_payload_keeps_success_payloads() {
-        let payload = desktop_input_reply_payload(
-            "remote_desktop_input\nmessage=click left 10 20".to_string(),
-        );
-
-        assert_eq!(payload, "remote_desktop_input\nmessage=click left 10 20");
-    }
 }

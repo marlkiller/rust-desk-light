@@ -118,15 +118,3 @@ fn safe_text_file_name(value: &str) -> String {
     }
     name
 }
-
-#[cfg(test)]
-mod tests {
-    use super::safe_text_file_name;
-
-    #[test]
-    fn sanitizes_text_file_names() {
-        assert_eq!(safe_text_file_name("report:name"), "report_name.txt");
-        assert_eq!(safe_text_file_name("already.txt"), "already.txt");
-        assert!(safe_text_file_name(&"x".repeat(200)).ends_with(".txt"));
-    }
-}

@@ -969,11 +969,16 @@ impl AdminApp {
                         format!("remote_desktop_error\nmessage={message}"),
                     ),
                 },
-                AdminEvent::DecodedCameraFrame { client_id, result } => match result {
+                AdminEvent::DecodedCameraFrame {
+                    client_id,
+                    result,
+                    decode_ms,
+                } => match result {
                     Ok(frame) => live_control::camera::handle_decoded_frame(
                         &mut self.camera_windows,
                         &client_id,
                         frame,
+                        decode_ms,
                     ),
                     Err(message) => self.handle_camera_ack(
                         &client_id,
@@ -1377,8 +1382,13 @@ impl AdminApp {
             None,
         );
         thread::spawn(move || {
+            let decode_started = Instant::now();
             let result = live_control::camera::decode_frame_payload(&payload);
-            sink.send(AdminEvent::DecodedCameraFrame { client_id, result });
+            sink.send(AdminEvent::DecodedCameraFrame {
+                client_id,
+                result,
+                decode_ms: Some(decode_started.elapsed().as_millis()),
+            });
         });
     }
 
@@ -1420,7 +1430,11 @@ impl AdminApp {
                         frame.format,
                         frame.bytes,
                     );
-                    sink.send(AdminEvent::DecodedCameraFrame { client_id, result });
+                    sink.send(AdminEvent::DecodedCameraFrame {
+                        client_id,
+                        result,
+                        decode_ms: Some(decode_started.elapsed().as_millis()),
+                    });
                 }
             }
         });

@@ -12,9 +12,11 @@ use nokhwa::{
     Camera,
 };
 #[cfg(target_os = "linux")]
+use std::env;
+#[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -27,6 +29,55 @@ pub(crate) struct CameraVideoFrame {
     pub(crate) height: u32,
     pub(crate) format: String,
     pub(crate) bytes: Vec<u8>,
+}
+
+pub(crate) struct CameraCapture {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    device: usize,
+    quality: String,
+    #[cfg(target_os = "linux")]
+    device_path: String,
+    #[cfg(target_os = "linux")]
+    backends: Vec<LinuxCameraBackend>,
+    #[cfg(target_os = "linux")]
+    active_backend: usize,
+}
+
+impl CameraCapture {
+    pub(crate) fn new(device: usize, quality: &str) -> Result<Self, String> {
+        let quality = normalize_quality(quality);
+        #[cfg(target_os = "linux")]
+        {
+            return Ok(Self {
+                quality,
+                device_path: linux_device_path(device),
+                backends: linux_camera_backends()?,
+                active_backend: 0,
+            });
+        }
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            return Ok(Self { device, quality });
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+        {
+            let _ = device;
+            Ok(Self { quality })
+        }
+    }
+
+    pub(crate) fn capture_frame(&mut self) -> Result<CameraVideoFrame, String> {
+        #[cfg(target_os = "linux")]
+        {
+            return linux_capture_stream_frame(self);
+        }
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        {
+            return capture_video_frame(self.device, &self.quality);
+        }
+        #[allow(unreachable_code)]
+        Err("camera capture is not implemented for this platform".to_string())
+    }
 }
 
 pub fn handle(payload: &str) -> String {
@@ -93,7 +144,7 @@ fn list_devices() -> String {
     }
     #[cfg(target_os = "linux")]
     {
-        return "camera_devices\ndevice\t0\tDefault camera\t/dev/video0".to_string();
+        return linux_list_devices();
     }
     #[cfg(target_os = "macos")]
     {
@@ -117,11 +168,7 @@ pub(crate) fn capture_video_frame(
     let request = CameraRequest {
         action: "capture".to_string(),
         device,
-        quality: match quality {
-            "low" => "low".to_string(),
-            "high" => "high".to_string(),
-            _ => "medium".to_string(),
-        },
+        quality: normalize_quality(quality),
     };
     #[cfg(target_os = "linux")]
     {
@@ -142,6 +189,14 @@ pub(crate) fn capture_video_frame(
     }
 }
 
+fn normalize_quality(value: &str) -> String {
+    match value {
+        "low" => "low".to_string(),
+        "high" => "high".to_string(),
+        _ => "medium".to_string(),
+    }
+}
+
 fn format_camera_frame_payload(device: usize, frame: CameraVideoFrame) -> String {
     format!(
         "camera_frame\ndevice={}\nformat={}\nwidth={}\nheight={}\nbytes={}\nimage_base64={}",
@@ -156,24 +211,8 @@ fn format_camera_frame_payload(device: usize, frame: CameraVideoFrame) -> String
 
 #[cfg(target_os = "linux")]
 fn linux_capture_frame(request: &CameraRequest) -> Result<CameraVideoFrame, String> {
-    let path = temp_path("rdl-camera", "jpg");
-    let path_text = path.to_string_lossy().to_string();
-    let result = run_capture(
-        "ffmpeg",
-        &[
-            "-y",
-            "-f",
-            "video4linux2",
-            "-frames:v",
-            "1",
-            "-i",
-            "/dev/video0",
-            &path_text,
-        ],
-    )
-    .or_else(|_| run_capture("fswebcam", &["--no-banner", "-r", "1280x720", &path_text]))
-    .or_else(|_| run_capture("streamer", &["-f", "jpeg", "-o", &path_text]));
-    finish_capture(path, result, request)
+    let mut capture = CameraCapture::new(request.device, &request.quality)?;
+    capture.capture_frame()
 }
 
 #[cfg(target_os = "macos")]
@@ -193,20 +232,117 @@ fn macos_capture_frame(request: &CameraRequest) -> Result<CameraVideoFrame, Stri
 }
 
 #[cfg(target_os = "linux")]
-fn finish_capture(
-    path: PathBuf,
-    result: Result<(), String>,
-    request: &CameraRequest,
-) -> Result<CameraVideoFrame, String> {
-    if let Err(error) = result {
-        let _ = fs::remove_file(&path);
-        return Err(error);
+fn linux_capture_stream_frame(capture: &mut CameraCapture) -> Result<CameraVideoFrame, String> {
+    let mut last_error = String::new();
+    for offset in 0..capture.backends.len() {
+        let index = (capture.active_backend + offset) % capture.backends.len();
+        match capture.backends[index]
+            .capture(&capture.device_path)
+            .and_then(|bytes| encode_camera_bytes(bytes, &capture.quality))
+        {
+            Ok(frame) => {
+                capture.active_backend = index;
+                return Ok(frame);
+            }
+            Err(error) => {
+                last_error = error;
+            }
+        }
     }
-    let bytes = fs::read(&path).map_err(|error| format!("read camera frame failed: {error}"))?;
-    let _ = fs::remove_file(&path);
+    Err(if last_error.trim().is_empty() {
+        "Linux camera capture requires ffmpeg, fswebcam, or streamer".to_string()
+    } else {
+        last_error
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum LinuxCameraBackend {
+    FfmpegStdout,
+    FfmpegFile,
+    FswebcamFile,
+    StreamerFile,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxCameraBackend {
+    fn capture(self, device_path: &str) -> Result<Vec<u8>, String> {
+        match self {
+            Self::FfmpegStdout => run_capture_stdout(
+                "ffmpeg",
+                &[
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "video4linux2",
+                    "-i",
+                    device_path,
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "mjpeg",
+                    "-",
+                ],
+            ),
+            Self::FfmpegFile => {
+                let path = temp_path("rdl-camera", "jpg");
+                let path_text = path.to_string_lossy().to_string();
+                run_capture_file(
+                    "ffmpeg",
+                    &[
+                        "-y",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-f",
+                        "video4linux2",
+                        "-i",
+                        device_path,
+                        "-frames:v",
+                        "1",
+                        &path_text,
+                    ],
+                    &path,
+                )
+            }
+            Self::FswebcamFile => {
+                let path = temp_path("rdl-camera", "jpg");
+                let path_text = path.to_string_lossy().to_string();
+                run_capture_file(
+                    "fswebcam",
+                    &[
+                        "--no-banner",
+                        "--device",
+                        device_path,
+                        "-r",
+                        "1280x720",
+                        &path_text,
+                    ],
+                    &path,
+                )
+            }
+            Self::StreamerFile => {
+                let path = temp_path("rdl-camera", "jpg");
+                let path_text = path.to_string_lossy().to_string();
+                run_capture_file(
+                    "streamer",
+                    &["-c", device_path, "-f", "jpeg", "-o", &path_text],
+                    &path,
+                )
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn encode_camera_bytes(bytes: Vec<u8>, quality: &str) -> Result<CameraVideoFrame, String> {
     let image = image::load_from_memory(&bytes)
         .map_err(|error| format!("load camera frame failed: {error}"))?;
-    let (bytes, width, height) = encode_camera_image(image, &request.quality)
+    let (bytes, width, height) = encode_camera_image(image, quality)
         .map_err(|error| format!("encode camera frame failed: {error}"))?;
     Ok(CameraVideoFrame {
         width,
@@ -654,19 +790,120 @@ fn sanitize_field(value: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
-fn run_capture(program: &str, args: &[&str]) -> Result<(), String> {
+fn linux_list_devices() -> String {
+    let mut output = String::from("camera_devices");
+    let devices = linux_camera_devices();
+    if devices.is_empty() {
+        output.push_str("\ndevice\t0\tDefault camera\t/dev/video0");
+        return output;
+    }
+    for (index, path) in devices {
+        output.push_str(&format!(
+            "\ndevice\t{}\t{}\t{}",
+            index,
+            sanitize_linux_field(&format!("Camera {index}")),
+            sanitize_linux_field(&path)
+        ));
+    }
+    output
+}
+
+#[cfg(target_os = "linux")]
+fn linux_camera_devices() -> Vec<(usize, String)> {
+    let mut devices = fs::read_dir("/dev")
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let index = name.strip_prefix("video")?.parse::<usize>().ok()?;
+            Some((index, format!("/dev/{name}")))
+        })
+        .collect::<Vec<_>>();
+    devices.sort_by_key(|(index, _)| *index);
+    devices
+}
+
+#[cfg(target_os = "linux")]
+fn linux_device_path(device: usize) -> String {
+    let path = format!("/dev/video{device}");
+    if Path::new(&path).exists() {
+        path
+    } else {
+        "/dev/video0".to_string()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_camera_backends() -> Result<Vec<LinuxCameraBackend>, String> {
+    let mut backends = Vec::new();
+    if command_in_path("ffmpeg") {
+        backends.push(LinuxCameraBackend::FfmpegStdout);
+        backends.push(LinuxCameraBackend::FfmpegFile);
+    }
+    if command_in_path("fswebcam") {
+        backends.push(LinuxCameraBackend::FswebcamFile);
+    }
+    if command_in_path("streamer") {
+        backends.push(LinuxCameraBackend::StreamerFile);
+    }
+    if backends.is_empty() {
+        Err("Linux camera capture requires ffmpeg, fswebcam, or streamer".to_string())
+    } else {
+        Ok(backends)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn command_in_path(program: &str) -> bool {
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn run_capture_stdout(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new(program)
         .args(args)
         .output()
         .map_err(|error| format!("{program} failed: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
+    if !output.status.success() {
+        return Err(format!(
             "{program} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
-        ))
+        ));
     }
+    if output.stdout.is_empty() {
+        return Err(format!("{program} produced an empty camera frame"));
+    }
+    Ok(output.stdout)
+}
+
+#[cfg(target_os = "linux")]
+fn run_capture_file(program: &str, args: &[&str], path: &Path) -> Result<Vec<u8>, String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| format!("{program} failed: {error}"))?;
+    if !output.status.success() {
+        let _ = fs::remove_file(path);
+        return Err(format!(
+            "{program} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let bytes = fs::read(path).map_err(|error| format!("read camera frame failed: {error}"))?;
+    let _ = fs::remove_file(path);
+    if bytes.is_empty() {
+        return Err(format!("{program} produced an empty camera frame"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn sanitize_linux_field(value: &str) -> String {
+    value.replace(['\r', '\n', '\t'], " ").trim().to_string()
 }
 
 #[cfg(target_os = "linux")]

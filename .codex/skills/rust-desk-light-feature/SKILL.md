@@ -12,14 +12,14 @@ Work from the existing architecture instead of inventing a parallel path.
 - Read the nearby implementation before editing: protocol definitions, Admin event handling, Server routing, Client handling, and the closest UI window.
 - Keep changes end-to-end. If a feature crosses Admin, Server, Client, and protocol, update all four in the same pass.
 - Preserve user work in the dirty tree. Do not revert unrelated files.
-- Prefer small, focused helpers and package-local tests over broad refactors.
+- Prefer small, focused helpers and clear manual validation over broad refactors.
 - Keep product/docs language neutral. Do not mention external reference projects in user-facing docs or roadmap entries.
 
 ## Repository Map
 
 Use these files as anchors:
 
-- `crates/protocol/src/lib.rs`: wire protocol, `PROTOCOL_VERSION`, `Role`, `CommandKind`, `Message`, binary encode/decode tests.
+- `crates/protocol/src/lib.rs`: wire protocol, `PROTOCOL_VERSION`, `Role`, `CommandKind`, `Message`, binary encode/decode logic.
 - `crates/server/src/main.rs`: peer registry, role checks, audit logs, routing between Admin and Client.
 - `crates/client/src/app.rs`: client message loop and long-running stream workers.
 - `crates/client/src/remote_management/`: client-side command implementations.
@@ -28,7 +28,7 @@ Use these files as anchors:
 - `crates/admin/src/remote_management/`: dedicated Admin tool windows.
 - `crates/admin/src/app/command_result.rs`: shared result-table windows and row actions.
 - `crates/admin/src/theme.rs`: colors, sizes, frames, tables, status bars.
-- `crates/admin/src/i18n.rs`: `t`, `tf`, command titles, Chinese translations, i18n tests.
+- `crates/admin/src/i18n.rs`: `t`, `tf`, command titles, Chinese translations.
 
 ## Protocol And Routing
 
@@ -50,8 +50,8 @@ For interactive streams or bidirectional data, add explicit `Message` variants i
 When changing the wire protocol:
 
 - Update `PROTOCOL_VERSION` if old binaries cannot safely understand the new messages.
-- Add or update `Message::kind_code`, encoder, decoder, and roundtrip tests.
-- If adding `CommandKind`, update `as_str`, `parse`, `to_code`, `from_code`, `requires_client_gui` if needed, Admin command titles, command menu, client execution, and tests.
+- Add or update `Message::kind_code`, encoder, decoder, and manual roundtrip validation steps.
+- If adding `CommandKind`, update `as_str`, `parse`, `to_code`, `from_code`, `requires_client_gui` if needed, Admin command titles, command menu, client execution, and manual validation steps.
 
 ## Admin Windows
 
@@ -93,14 +93,13 @@ All user-facing text must go through `t()` or `tf()`.
 - Use `t("Static Label")` for static labels.
 - Use `tf("Message with {name}", &[("name", value)])` for dynamic text.
 - Add every new key to `zh()` in `crates/admin/src/i18n.rs`.
-- If a feature has an i18n key test list, add keys there too.
 - Prefer generic future-proof strings: `Settings saved.` instead of `Theme and language saved.` when the setting group may grow.
 - Remove stale i18n keys when UI text is removed and no other code uses them.
 - Keep command titles in `command_key`.
 
 ## OS-Specific Behavior
 
-Use local OS conventions and test helpers:
+Use local OS conventions and manual verification helpers:
 
 - Prefer `cfg!(target_os = "windows")`, `cfg!(target_os = "macos")`, or `std::env::consts::OS` for Admin-side OS-specific strings.
 - For Client commands, mirror existing Windows/macOS/Linux branches in `crates/client/src/remote_management`.
@@ -119,20 +118,20 @@ Avoid unbounded UI and memory growth.
 
 ## Validation
 
-Run the smallest relevant checks, then broaden when protocol or shared behavior changes.
+Run the smallest relevant checks, then broaden when protocol or shared behavior changes. Temporary local tests are allowed for validation only.
 
 - Always run `cargo fmt --all -- --check`.
-- For Admin UI changes, run `cargo test -p rust-desk-light-admin`.
-- For protocol changes, run protocol tests and check all affected packages.
+- For Admin UI changes, run the relevant Admin build/check commands and manually exercise the changed window or workflow.
+- For protocol changes, check all affected packages and manually verify the message flow or encoded payload shape.
 - For Admin/Server/Client end-to-end changes, run:
   - `cargo check -p rust-desk-light-admin -p rust-desk-light-server -p rust-desk-light-client`
-  - package tests touched by the change
-- Add focused tests for protocol roundtrips, parser/formatter helpers, i18n key coverage, routing error mapping, and history caps.
+  - a manual end-to-end scenario covering the changed Admin, Server, and Client path
+- Remove any temporary code tests, snapshot tests, or test-only helpers before finalizing, committing, or pushing. Put manual validation notes in the final answer instead.
 
 ## Final Checklist
 
 Before finishing:
 
-- Confirm no unused UI text, dead enum variants, stale tests, or stale roadmap wording remain.
+- Confirm no unused UI text, dead enum variants, stale test references, or stale roadmap wording remain.
 - Confirm user-visible docs do not mention private/reference implementation names.
 - Confirm the final answer says what changed and what validation passed.

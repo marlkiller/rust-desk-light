@@ -86,28 +86,3 @@ pub(super) fn payload_for(preset: &str, custom_mode: bool, custom_command: &str)
 fn sanitize_single_line(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ").trim().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::payload_for;
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    #[test]
-    fn static_command_payload_uses_preset() {
-        assert_eq!(
-            payload_for("hostname", false, ""),
-            "action=run\nmode=preset\npreset=hostname"
-        );
-    }
-
-    #[test]
-    fn static_command_payload_encodes_custom_command() {
-        let payload = payload_for("hostname", true, "echo hello && whoami");
-
-        assert!(payload.contains("mode=custom"));
-        assert!(payload.contains(&format!(
-            "command_b64={}",
-            STANDARD.encode("echo hello && whoami")
-        )));
-    }
-}

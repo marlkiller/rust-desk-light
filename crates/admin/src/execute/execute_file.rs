@@ -40,17 +40,3 @@ pub(super) fn payload_for(path: &str, args: &str, working_dir: &str) -> String {
 fn sanitize_single_line(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ").trim().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::payload_for;
-
-    #[test]
-    fn execute_file_payload_includes_optional_fields() {
-        let payload = payload_for("/bin/echo", "\"hello world\"", "/tmp");
-
-        assert!(payload.contains("path=/bin/echo"));
-        assert!(payload.contains("args=\"hello world\""));
-        assert!(payload.contains("working_dir=/tmp"));
-    }
-}

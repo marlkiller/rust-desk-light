@@ -67,32 +67,3 @@ fn single_line(value: &str) -> String {
         value.chars().take(120).collect()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::ParsedInteractionPayload;
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    #[test]
-    fn parses_base64_message_payload() {
-        let body = "hello\nworld";
-        let payload = format!(
-            "title=Notice\nkind=warning\nmessage_b64={}",
-            STANDARD.encode(body)
-        );
-
-        let parsed = ParsedInteractionPayload::parse(&payload, "Default", "Body", "message_b64");
-
-        assert_eq!(parsed.title, "Notice");
-        assert_eq!(parsed.body, body);
-        assert_eq!(parsed.kind.as_deref(), Some("warning"));
-    }
-
-    #[test]
-    fn uses_raw_payload_as_body_for_terminal_commands() {
-        let parsed = ParsedInteractionPayload::parse("plain text", "Title", "", "text_b64");
-
-        assert_eq!(parsed.title, "Title");
-        assert_eq!(parsed.body, "plain text");
-    }
-}

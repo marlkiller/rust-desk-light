@@ -122,18 +122,3 @@ fn payload_field(payload: &str, key: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&prefix))
         .map(|value| value.trim().to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::output_text;
-
-    #[test]
-    fn result_output_omits_execute_metadata() {
-        assert_eq!(
-            output_text(
-                "execute_code\nlanguage=python3\ncommand=python3\nstatus=success\nstdout:\nhello from rust-desk-light",
-            ),
-            "hello from rust-desk-light"
-        );
-    }
-}

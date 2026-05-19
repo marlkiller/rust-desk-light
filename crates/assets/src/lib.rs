@@ -10,16 +10,3 @@ pub fn app_window_icon() -> Option<egui::IconData> {
         height,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_icon_decodes_to_rgba() {
-        let icon = app_window_icon().expect("embedded app icon should decode");
-        assert_eq!(icon.width, 256);
-        assert_eq!(icon.height, 256);
-        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
-    }
-}

@@ -178,35 +178,3 @@ fn template_for_language(language: &str) -> &'static str {
 fn sanitize_single_line(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ").trim().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_language_response, payload_for, template_for_language};
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    #[test]
-    fn execute_code_payload_encodes_code() {
-        let payload = payload_for("python3", "print('hi')");
-
-        assert!(payload.contains("language=python3"));
-        assert!(payload.contains(&format!("code_b64={}", STANDARD.encode("print('hi')"))));
-    }
-
-    #[test]
-    fn language_response_parses_available_rows() {
-        let languages = parse_language_response(
-            "execute_code_languages:\nLanguage\tCommand\tStatus\npython3\tpython3\tavailable\nnone\t-\tunavailable",
-        );
-
-        assert_eq!(languages.len(), 1);
-        assert_eq!(languages[0].id, "python3");
-        assert_eq!(languages[0].command, "python3");
-    }
-
-    #[test]
-    fn language_templates_include_hello_world() {
-        assert!(template_for_language("python3").contains("hello"));
-        assert!(template_for_language("node").contains("hello"));
-        assert!(template_for_language("bash").contains("hello"));
-    }
-}

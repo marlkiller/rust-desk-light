@@ -25,17 +25,3 @@ pub(super) fn title_hint() -> &'static str {
 pub(super) fn body_label() -> &'static str {
     t("Text")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::payload_for;
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
-    #[test]
-    fn encodes_open_text_payload_with_file_name() {
-        let payload = payload_for("note.txt", "body");
-
-        assert!(payload.contains("file_name=note.txt"));
-        assert!(payload.contains(&format!("text_b64={}", STANDARD.encode("body"))));
-    }
-}

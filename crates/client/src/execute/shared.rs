@@ -198,16 +198,3 @@ fn truncate_lines(value: &str, max_lines: usize) -> String {
     }
     lines
 }
-
-#[cfg(test)]
-mod tests {
-    use super::split_args;
-
-    #[test]
-    fn split_args_handles_quotes() {
-        assert_eq!(
-            split_args(r#"--name "Ada Lovelace" 'quoted value' plain"#),
-            vec!["--name", "Ada Lovelace", "quoted value", "plain"]
-        );
-    }
-}

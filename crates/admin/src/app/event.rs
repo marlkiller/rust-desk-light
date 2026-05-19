@@ -85,6 +85,7 @@ pub(super) enum AdminEvent {
     DecodedCameraFrame {
         client_id: String,
         result: Result<live_control::camera::CameraFrame, String>,
+        decode_ms: Option<u128>,
     },
     VideoFrame {
         client_id: String,

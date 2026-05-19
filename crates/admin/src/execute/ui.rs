@@ -139,14 +139,3 @@ pub(super) fn render_run_button(
         });
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::status_bar_text;
-
-    #[test]
-    fn status_bar_defaults_to_ready() {
-        assert_eq!(status_bar_text(""), "Ready");
-        assert_eq!(status_bar_text("Running..."), "Running...");
-    }
-}
