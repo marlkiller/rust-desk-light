@@ -1,4 +1,5 @@
 use super::message_box::sanitize_single_line;
+use crate::i18n::t;
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 pub(super) fn payload_for(title: &str, body: &str) -> String {
@@ -14,5 +15,5 @@ pub(super) fn default_fields() -> (String, String) {
 }
 
 pub(super) fn body_label() -> &'static str {
-    "Notification"
+    t("Notification")
 }

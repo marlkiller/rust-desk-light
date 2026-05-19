@@ -1,4 +1,5 @@
 use crate::{
+    i18n::t,
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
@@ -257,7 +258,7 @@ pub(crate) fn render_windows(
             .pending_since
             .is_some_and(|pending_since| pending_since.elapsed() > Duration::from_secs(10))
         {
-            stop_capture(window, "Timed out waiting for camera result");
+            stop_capture(window, t("Timed out waiting for camera result"));
             window.status = CameraStatus::Failed;
         }
         if let Some(frame) = &window.frame {
@@ -275,7 +276,8 @@ pub(crate) fn render_windows(
             }
         }
         let title = format!(
-            "Camera - {}",
+            "{} - {}",
+            t("Camera"),
             identity_title(&window.hostname, &window.username)
         );
         let viewport_id = egui::ViewportId::from_hash_of(("camera", &window.client_id));
@@ -341,7 +343,7 @@ pub(crate) fn render_windows(
         if let Ok(mut queued) = queued.lock() {
             for payload in queued.drain(..) {
                 if payload.trim() == "action=stop" {
-                    stop_capture(window, "Stopped");
+                    stop_capture(window, t("Stopped"));
                 }
                 window.queue_payload(payload);
             }
@@ -356,9 +358,9 @@ pub(crate) fn render_windows(
             {
                 window.status = CameraStatus::Pending;
                 window.notice = if payload.trim() == "action=stop" {
-                    "Stopping camera".to_string()
+                    t("Stopping camera").to_string()
                 } else {
-                    "Waiting for client result".to_string()
+                    t("Waiting for client result").to_string()
                 };
             }
             window.pending_since = Some(Instant::now());
@@ -401,7 +403,7 @@ fn render_toolbar(
                 .map(|value| *value)
                 .unwrap_or_default();
             ui.label(
-                egui::RichText::new("Device")
+                egui::RichText::new(t("Device"))
                     .size(12.0)
                     .color(crate::theme::palette().muted),
             );
@@ -436,7 +438,7 @@ fn render_toolbar(
         });
         toolbar_row(ui, |ui| {
             if ui
-                .add_enabled(!is_running, egui::Button::new("Reload Devices"))
+                .add_enabled(!is_running, egui::Button::new(t("Reload Devices")))
                 .clicked()
             {
                 queue_ui_payload(queued, "action=devices".to_string());
@@ -479,9 +481,9 @@ fn render_toolbar(
                 .add_enabled(
                     !devices.is_empty(),
                     egui::Button::new(if is_running {
-                        "Stop Capture"
+                        t("Stop Capture")
                     } else {
-                        "Start Capture"
+                        t("Start Capture")
                     }),
                 )
                 .clicked()
@@ -499,7 +501,7 @@ fn render_toolbar(
             }
             ui.separator();
             if ui
-                .add_enabled(has_frame, egui::Button::new("Save Frame..."))
+                .add_enabled(has_frame, egui::Button::new(t("Save Frame...")))
                 .clicked()
             {
                 save_requested.store(true, Ordering::Relaxed);
@@ -578,17 +580,18 @@ fn render_frame(
 
 fn render_status_bar(ui: &mut egui::Ui, status: CameraStatus, notice: &str, stats: &CameraStats) {
     let (label, color) = match status {
-        CameraStatus::Ready => ("Ready", crate::theme::palette().muted),
-        CameraStatus::Pending => ("Pending", COLOR_WARN),
-        CameraStatus::Live => ("Live", COLOR_GOOD),
-        CameraStatus::Failed => ("Failed", COLOR_BAD),
+        CameraStatus::Ready => (t("Ready"), crate::theme::palette().muted),
+        CameraStatus::Pending => (t("Pending"), COLOR_WARN),
+        CameraStatus::Live => (t("Live"), COLOR_GOOD),
+        CameraStatus::Failed => (t("Failed"), COLOR_BAD),
     };
     crate::theme::status_frame().show(ui, |ui| {
         crate::theme::render_status_line(ui, label, color, notice, |ui| {
             ui.separator();
             ui.label(crate::theme::muted_text(format!("FPS {:.1}", stats.fps)));
             ui.label(crate::theme::muted_text(format!(
-                "Frames {}",
+                "{} {}",
+                t("Frames"),
                 stats.frame_count
             )));
             if stats.width > 0 && stats.height > 0 {
@@ -637,7 +640,7 @@ fn handle_frame(window: &mut CameraWindow, frame: CameraFrame, latency_ms: Optio
     window.stats.height = frame.height;
     window.frame = Some(frame);
     window.status = CameraStatus::Live;
-    window.notice = "Frame received".to_string();
+    window.notice = t("Frame received").to_string();
 }
 
 fn stop_capture(window: &mut CameraWindow, notice: &str) {
@@ -653,7 +656,7 @@ fn stop_capture(window: &mut CameraWindow, notice: &str) {
 
 fn save_current_frame(window: &mut CameraWindow) {
     let Some(frame) = &window.frame else {
-        window.notice = "No camera frame to save".to_string();
+        window.notice = t("No camera frame to save").to_string();
         window.status = CameraStatus::Failed;
         return;
     };
@@ -668,14 +671,14 @@ fn save_current_frame(window: &mut CameraWindow) {
         default_path
     };
     let Some(path_buf) = pick_frame_save_path(&default_path, &frame.format) else {
-        window.notice = "Save frame cancelled".to_string();
+        window.notice = t("Save frame cancelled").to_string();
         return;
     };
     let path_buf = ensure_frame_extension(path_buf, &frame.format);
     if let Some(parent) = path_buf.parent() {
         if !parent.as_os_str().is_empty() {
             if let Err(error) = std::fs::create_dir_all(parent) {
-                window.notice = format!("Create save directory failed: {error}");
+                window.notice = format!("{}: {error}", t("Create save directory failed"));
                 window.status = CameraStatus::Failed;
                 return;
             }
@@ -683,14 +686,14 @@ fn save_current_frame(window: &mut CameraWindow) {
     }
     match std::fs::write(&path_buf, &frame.bytes) {
         Ok(()) => {
-            window.notice = format!("Saved frame to {}", path_buf.display());
+            window.notice = format!("{} {}", t("Saved frame to"), path_buf.display());
             window.status = CameraStatus::Live;
             if let Ok(mut value) = window.save_path.lock() {
                 *value = path_buf.to_string_lossy().to_string();
             }
         }
         Err(error) => {
-            window.notice = format!("Save frame failed: {error}");
+            window.notice = format!("{}: {error}", t("Save frame failed"));
             window.status = CameraStatus::Failed;
         }
     }
@@ -698,7 +701,7 @@ fn save_current_frame(window: &mut CameraWindow) {
 
 fn pick_frame_save_path(default_path: &str, format: &str) -> Option<PathBuf> {
     let default_path = PathBuf::from(default_path);
-    let mut dialog = FileDialog::new().set_title("Save camera frame");
+    let mut dialog = FileDialog::new().set_title(t("Save camera frame"));
     if let Some(parent) = default_path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -845,9 +848,9 @@ fn truncate_label(value: &str, max_chars: usize) -> String {
 
 fn quality_label(value: &str) -> &'static str {
     match value {
-        "low" => "Low",
-        "high" => "High",
-        _ => "Medium",
+        "low" => t("Low"),
+        "high" => t("High"),
+        _ => t("Medium"),
     }
 }
 

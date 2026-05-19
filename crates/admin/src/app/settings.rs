@@ -1,39 +1,18 @@
-use crate::{runtime::Config, theme::ThemeKind};
+use crate::{
+    i18n::{t, tf, theme_label, Language},
+    runtime::Config,
+    theme::ThemeKind,
+};
 use eframe::egui;
 
 use super::{form_label, COLOR_BAD, COLOR_GOOD, TOOLBAR_CONTROL_HEIGHT};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SettingsLanguage {
-    English,
-}
-
-impl SettingsLanguage {
-    const ALL: [Self; 1] = [Self::English];
-
-    fn from_config(_value: &str) -> Self {
-        Self::English
-    }
-
-    fn as_config(self) -> &'static str {
-        match self {
-            Self::English => "en",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::English => "English",
-        }
-    }
-}
 
 pub(super) struct SettingsState {
     pub(super) server_ip: String,
     pub(super) server_port: String,
     pub(super) auth_token: String,
     theme: ThemeKind,
-    language: SettingsLanguage,
+    language: Language,
     open: bool,
     reconnect_pending: bool,
     notice: String,
@@ -47,7 +26,7 @@ impl SettingsState {
             server_port: config.port.to_string(),
             auth_token: config.auth_token.clone(),
             theme: ThemeKind::from_config(&config.theme),
-            language: SettingsLanguage::from_config(&config.language),
+            language: Language::from_config(&config.language),
             open: false,
             reconnect_pending: false,
             notice: String::new(),
@@ -81,7 +60,7 @@ impl SettingsState {
 
     pub(super) fn sync_preferences(&mut self, config: &Config) {
         self.theme = ThemeKind::from_config(&config.theme);
-        self.language = SettingsLanguage::from_config(&config.language);
+        self.language = Language::from_config(&config.language);
     }
 
     pub(super) fn set_notice(&mut self, notice: impl Into<String>) {
@@ -96,13 +75,13 @@ impl SettingsState {
 
     pub(super) fn set_reconnect_pending(&mut self) {
         self.reconnect_pending = true;
-        self.set_notice("Connection saved. Reconnecting...");
+        self.set_notice(t("Connection saved. Reconnecting..."));
     }
 
     pub(super) fn finish_reconnect_success(&mut self) {
         if self.reconnect_pending {
             self.reconnect_pending = false;
-            self.set_notice("Connection saved. Connected.");
+            self.set_notice(t("Connection saved. Connected."));
         }
     }
 
@@ -110,7 +89,7 @@ impl SettingsState {
         let detail = detail.into();
         if self.reconnect_pending {
             self.reconnect_pending = false;
-            self.set_error(format!("Reconnect failed: {detail}"));
+            self.set_error(tf("Reconnect failed: {detail}", &[("detail", &detail)]));
         } else {
             self.set_error(detail);
         }
@@ -139,7 +118,7 @@ pub(super) fn render_settings_window(
 
     let mut action = None;
     let mut open = state.open;
-    egui::Window::new("Setting")
+    egui::Window::new(t("Setting"))
         .id(egui::Id::new("admin_settings_window"))
         .open(&mut open)
         .collapsible(false)
@@ -163,14 +142,14 @@ fn render_connection_settings(
     action: &mut Option<SettingsAction>,
 ) {
     ui.label(
-        egui::RichText::new("Connection")
+        egui::RichText::new(t("Connection"))
             .size(13.0)
             .color(crate::theme::palette().text)
             .strong(),
     );
     ui.add_space(4.0);
 
-    form_label(ui, "Server IP");
+    form_label(ui, t("Server IP"));
     ui.add_sized(
         [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
         egui::TextEdit::singleline(&mut state.server_ip)
@@ -179,7 +158,7 @@ fn render_connection_settings(
     );
     ui.add_space(6.0);
 
-    form_label(ui, "Server Port");
+    form_label(ui, t("Server Port"));
     ui.add_sized(
         [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
         egui::TextEdit::singleline(&mut state.server_port)
@@ -188,12 +167,12 @@ fn render_connection_settings(
     );
     ui.add_space(6.0);
 
-    form_label(ui, "Token");
+    form_label(ui, t("Token"));
     ui.add_sized(
         [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
         egui::TextEdit::singleline(&mut state.auth_token)
             .password(true)
-            .hint_text("Auth token")
+            .hint_text(t("Auth token"))
             .vertical_align(egui::Align::Center),
     );
 
@@ -201,7 +180,7 @@ fn render_connection_settings(
     if ui
         .add_sized(
             [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-            egui::Button::new("Save connection and reconnect"),
+            egui::Button::new(t("Save connection and reconnect")),
         )
         .clicked()
     {
@@ -219,37 +198,39 @@ fn render_preference_settings(
     action: &mut Option<SettingsAction>,
 ) {
     ui.label(
-        egui::RichText::new("Appearance")
+        egui::RichText::new(t("Appearance"))
             .size(13.0)
             .color(crate::theme::palette().text)
             .strong(),
     );
     ui.add_space(4.0);
     ui.label(
-        egui::RichText::new("Theme changes apply immediately. System follows the OS appearance.")
-            .size(12.0)
-            .color(crate::theme::palette().muted),
+        egui::RichText::new(t(
+            "Theme changes apply immediately. System follows the OS appearance.",
+        ))
+        .size(12.0)
+        .color(crate::theme::palette().muted),
     );
     ui.add_space(6.0);
 
-    form_label(ui, "Theme");
+    form_label(ui, t("Theme"));
     egui::ComboBox::from_id_salt("admin_settings_theme")
-        .selected_text(state.theme.label())
+        .selected_text(theme_label(state.theme))
         .width(ui.available_width())
         .show_ui(ui, |ui| {
             for theme in ThemeKind::ALL {
-                ui.selectable_value(&mut state.theme, theme, theme.label());
+                ui.selectable_value(&mut state.theme, theme, theme_label(theme));
             }
         });
     ui.add_space(6.0);
 
-    form_label(ui, "Language");
+    form_label(ui, t("Language"));
     egui::ComboBox::from_id_salt("admin_settings_language")
-        .selected_text(state.language.label())
+        .selected_text(state.language.native_label())
         .width(ui.available_width())
         .show_ui(ui, |ui| {
-            for language in SettingsLanguage::ALL {
-                ui.selectable_value(&mut state.language, language, language.label());
+            for language in Language::ALL {
+                ui.selectable_value(&mut state.language, language, language.native_label());
             }
         });
 
@@ -257,7 +238,7 @@ fn render_preference_settings(
     if ui
         .add_sized(
             [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-            egui::Button::new("Save theme"),
+            egui::Button::new(t("Save")),
         )
         .clicked()
     {
@@ -286,7 +267,7 @@ fn render_status(ui: &mut egui::Ui, state: &SettingsState) {
     } else {
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new("Connection settings are saved to the admin config.")
+            egui::RichText::new(t("Connection settings are saved to the admin config."))
                 .size(12.0)
                 .color(crate::theme::palette().muted),
         );

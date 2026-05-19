@@ -19,6 +19,7 @@ macro_rules! debug_log {
 mod app;
 mod command_menu;
 mod execute;
+mod i18n;
 mod live_control;
 mod remote_management;
 mod runtime;

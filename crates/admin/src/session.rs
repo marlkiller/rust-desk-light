@@ -1,4 +1,7 @@
-use crate::windowing;
+use crate::{
+    i18n::{self, t},
+    windowing,
+};
 use eframe::egui;
 use rdl_protocol::CommandKind;
 use std::sync::{
@@ -278,9 +281,11 @@ fn render_command_fields(
         }
         CommandKind::KillClientProcess | CommandKind::DeleteClient => {
             ui.label(
-                egui::RichText::new("The client will disconnect after acknowledging the command.")
-                    .size(12.0)
-                    .color(crate::theme::palette().muted),
+                egui::RichText::new(t(
+                    "The client will disconnect after acknowledging the command.",
+                ))
+                .size(12.0)
+                .color(crate::theme::palette().muted),
             );
         }
         _ => {}
@@ -300,7 +305,7 @@ fn render_client_config(
         .map(|value| value.clone())
         .unwrap_or_default();
     ui.label(
-        egui::RichText::new("Server IP")
+        egui::RichText::new(t("Server IP"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
@@ -323,7 +328,7 @@ fn render_client_config(
         .map(|value| value.clone())
         .unwrap_or_default();
     ui.label(
-        egui::RichText::new("Server Port")
+        egui::RichText::new(t("Server Port"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
@@ -350,7 +355,7 @@ fn render_client_config(
         .map(|value| value.clone())
         .unwrap_or_default();
     ui.label(
-        egui::RichText::new("Auth Token")
+        egui::RichText::new(t("Auth Token"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
@@ -360,11 +365,11 @@ fn render_client_config(
             [input_width, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(&mut token)
                 .password(true)
-                .hint_text("Optional")
+                .hint_text(t("Optional"))
                 .vertical_align(egui::Align::Center),
         );
         let mut changed = response.changed();
-        if ui.button("Use admin token").clicked() {
+        if ui.button(t("Use admin token")).clicked() {
             token = client_config_default_auth_token
                 .lock()
                 .map(|value| value.clone())
@@ -382,13 +387,13 @@ fn render_client_config(
     ui.add_space(8.0);
     let mut restart = client_config_restart.load(Ordering::Relaxed);
     if ui
-        .checkbox(&mut restart, "Restart from config file after apply")
+        .checkbox(&mut restart, t("Restart from config file after apply"))
         .changed()
     {
         client_config_restart.store(restart, Ordering::Relaxed);
     }
     ui.label(
-        egui::RichText::new("The client will restart with client.toml only; startup arguments are not carried over.")
+        egui::RichText::new(t("The client will restart with client.toml only; startup arguments are not carried over."))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
@@ -400,14 +405,14 @@ fn render_update_path(ui: &mut egui::Ui, update_path: &Arc<Mutex<String>>) {
         .map(|value| value.clone())
         .unwrap_or_default();
     ui.label(
-        egui::RichText::new("Replacement Binary Path")
+        egui::RichText::new(t("Replacement Binary Path"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
     let response = ui.add_sized(
         [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
         egui::TextEdit::singleline(&mut value)
-            .hint_text("Optional path on the client")
+            .hint_text(t("Optional path on the client"))
             .vertical_align(egui::Align::Center),
     );
     if response.changed() {
@@ -423,7 +428,7 @@ fn render_delay(ui: &mut egui::Ui, delay_seconds: &Arc<Mutex<String>>) {
         .map(|value| value.clone())
         .unwrap_or_else(|_| default_delay_seconds().to_string());
     ui.label(
-        egui::RichText::new("Delay Seconds")
+        egui::RichText::new(t("Delay Seconds"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
@@ -448,7 +453,7 @@ fn render_delay(ui: &mut egui::Ui, delay_seconds: &Arc<Mutex<String>>) {
 fn render_remove_binary(ui: &mut egui::Ui, remove_binary: &Arc<AtomicBool>) {
     let mut value = remove_binary.load(Ordering::Relaxed);
     if ui
-        .checkbox(&mut value, "Remove client binary after exit")
+        .checkbox(&mut value, t("Remove client binary after exit"))
         .changed()
     {
         remove_binary.store(value, Ordering::Relaxed);
@@ -461,20 +466,23 @@ fn render_confirm(
     send_requested: &Arc<AtomicBool>,
 ) {
     let mut value = confirmed.load(Ordering::Relaxed);
-    if ui.checkbox(&mut value, "Confirm").changed() {
+    if ui.checkbox(&mut value, t("Confirm")).changed() {
         confirmed.store(value, Ordering::Relaxed);
     }
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add_enabled(value, egui::Button::new("Send")).clicked() {
+            if ui
+                .add_enabled(value, egui::Button::new(t("Send")))
+                .clicked()
+            {
                 send_requested.store(true, Ordering::Relaxed);
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
             if !value {
                 ui.label(
-                    egui::RichText::new("Confirmation required")
+                    egui::RichText::new(t("Confirmation required"))
                         .size(12.0)
                         .color(crate::theme::palette().text),
                 );
@@ -536,15 +544,15 @@ fn default_delay_seconds() -> u64 {
 
 fn risk_text(command: &CommandKind) -> &'static str {
     match command {
-        CommandKind::UpdateClient => "Restarts the remote client process.",
-        CommandKind::UninstallClient => "Removes local client identity and stops the client.",
-        CommandKind::KillClientProcess => "Stops the remote client process.",
-        CommandKind::Shutdown => "Powers off the remote computer.",
-        CommandKind::Reboot => "Restarts the remote computer.",
+        CommandKind::UpdateClient => t("Restarts the remote client process."),
+        CommandKind::UninstallClient => t("Removes local client identity and stops the client."),
+        CommandKind::KillClientProcess => t("Stops the remote client process."),
+        CommandKind::Shutdown => t("Powers off the remote computer."),
+        CommandKind::Reboot => t("Restarts the remote computer."),
         CommandKind::ClientConfig => {
-            "Writes the remote client's config file and restarts it from that file."
+            t("Writes the remote client's config file and restarts it from that file.")
         }
-        CommandKind::DeleteClient => "Removes this client identity and stops the client.",
+        CommandKind::DeleteClient => t("Removes this client identity and stops the client."),
         _ => "",
     }
 }
@@ -563,18 +571,7 @@ fn identity_title(hostname: &str, username: &str) -> String {
 }
 
 fn command_title(command: &CommandKind) -> String {
-    command
-        .as_str()
-        .split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    i18n::command_title(command).to_string()
 }
 
 #[cfg(test)]

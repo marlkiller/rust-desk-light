@@ -3,6 +3,7 @@ use super::{
     payload::payload_field,
     ui::{COLOR_BAD, COLOR_GOOD, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT},
 };
+use crate::i18n::{self, t};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
 use egui_extras::Column;
@@ -158,9 +159,9 @@ fn command_window_status(
     status: &CommandResultStatus,
 ) -> (&'static str, &'static str, egui::Color32) {
     match status {
-        CommandResultStatus::Pending => ("Pending", "Waiting for client result", COLOR_WARN),
-        CommandResultStatus::Accepted => ("Done", "Result received", COLOR_GOOD),
-        CommandResultStatus::Failed => ("Failed", "Command failed", COLOR_BAD),
+        CommandResultStatus::Pending => (t("Pending"), t("Waiting for client result"), COLOR_WARN),
+        CommandResultStatus::Accepted => (t("Done"), t("Result received"), COLOR_GOOD),
+        CommandResultStatus::Failed => (t("Failed"), t("Command failed"), COLOR_BAD),
     }
 }
 
@@ -180,16 +181,16 @@ pub(super) fn command_status_notice(
 ) -> Option<String> {
     if matches!(status, CommandResultStatus::Accepted) {
         if command_expects_result_table(command) && parse_result_table(detail).is_none() {
-            return Some("Table data could not be parsed".to_string());
+            return Some(t("Table data could not be parsed").to_string());
         }
         if matches!(command, CommandKind::PerformanceMonitor)
             && !detail.trim().is_empty()
             && parse_performance_metrics(detail).is_empty()
         {
-            return Some("Performance metrics could not be parsed".to_string());
+            return Some(t("Performance metrics could not be parsed").to_string());
         }
         if command_allows_plain_detail(command, detail) {
-            return Some("Result received".to_string());
+            return Some(t("Result received").to_string());
         }
     }
     None
@@ -398,7 +399,7 @@ fn render_performance_metric_bars(ui: &mut egui::Ui, metrics: &PerformanceMetric
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new("Resource usage")
+                egui::RichText::new(t("Resource usage"))
                     .size(12.0)
                     .color(crate::theme::palette().text)
                     .strong(),
@@ -458,7 +459,7 @@ fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
         detail,
         &["cpu_percent", "cpupercent", "LoadPercent", "LoadPercentage"],
     )
-    .map(|value| percent_metric("CPU", value, crate::theme::COLOR_METRIC_CPU))
+    .map(|value| percent_metric(t("CPU"), value, crate::theme::COLOR_METRIC_CPU))
     .or_else(|| {
         let load = parse_load_average(detail)?;
         let cores = std::thread::available_parallelism()
@@ -466,7 +467,7 @@ fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
             .unwrap_or(1.0)
             .max(1.0);
         Some(PerformanceMetric {
-            label: "CPU Load",
+            label: t("CPU Load"),
             percent: clamp_percent(load * 100.0 / cores),
             value: format!("{load:.2} load"),
             color: crate::theme::COLOR_METRIC_CPU,
@@ -482,13 +483,13 @@ fn parse_memory_metric(detail: &str) -> Option<PerformanceMetric> {
     .or_else(|| parse_windows_memory_percent(detail))
     .or_else(|| parse_linux_memory_percent(detail))
     .or_else(|| parse_macos_memory_percent(detail))
-    .map(|value| percent_metric("Memory", value, crate::theme::COLOR_METRIC_MEMORY))
+    .map(|value| percent_metric(t("Memory"), value, crate::theme::COLOR_METRIC_MEMORY))
 }
 
 fn parse_disk_metric(detail: &str) -> Option<PerformanceMetric> {
     parse_named_number(detail, &["disk_percent", "diskpercent", "DiskPercent"])
         .or_else(|| parse_df_disk_percent(detail))
-        .map(|value| percent_metric("Disk", value, crate::theme::COLOR_METRIC_DISK))
+        .map(|value| percent_metric(t("Disk"), value, crate::theme::COLOR_METRIC_DISK))
 }
 
 fn percent_metric(label: &'static str, value: f32, color: egui::Color32) -> PerformanceMetric {
@@ -690,7 +691,7 @@ fn render_table_toolbar(
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.label(
-                    egui::RichText::new("Filter")
+                    egui::RichText::new(t("Filter"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -699,7 +700,7 @@ fn render_table_toolbar(
         let response = ui.add_sized(
             [240.0, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(&mut filter)
-                .hint_text("Filter table content")
+                .hint_text(t("Filter table content"))
                 .vertical_align(egui::Align::Center),
         );
         if response.changed() {
@@ -708,9 +709,9 @@ fn render_table_toolbar(
             }
         }
         let label = if refresh_in_flight {
-            "Refreshing..."
+            t("Refreshing...")
         } else {
-            "Refresh"
+            t("Refresh")
         };
         if ui
             .add_enabled(!refresh_in_flight, egui::Button::new(label))
@@ -720,7 +721,7 @@ fn render_table_toolbar(
         }
         if matches!(command, CommandKind::StartupManager) {
             if ui
-                .add_enabled(!refresh_in_flight, egui::Button::new("Add Item"))
+                .add_enabled(!refresh_in_flight, egui::Button::new(t("Add Item")))
                 .clicked()
             {
                 if let Ok(mut form) = startup_add_form.lock() {
@@ -746,7 +747,7 @@ fn render_client_autostart_menu(
 ) {
     let style = startup_client_autostart_style(status);
     let button = egui::Button::new(
-        egui::RichText::new(style.label)
+        egui::RichText::new(t(style.label))
             .size(12.0)
             .color(style.text),
     )
@@ -754,16 +755,16 @@ fn render_client_autostart_menu(
     .stroke(egui::Stroke::new(1.0, style.stroke));
 
     let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-        if ui.button("Enable").clicked() {
+        if ui.button(t("Enable")).clicked() {
             queue_startup_action(startup_action_requested, "enable_client_autostart");
             ui.close();
         }
-        if ui.button("Disable").clicked() {
+        if ui.button(t("Disable")).clicked() {
             queue_startup_action(startup_action_requested, "disable_client_autostart");
             ui.close();
         }
     });
-    response.on_hover_text("Configure login autostart for this client");
+    response.on_hover_text(t("Configure login autostart for this client"));
 }
 
 fn queue_startup_action(startup_action_requested: &Arc<Mutex<Option<String>>>, action: &str) {
@@ -793,25 +794,25 @@ fn render_startup_add_form(
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
                     ui.label(
-                        egui::RichText::new("Name")
+                        egui::RichText::new(t("Name"))
                             .size(12.0)
                             .color(crate::theme::palette().muted),
                     );
                     ui.add_sized(
                         [160.0, TOOLBAR_CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut form.name)
-                            .hint_text("Item name")
+                            .hint_text(t("Item name"))
                             .vertical_align(egui::Align::Center),
                     );
                     ui.label(
-                        egui::RichText::new("Command")
+                        egui::RichText::new(t("Command"))
                             .size(12.0)
                             .color(crate::theme::palette().muted),
                     );
                     ui.add_sized(
                         [360.0, TOOLBAR_CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut form.command)
-                            .hint_text("Command or executable path")
+                            .hint_text(t("Command or executable path"))
                             .vertical_align(egui::Align::Center),
                     );
 
@@ -819,7 +820,7 @@ fn render_startup_add_form(
                         && !form.name.trim().is_empty()
                         && !form.command.trim().is_empty();
                     if ui
-                        .add_enabled(can_submit, egui::Button::new("Add"))
+                        .add_enabled(can_submit, egui::Button::new(t("Add")))
                         .clicked()
                     {
                         queued_payload = Some(startup_add_payload(&form.name, &form.command));
@@ -828,7 +829,7 @@ fn render_startup_add_form(
                         form.error.clear();
                         form.open = false;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         form.error.clear();
                         form.open = false;
                     }
@@ -839,7 +840,7 @@ fn render_startup_add_form(
                 } else if form.name.trim().is_empty() || form.command.trim().is_empty() {
                     ui.add_space(6.0);
                     ui.label(
-                        egui::RichText::new("Name and command are required.")
+                        egui::RichText::new(t("Name and command are required."))
                             .size(12.0)
                             .color(crate::theme::palette().muted),
                     );
@@ -864,9 +865,9 @@ fn render_performance_monitor_toolbar(
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         let label = if refresh_in_flight {
-            "Refreshing..."
+            t("Refreshing...")
         } else {
-            "Refresh"
+            t("Refresh")
         };
         if ui
             .add_enabled(!refresh_in_flight, egui::Button::new(label))
@@ -875,7 +876,7 @@ fn render_performance_monitor_toolbar(
             refresh_requested.store(true, Ordering::Relaxed);
         }
         if ui
-            .checkbox(&mut auto_refresh, "Auto refresh (5s)")
+            .checkbox(&mut auto_refresh, t("Auto refresh (5s)"))
             .changed()
         {
             auto_refresh_enabled.store(auto_refresh, Ordering::Relaxed);
@@ -1081,17 +1082,17 @@ fn render_result_table(
                             let startup_action = startup_action.clone();
                             let startup_delete_payload = startup_delete_payload.clone();
                             cell_response.context_menu(|ui| {
-                                if ui.button("Copy Cell").clicked() {
+                                if ui.button(t("Copy Cell")).clicked() {
                                     ui.ctx().copy_text(cell_text.clone());
                                     ui.close();
                                 }
-                                if ui.button("Copy Row").clicked() {
+                                if ui.button(t("Copy Row")).clicked() {
                                     ui.ctx().copy_text(row_text.clone());
                                     ui.close();
                                 }
                                 if let Some(process_id) = process_id.clone() {
                                     ui.separator();
-                                    if ui.button("Kill Process").clicked() {
+                                    if ui.button(t("Kill Process")).clicked() {
                                         if let Ok(mut selected) = state.table_selected_row.lock() {
                                             *selected = Some(row_key.clone());
                                         }
@@ -1103,7 +1104,7 @@ fn render_result_table(
                                 }
                                 if let Some(startup_action) = startup_action.clone() {
                                     ui.separator();
-                                    if ui.button(startup_action.label).clicked() {
+                                    if ui.button(t(startup_action.label)).clicked() {
                                         if let Ok(mut selected) = state.table_selected_row.lock() {
                                             *selected = Some(row_key.clone());
                                         }
@@ -1117,7 +1118,7 @@ fn render_result_table(
                                 if let Some(startup_delete_payload) = startup_delete_payload.clone()
                                 {
                                     ui.separator();
-                                    if ui.button("Delete Startup Item").clicked() {
+                                    if ui.button(t("Delete Startup Item")).clicked() {
                                         if let Ok(mut selected) = state.table_selected_row.lock() {
                                             *selected = Some(row_key.clone());
                                         }
@@ -1150,7 +1151,7 @@ fn render_result_table(
     if rows.is_empty() {
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new("No rows match the current filter.")
+            egui::RichText::new(t("No rows match the current filter."))
                 .size(12.0)
                 .color(crate::theme::palette().muted),
         );
@@ -1731,18 +1732,7 @@ fn estimated_table_text_width(value: &str) -> f32 {
 }
 
 pub(super) fn command_title(command: &CommandKind) -> String {
-    command
-        .as_str()
-        .split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    i18n::command_title(command).to_string()
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@
 - Remote terminal supports cwd, history, streaming output, cancellation, copy, and safe close.
 - Remote desktop supports screen selection, TCP video frames, mouse move/click, and text input.
 - Camera, audio listen, and voice chat are working.
+- Admin supports saved theme and language preferences, with English and Chinese UI resources.
 - Runtime config files are initialized automatically and can be overridden by startup args.
 - Admin can update client server config remotely.
 - Client has a single-instance process lock.
@@ -45,7 +46,8 @@
 ### Admin UI
 
 - [x] Wire saved admin theme config into runtime UI styling.
-- [ ] Add admin i18n resources and apply the saved language config.
+- [x] Add admin i18n resources and apply the saved language config.
+- [ ] Continue tightening translation coverage and add more languages when needed.
 
 ### File Transfer
 

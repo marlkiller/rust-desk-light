@@ -3,13 +3,13 @@ use super::*;
 impl AdminApp {
     pub(super) fn render_overview(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
-            section_title(ui, "Overview");
+            section_title(ui, t("Overview"));
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                overview_metric(ui, "Online", self.online_client_count().to_string());
-                overview_metric(ui, "Known", self.clients.len().to_string());
-                overview_metric(ui, "Selected", self.selected_client_label());
-                overview_metric(ui, "Version", rdl_version::display_version());
+                overview_metric(ui, t("Online"), self.online_client_count().to_string());
+                overview_metric(ui, t("Known"), self.clients.len().to_string());
+                overview_metric(ui, t("Selected"), self.selected_client_label());
+                overview_metric(ui, t("Version"), rdl_version::display_version());
             });
         });
     }
@@ -17,9 +17,11 @@ impl AdminApp {
     pub(super) fn render_clients(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
             ui.horizontal(|ui| {
-                section_title(ui, "Clients");
+                section_title(ui, t("Clients"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(crate::theme::muted_text("Right click a row for commands"));
+                    ui.label(crate::theme::muted_text(t(
+                        "Right click a row for commands",
+                    )));
                 });
             });
             ui.add_space(6.0);
@@ -28,7 +30,7 @@ impl AdminApp {
                 ui.add_sized(
                     [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut self.client_filter)
-                        .hint_text("Search by id, fingerprint, host, user, OS, or location")
+                        .hint_text(t("Search by id, fingerprint, host, user, OS, or location"))
                         .vertical_align(egui::Align::Center),
                 );
             });
@@ -74,13 +76,13 @@ impl AdminApp {
                         .clip(true),
                 )
                 .header(24.0, |mut header| {
-                    header.col(|ui| table_header(ui, "Status"));
-                    header.col(|ui| table_header(ui, "Client ID"));
-                    header.col(|ui| table_header(ui, "IP"));
-                    header.col(|ui| table_header(ui, "Location"));
-                    header.col(|ui| table_header(ui, "Host"));
-                    header.col(|ui| table_header(ui, "User"));
-                    header.col(|ui| table_header(ui, "OS Version"));
+                    header.col(|ui| table_header(ui, t("Status")));
+                    header.col(|ui| table_header(ui, t("Client ID")));
+                    header.col(|ui| table_header(ui, t("IP")));
+                    header.col(|ui| table_header(ui, t("Location")));
+                    header.col(|ui| table_header(ui, t("Host")));
+                    header.col(|ui| table_header(ui, t("User")));
+                    header.col(|ui| table_header(ui, t("OS Version")));
                 })
                 .body(|body| {
                     body.rows(30.0, clients.len(), |mut row| {
@@ -123,7 +125,7 @@ impl AdminApp {
                                 command_menu::render_unavailable_client_menu(
                                     ui,
                                     &client.id,
-                                    row_data.status.label(),
+                                    client_status_display(row_data.status).0,
                                 );
                             }
                         });

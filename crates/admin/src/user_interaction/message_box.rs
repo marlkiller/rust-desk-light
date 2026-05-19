@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 pub(super) fn payload_for(title: &str, body: &str) -> String {
@@ -14,7 +15,7 @@ pub(super) fn default_fields() -> (String, String) {
 }
 
 pub(super) fn title_label() -> &'static str {
-    "Title"
+    t("Title")
 }
 
 pub(super) fn title_hint() -> &'static str {
@@ -22,7 +23,7 @@ pub(super) fn title_hint() -> &'static str {
 }
 
 pub(super) fn body_label() -> &'static str {
-    "Message"
+    t("Message")
 }
 
 pub(super) fn sanitize_single_line(value: &str) -> String {

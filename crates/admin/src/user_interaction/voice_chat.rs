@@ -1,4 +1,5 @@
 use crate::{
+    i18n::t,
     theme::{
         COLOR_BAD, COLOR_BG, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED, COLOR_PANEL, COLOR_TEXT,
         COLOR_WARN,
@@ -346,7 +347,7 @@ pub(crate) fn render_windows(
                     client_id: window.client_id.clone(),
                     payload: "action=stop".to_string(),
                 });
-                stop_call(window, "Call ended");
+                stop_call(window, t("Call ended"));
                 window.status = VoiceChatStatus::Ended;
             } else {
                 window.open = false;
@@ -360,7 +361,7 @@ pub(crate) fn render_windows(
 
         if window.call_requested.swap(false, Ordering::Relaxed) {
             window.status = VoiceChatStatus::Ringing;
-            window.notice = "Calling client".to_string();
+            window.notice = t("Calling client").to_string();
             window.mic_muted.store(false, Ordering::Relaxed);
             window.speaker_muted.store(false, Ordering::Relaxed);
             window.call_generation = window.call_generation.saturating_add(1).max(1);
@@ -382,7 +383,7 @@ pub(crate) fn render_windows(
                     payload: "action=stop".to_string(),
                 });
             }
-            stop_call(window, "Call ended");
+            stop_call(window, t("Call ended"));
             window.status = VoiceChatStatus::Ended;
         }
         while let Some(message) = window.outbound.pop() {
@@ -401,7 +402,8 @@ impl VoiceChatWindow {
 
 fn render_window(ctx: &egui::Context, window: &mut VoiceChatWindow) {
     let title = format!(
-        "Voice Chat - {}",
+        "{} - {}",
+        t("Voice Chat"),
         identity_title(&window.hostname, &window.username)
     );
     let viewport_id = egui::ViewportId::from_hash_of(("voice_chat", &window.client_id));
@@ -484,9 +486,9 @@ fn render_avatar(ui: &mut egui::Ui, status: VoiceChatStatus) {
 }
 
 fn render_meters(ui: &mut egui::Ui, stats: &VoiceStats) {
-    meter(ui, "🎤 You", stats.outgoing_peak);
+    meter(ui, &format!("🎤 {}", t("You")), stats.outgoing_peak);
     ui.add_space(6.0);
-    meter(ui, "🔊 Client", stats.incoming_peak);
+    meter(ui, &format!("🔊 {}", t("Client")), stats.incoming_peak);
 }
 
 fn render_status_title(ui: &mut egui::Ui, status: VoiceChatStatus) {
@@ -523,7 +525,7 @@ fn render_controls(
 ) {
     match status {
         VoiceChatStatus::Ready | VoiceChatStatus::Ended | VoiceChatStatus::Failed => {
-            if call_button(ui, "📞 Call", COLOR_GOOD).clicked() {
+            if call_button(ui, &format!("📞 {}", t("Call")), COLOR_GOOD).clicked() {
                 call_requested.store(true, Ordering::Relaxed);
             }
         }
@@ -541,7 +543,7 @@ fn render_controls(
                 }
             });
             ui.add_space(20.0);
-            if call_button(ui, "☎ Hang Up", COLOR_BAD).clicked() {
+            if call_button(ui, &format!("☎ {}", t("Hang Up")), COLOR_BAD).clicked() {
                 end_requested.store(true, Ordering::Relaxed);
             }
         }
@@ -550,17 +552,17 @@ fn render_controls(
 
 fn mic_label(muted: bool) -> &'static str {
     if muted {
-        "🚫🎤 Mic off"
+        t("Mic off")
     } else {
-        "🎤 Mic on"
+        t("Mic on")
     }
 }
 
 fn speaker_label(muted: bool) -> &'static str {
     if muted {
-        "🔇 Speaker off"
+        t("Speaker off")
     } else {
-        "🔊 Speaker on"
+        t("Speaker on")
     }
 }
 
@@ -1120,7 +1122,7 @@ impl VoiceChatResponse {
                 payload_field(detail, "message").unwrap_or_else(|| "Declined".to_string()),
             ),
             "voice_chat_ended" => Self::Ended(
-                payload_field(detail, "message").unwrap_or_else(|| "Call ended".to_string()),
+                payload_field(detail, "message").unwrap_or_else(|| t("Call ended").to_string()),
             ),
             "voice_chat_error" => Self::Error(
                 payload_field(detail, "message").unwrap_or_else(|| "voice chat failed".to_string()),
@@ -1153,11 +1155,11 @@ fn payload_field(payload: &str, key: &str) -> Option<String> {
 
 fn status_title(status: VoiceChatStatus) -> &'static str {
     match status {
-        VoiceChatStatus::Ready => "🎤 Voice Chat",
-        VoiceChatStatus::Ringing => "📞 Calling",
-        VoiceChatStatus::Live => "🎤 Voice Chat",
-        VoiceChatStatus::Ended => "✅ Call Ended",
-        VoiceChatStatus::Failed => "⚠ Call Failed",
+        VoiceChatStatus::Ready => t("Voice Chat"),
+        VoiceChatStatus::Ringing => t("Calling"),
+        VoiceChatStatus::Live => t("Voice Chat"),
+        VoiceChatStatus::Ended => t("Call Ended"),
+        VoiceChatStatus::Failed => t("Call Failed"),
     }
 }
 

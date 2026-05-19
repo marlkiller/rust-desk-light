@@ -1,5 +1,6 @@
 use super::{balloon_tip, message_box, open_text_in_notepad};
 use crate::{
+    i18n::{self, t},
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
@@ -59,7 +60,7 @@ pub(crate) fn open_window(
             &window.status,
             &window.notice,
             InteractionStatus::Ready,
-            "Ready",
+            t("Ready"),
         );
         return;
     }
@@ -73,7 +74,7 @@ pub(crate) fn open_window(
         title: Arc::new(Mutex::new(title)),
         body: Arc::new(Mutex::new(body)),
         status: Arc::new(Mutex::new(InteractionStatus::Ready)),
-        notice: Arc::new(Mutex::new("Ready".to_string())),
+        notice: Arc::new(Mutex::new(t("Ready").to_string())),
         open: true,
         close_requested: Arc::new(AtomicBool::new(false)),
         send_requested: Arc::new(AtomicBool::new(false)),
@@ -108,9 +109,9 @@ pub(crate) fn handle_ack(
     let notice = interaction_notice(
         detail,
         if accepted {
-            "Command sent"
+            t("Command sent")
         } else {
-            "Command failed"
+            t("Command failed")
         },
     );
     set_status(&window.status, &window.notice, status, &notice);
@@ -176,7 +177,7 @@ pub(crate) fn render_windows(
                 &window.status,
                 &window.notice,
                 InteractionStatus::Sending,
-                "Sending command...",
+                t("Sending command..."),
             );
             let title = window
                 .title
@@ -258,10 +259,10 @@ fn render_status_bar(
         .unwrap_or(InteractionStatus::Ready);
     let notice = notice.lock().map(|value| value.clone()).unwrap_or_default();
     let (label, default_notice, color) = match status {
-        InteractionStatus::Ready => ("Ready", "Ready", crate::theme::palette().muted),
-        InteractionStatus::Sending => ("Sending", "Waiting for client result", COLOR_WARN),
-        InteractionStatus::Done => ("Done", "Command sent", COLOR_GOOD),
-        InteractionStatus::Failed => ("Failed", "Command failed", COLOR_BAD),
+        InteractionStatus::Ready => (t("Ready"), t("Ready"), crate::theme::palette().muted),
+        InteractionStatus::Sending => (t("Sending"), t("Waiting for client result"), COLOR_WARN),
+        InteractionStatus::Done => (t("Done"), t("Command sent"), COLOR_GOOD),
+        InteractionStatus::Failed => (t("Failed"), t("Command failed"), COLOR_BAD),
     };
     let notice = if notice.trim().is_empty() {
         default_notice
@@ -325,7 +326,7 @@ fn render_actions(ui: &mut egui::Ui, body: &Arc<Mutex<String>>, send_requested: 
         ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add_enabled(can_send, egui::Button::new("Send"))
+                .add_enabled(can_send, egui::Button::new(t("Send")))
                 .clicked()
             {
                 send_requested.store(true, Ordering::Relaxed);
@@ -333,7 +334,7 @@ fn render_actions(ui: &mut egui::Ui, body: &Arc<Mutex<String>>, send_requested: 
             }
             if !can_send {
                 ui.label(
-                    egui::RichText::new("Body is empty")
+                    egui::RichText::new(t("Body is empty"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -394,7 +395,7 @@ fn interaction_notice(detail: &str, fallback: &str) -> String {
     if detail.is_empty() || detail.eq_ignore_ascii_case("ok") {
         fallback.to_string()
     } else if detail.eq_ignore_ascii_case("forwarded") {
-        "Sent to client".to_string()
+        t("Sent to client").to_string()
     } else if interaction_detail_failed(detail) {
         detail_field(detail, "message").unwrap_or_else(|| detail_header(detail).to_string())
     } else if let Some(status) = detail_field(detail, "status") {
@@ -457,18 +458,7 @@ fn identity_title(hostname: &str, username: &str) -> String {
 }
 
 fn command_title(command: &CommandKind) -> String {
-    command
-        .as_str()
-        .split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    i18n::command_title(command).to_string()
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use eframe::egui;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -31,7 +32,7 @@ fn render_status_bar(ui: &mut egui::Ui, result_status: &Arc<Mutex<String>>) {
         egui::vec2(ui.available_width(), TOOLBAR_CONTROL_HEIGHT),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            render_inline_label(ui, "Status");
+            render_inline_label(ui, t("Status"));
             ui.label(
                 egui::RichText::new(status)
                     .size(12.0)
@@ -43,7 +44,7 @@ fn render_status_bar(ui: &mut egui::Ui, result_status: &Arc<Mutex<String>>) {
 
 fn status_bar_text(status: &str) -> String {
     if status.trim().is_empty() {
-        "Ready".to_string()
+        t("Ready").to_string()
     } else {
         status.to_string()
     }
@@ -121,7 +122,10 @@ pub(super) fn render_run_button(
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.add_enabled(can_run, egui::Button::new("Run")).clicked() {
+            if ui
+                .add_enabled(can_run, egui::Button::new(t("Run")))
+                .clicked()
+            {
                 send_requested.store(true, Ordering::Relaxed);
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }

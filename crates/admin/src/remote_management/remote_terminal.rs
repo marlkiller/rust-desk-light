@@ -1,4 +1,5 @@
 use crate::{
+    i18n::t,
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
@@ -215,7 +216,8 @@ pub(crate) fn render_windows(
 
         let client_id = window.client_id.clone();
         let title = format!(
-            "Remote Terminal - {}",
+            "{} - {}",
+            t("Remote Terminal"),
             identity_title(&window.hostname, &window.username)
         );
         let viewport_id = egui::ViewportId::from_hash_of(("admin_remote_terminal", &client_id));
@@ -351,19 +353,22 @@ fn render_toolbar(
     copy_requested: &Arc<AtomicBool>,
     clear_requested: &Arc<AtomicBool>,
 ) {
-    ui.horizontal(|ui| {
+    toolbar_row(ui, |ui| {
         let running = status
             .lock()
             .map(|status| matches!(*status, TerminalStatus::Running))
             .unwrap_or(false);
         ui.label(
-            egui::RichText::new("Terminal")
+            egui::RichText::new(t("Terminal"))
                 .size(13.0)
                 .color(crate::theme::palette().text)
                 .strong(),
         );
         ui.separator();
-        if ui.add_enabled(running, egui::Button::new("Stop")).clicked() {
+        if ui
+            .add_enabled(running, egui::Button::new(t("Stop")))
+            .clicked()
+        {
             if let Ok(mut queue) = outbound.lock() {
                 queue.insert(
                     0,
@@ -377,15 +382,22 @@ fn render_toolbar(
         ui.separator();
         render_preset_shortcut(ui, running, target_os, preset_command, outbound);
         ui.separator();
-        if ui.button("Copy All").clicked() {
+        if ui.button(t("Copy All")).clicked() {
             if let Ok(lines) = lines.lock() {
                 ui.ctx().copy_text(lines.join("\n"));
             }
             copy_requested.store(true, Ordering::Relaxed);
         }
-        if ui.button("Clear").clicked() {
+        if ui.button(t("Clear")).clicked() {
             clear_requested.store(true, Ordering::Relaxed);
         }
+    });
+}
+
+fn toolbar_row(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
+        ui.horizontal(add_contents);
     });
 }
 
@@ -417,7 +429,7 @@ fn render_preset_shortcut(
             }
         });
     if ui
-        .add_enabled(!running, egui::Button::new("Run Preset"))
+        .add_enabled(!running, egui::Button::new(t("Run Preset")))
         .clicked()
     {
         if let Some(command) = static_command_script_for_os(&selected, target_os) {
@@ -497,7 +509,7 @@ fn render_input(
         let response = ui.add_sized(
             [input_width, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(&mut text)
-                .hint_text("Command")
+                .hint_text(t("Command"))
                 .vertical_align(egui::Align::Center),
         );
         if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
@@ -519,7 +531,7 @@ fn render_input(
             .add_enabled_ui(!running, |ui| {
                 ui.add_sized(
                     [button_width, TOOLBAR_CONTROL_HEIGHT],
-                    egui::Button::new("Run"),
+                    egui::Button::new(t("Run")),
                 )
                 .clicked()
             })
@@ -563,13 +575,13 @@ fn render_status_bar(
         .map(|value| value.clone())
         .unwrap_or_default();
     let (label, color) = match status {
-        TerminalStatus::Ready => ("Ready", crate::theme::palette().muted),
-        TerminalStatus::Running => ("Running", COLOR_WARN),
-        TerminalStatus::Done => ("Done", COLOR_GOOD),
-        TerminalStatus::Failed => ("Failed", COLOR_BAD),
+        TerminalStatus::Ready => (t("Ready"), crate::theme::palette().muted),
+        TerminalStatus::Running => (t("Running"), COLOR_WARN),
+        TerminalStatus::Done => (t("Done"), COLOR_GOOD),
+        TerminalStatus::Failed => (t("Failed"), COLOR_BAD),
     };
     let progress_text = if current_dir.trim().is_empty() {
-        "cwd: resolving...".to_string()
+        t("cwd: resolving...").to_string()
     } else {
         format!("cwd: {current_dir}")
     };

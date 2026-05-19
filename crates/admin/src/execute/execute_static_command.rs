@@ -1,4 +1,5 @@
 use super::ui;
+use crate::i18n::t;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
 use rdl_protocol::{
@@ -19,12 +20,12 @@ pub(super) fn render(
     let mut custom_mode = static_custom_mode.load(Ordering::Relaxed);
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = ui::TOOLBAR_CONTROL_HEIGHT;
-        ui::render_inline_label(ui, "Mode");
-        if ui.selectable_label(!custom_mode, "Preset").clicked() {
+        ui::render_inline_label(ui, t("Mode"));
+        if ui.selectable_label(!custom_mode, t("Preset")).clicked() {
             custom_mode = false;
             static_custom_mode.store(false, Ordering::Relaxed);
         }
-        if ui.selectable_label(custom_mode, "Custom").clicked() {
+        if ui.selectable_label(custom_mode, t("Custom")).clicked() {
             custom_mode = true;
             static_custom_mode.store(true, Ordering::Relaxed);
         }
@@ -37,11 +38,11 @@ pub(super) fn render(
         .map(|value| value.clone())
         .unwrap_or_else(|_| default_static_command_preset_id().to_string());
     if custom_mode {
-        ui::render_inline_text_field(ui, "Command", static_custom_command, "whoami");
+        ui::render_inline_text_field(ui, t("Command"), static_custom_command, "whoami");
     } else {
         ui.horizontal(|ui| {
             ui.spacing_mut().interact_size.y = ui::TOOLBAR_CONTROL_HEIGHT;
-            ui::render_inline_label(ui, "Preset");
+            ui::render_inline_label(ui, t("Preset"));
             egui::ComboBox::from_id_salt("execute_static_command")
                 .width(180.0)
                 .selected_text(static_command_preset_label(&selected))
@@ -66,7 +67,7 @@ pub(super) fn render(
             .lock()
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false);
-    ui::render_run_button(ui, can_run, "Command is required", send_requested);
+    ui::render_run_button(ui, can_run, t("Command is required"), send_requested);
 }
 
 pub(super) fn payload_for(preset: &str, custom_mode: bool, custom_command: &str) -> String {

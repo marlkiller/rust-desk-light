@@ -1,4 +1,5 @@
 use super::message_box::sanitize_single_line;
+use crate::i18n::t;
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 pub(super) fn payload_for(file_name: &str, text: &str) -> String {
@@ -14,7 +15,7 @@ pub(super) fn default_fields() -> (String, String) {
 }
 
 pub(super) fn title_label() -> &'static str {
-    "File Name"
+    t("File Name")
 }
 
 pub(super) fn title_hint() -> &'static str {
@@ -22,7 +23,7 @@ pub(super) fn title_hint() -> &'static str {
 }
 
 pub(super) fn body_label() -> &'static str {
-    "Text"
+    t("Text")
 }
 
 #[cfg(test)]

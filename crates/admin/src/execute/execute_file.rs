@@ -1,4 +1,5 @@
 use super::ui;
+use crate::i18n::t;
 use eframe::egui;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
@@ -9,17 +10,17 @@ pub(super) fn render(
     working_dir: &Arc<Mutex<String>>,
     send_requested: &Arc<AtomicBool>,
 ) {
-    ui::render_text_field(ui, "File Path", file_path, "Path on the client");
+    ui::render_text_field(ui, t("File Path"), file_path, t("Path on the client"));
     ui.add_space(8.0);
-    ui::render_text_field(ui, "Arguments", file_args, "--flag value");
+    ui::render_text_field(ui, t("Arguments"), file_args, "--flag value");
     ui.add_space(8.0);
-    ui::render_text_field(ui, "Working Directory", working_dir, "Optional");
+    ui::render_text_field(ui, t("Working Directory"), working_dir, t("Optional"));
     ui.add_space(12.0);
     let can_run = file_path
         .lock()
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
-    ui::render_run_button(ui, can_run, "File path is required", send_requested);
+    ui::render_run_button(ui, can_run, t("File path is required"), send_requested);
 }
 
 pub(super) fn payload_for(path: &str, args: &str, working_dir: &str) -> String {

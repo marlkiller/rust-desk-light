@@ -1,4 +1,5 @@
 use crate::{
+    i18n::{t, tf},
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
@@ -434,7 +435,7 @@ pub(crate) fn render_windows(
                 set_status(
                     window,
                     FileStatus::Pending,
-                    "Closing: stopping active file transfers",
+                    t("Closing: stopping active file transfers"),
                 );
             } else {
                 window.open = false;
@@ -445,7 +446,8 @@ pub(crate) fn render_windows(
         let client_id = window.client_id.clone();
         if window.open {
             let title = format!(
-                "File Manager - {}",
+                "{} - {}",
+                t("File Manager"),
                 identity_title(&window.hostname, &window.username)
             );
             let viewport_id = egui::ViewportId::from_hash_of(("admin_file_manager", &client_id));
@@ -586,9 +588,9 @@ pub(crate) fn render_windows(
             .and_then(|mut queue| queue.pop())
         {
             if parse_transfer_request(&payload).is_none() {
-                set_status(window, FileStatus::Pending, "Waiting for client result");
+                set_status(window, FileStatus::Pending, t("Waiting for client result"));
             } else {
-                set_status(window, FileStatus::Done, "File transfer queued");
+                set_status(window, FileStatus::Done, t("File transfer queued"));
             }
             outbound.push(OutboundCommand {
                 client_id: client_id.clone(),
@@ -638,7 +640,7 @@ fn render_remote_panel(
         ui.set_min_size(ui.available_size());
         ui.vertical(|ui| {
             ui.label(
-                egui::RichText::new("Remote")
+                egui::RichText::new(t("Remote"))
                     .size(13.0)
                     .color(crate::theme::palette().text)
                     .strong(),
@@ -688,7 +690,7 @@ fn render_local_panel(
         ui.set_min_size(ui.available_size());
         ui.vertical(|ui| {
             ui.label(
-                egui::RichText::new("Local")
+                egui::RichText::new(t("Local"))
                     .size(13.0)
                     .color(crate::theme::palette().text)
                     .strong(),
@@ -739,7 +741,7 @@ fn render_transfer_buttons(
                 egui::Button::new("Down ->")
                     .min_size(egui::vec2(TRANSFER_BUTTON_WIDTH, TOOLBAR_CONTROL_HEIGHT)),
             )
-            .on_hover_text("Download selected remote file or folder")
+            .on_hover_text(t("Download selected remote file or folder"))
             .clicked()
         {
             let entries = selected_remote_entries(remote_entries, selected_remote);
@@ -748,7 +750,7 @@ fn render_transfer_buttons(
                     status,
                     notice,
                     FileStatus::Failed,
-                    "Select a remote file or folder",
+                    t("Select a remote file or folder"),
                 );
             } else {
                 let count = entries.len();
@@ -759,7 +761,14 @@ fn render_transfer_buttons(
                     status,
                     notice,
                     FileStatus::Done,
-                    &format!("{count} download{} queued", plural_suffix(count)),
+                    &tf(
+                        if count == 1 {
+                            "{count} download queued"
+                        } else {
+                            "{count} downloads queued"
+                        },
+                        &[("count", &count.to_string())],
+                    ),
                 );
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
@@ -771,7 +780,7 @@ fn render_transfer_buttons(
                 egui::Button::new("<- Up")
                     .min_size(egui::vec2(TRANSFER_BUTTON_WIDTH, TOOLBAR_CONTROL_HEIGHT)),
             )
-            .on_hover_text("Upload selected local file or folder")
+            .on_hover_text(t("Upload selected local file or folder"))
             .clicked()
         {
             upload_selected_local(
@@ -799,7 +808,7 @@ fn render_remote_toolbar(
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
         let busy = is_pending(status);
-        if ui.add_enabled(!busy, egui::Button::new("Up")).clicked() {
+        if ui.add_enabled(!busy, egui::Button::new(t("Up"))).clicked() {
             let path = current_path
                 .lock()
                 .map(|value| value.clone())
@@ -808,7 +817,7 @@ fn render_remote_toolbar(
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }
         if ui
-            .add_enabled(!busy, egui::Button::new("Refresh"))
+            .add_enabled(!busy, egui::Button::new(t("Refresh")))
             .clicked()
         {
             let path = current_path
@@ -819,7 +828,7 @@ fn render_remote_toolbar(
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }
         ui.add_enabled_ui(!busy, |ui| {
-            ui.menu_button("Jump", |ui| {
+            ui.menu_button(t("Jump"), |ui| {
                 for (label, path) in QUICK_JUMPS {
                     if ui.button(label).clicked() {
                         queue_payload(outbound, &request("list", path, ""));
@@ -839,7 +848,7 @@ fn render_remote_toolbar(
                 TOOLBAR_CONTROL_HEIGHT,
             ],
             egui::TextEdit::singleline(&mut path)
-                .hint_text("Remote path")
+                .hint_text(t("Remote path"))
                 .vertical_align(egui::Align::Center),
         );
         if response.changed() {
@@ -847,7 +856,7 @@ fn render_remote_toolbar(
                 *value = path.clone();
             }
         }
-        let go = ui.add_enabled(!busy, egui::Button::new("Go")).clicked()
+        let go = ui.add_enabled(!busy, egui::Button::new(t("Go"))).clicked()
             || (!busy
                 && response.lost_focus()
                 && ui.input(|input| input.key_pressed(egui::Key::Enter)));
@@ -866,7 +875,7 @@ fn render_local_toolbar(
 ) {
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = TOOLBAR_CONTROL_HEIGHT;
-        if ui.button("Up").clicked() {
+        if ui.button(t("Up")).clicked() {
             let path = local_path
                 .lock()
                 .map(|value| value.clone())
@@ -878,15 +887,15 @@ fn render_local_toolbar(
                 &parent_path(&path),
             );
         }
-        if ui.button("Refresh").clicked() {
+        if ui.button(t("Refresh")).clicked() {
             refresh_local_entries_arc(local_path, local_entries, selected_local_name);
         }
-        if ui.button("Choose...").clicked() {
+        if ui.button(t("Choose...")).clicked() {
             let current = local_path
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default();
-            if let Some(path) = pick_local_folder(&current, "Choose local folder") {
+            if let Some(path) = pick_local_folder(&current, t("Choose local folder")) {
                 set_local_dir(
                     local_path,
                     local_entries,
@@ -895,7 +904,7 @@ fn render_local_toolbar(
                 );
             }
         }
-        ui.menu_button("Jump", |ui| {
+        ui.menu_button(t("Jump"), |ui| {
             for (label, path) in local_quick_jump_paths() {
                 let enabled = path.is_dir();
                 let path_text = path.display().to_string();
@@ -919,7 +928,7 @@ fn render_local_toolbar(
                 TOOLBAR_CONTROL_HEIGHT,
             ],
             egui::TextEdit::singleline(&mut path)
-                .hint_text("Local path")
+                .hint_text(t("Local path"))
                 .vertical_align(egui::Align::Center),
         );
         if response.changed() {
@@ -927,7 +936,7 @@ fn render_local_toolbar(
                 *value = path.clone();
             }
         }
-        let go = ui.button("Go").clicked()
+        let go = ui.button(t("Go")).clicked()
             || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
         if go {
             set_local_dir(local_path, local_entries, selected_local_name, &path);
@@ -975,16 +984,16 @@ fn render_entries_table(
                 ctx.request_repaint_of(egui::ViewportId::ROOT);
             }
             row_response.context_menu(|ui| {
-                if ui.button("Open").clicked() && entry.kind == "dir" {
+                if ui.button(t("Open")).clicked() && entry.kind == "dir" {
                     let path = join_remote(current_path, &entry.name);
                     queue_payload(outbound, &request("list", &path, ""));
                     ui.close();
                 }
-                if ui.button("Copy Full Path").clicked() {
+                if ui.button(t("Copy Full Path")).clicked() {
                     ui.ctx().copy_text(join_remote(current_path, &entry.name));
                     ui.close();
                 }
-                if ui.button("Download...").clicked() {
+                if ui.button(t("Download...")).clicked() {
                     choose_download_remote(
                         current_path,
                         local_path,
@@ -997,7 +1006,7 @@ fn render_entries_table(
                     ctx.request_repaint_of(egui::ViewportId::ROOT);
                     ui.close();
                 }
-                if ui.button("Upload File...").clicked() {
+                if ui.button(t("Upload File...")).clicked() {
                     choose_upload_local(
                         LocalPickMode::File,
                         current_path,
@@ -1010,7 +1019,7 @@ fn render_entries_table(
                     ctx.request_repaint_of(egui::ViewportId::ROOT);
                     ui.close();
                 }
-                if ui.button("Upload Folder...").clicked() {
+                if ui.button(t("Upload Folder...")).clicked() {
                     choose_upload_local(
                         LocalPickMode::Folder,
                         current_path,
@@ -1023,17 +1032,17 @@ fn render_entries_table(
                     ctx.request_repaint_of(egui::ViewportId::ROOT);
                     ui.close();
                 }
-                if ui.button("Delete").clicked() {
+                if ui.button(t("Delete")).clicked() {
                     let path = join_remote(current_path, &entry.name);
                     begin_delete(pending_delete, &path);
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("New Folder").clicked() {
+                if ui.button(t("New Folder")).clicked() {
                     begin_new_folder(pending_new_folder, new_folder_name);
                     ui.close();
                 }
-                if ui.button("Rename").clicked() {
+                if ui.button(t("Rename")).clicked() {
                     let path = join_remote(current_path, &entry.name);
                     begin_rename(pending_rename, rename_to, &path, &entry.name);
                     ui.close();
@@ -1094,16 +1103,16 @@ fn render_local_entries_table(
                 set_local_dir(local_path, entries, selected_name, &path);
             }
             row_response.context_menu(|ui| {
-                if ui.button("Open").clicked() && entry.kind == "dir" {
+                if ui.button(t("Open")).clicked() && entry.kind == "dir" {
                     let path = join_local(local_path, &entry.name);
                     set_local_dir(local_path, entries, selected_name, &path);
                     ui.close();
                 }
-                if ui.button("Copy Full Path").clicked() {
+                if ui.button(t("Copy Full Path")).clicked() {
                     ui.ctx().copy_text(join_local(local_path, &entry.name));
                     ui.close();
                 }
-                if ui.button("Upload").clicked() {
+                if ui.button(t("Upload")).clicked() {
                     select_entry(selected_name, entry);
                     upload_selected_local(
                         current_path,
@@ -1118,15 +1127,15 @@ fn render_local_entries_table(
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("New Folder").clicked() {
+                if ui.button(t("New Folder")).clicked() {
                     begin_local_new_folder(pending_local_new_folder, local_new_folder_name);
                     ui.close();
                 }
-                if ui.button("Delete").clicked() {
+                if ui.button(t("Delete")).clicked() {
                     begin_local_delete(pending_local_delete, local_path, &entry.name);
                     ui.close();
                 }
-                if ui.button("Rename").clicked() {
+                if ui.button(t("Rename")).clicked() {
                     begin_local_rename(
                         pending_local_rename,
                         local_rename_to,
@@ -1168,11 +1177,11 @@ fn render_remote_blank_context_menu(
     }
     let ctx = blank_response.ctx.clone();
     blank_response.context_menu(|ui| {
-        if ui.button("New Folder").clicked() {
+        if ui.button(t("New Folder")).clicked() {
             begin_new_folder(pending_new_folder, new_folder_name);
             ui.close();
         }
-        if ui.button("Upload File...").clicked() {
+        if ui.button(t("Upload File...")).clicked() {
             choose_upload_local(
                 LocalPickMode::File,
                 current_path,
@@ -1185,7 +1194,7 @@ fn render_remote_blank_context_menu(
             ctx.request_repaint_of(egui::ViewportId::ROOT);
             ui.close();
         }
-        if ui.button("Upload Folder...").clicked() {
+        if ui.button(t("Upload Folder...")).clicked() {
             choose_upload_local(
                 LocalPickMode::Folder,
                 current_path,
@@ -1199,7 +1208,7 @@ fn render_remote_blank_context_menu(
             ui.close();
         }
         ui.separator();
-        if ui.button("Copy Current Folder Path").clicked() {
+        if ui.button(t("Copy Current Folder Path")).clicked() {
             ui.ctx().copy_text(current_directory_path(current_path));
             ui.close();
         }
@@ -1220,12 +1229,12 @@ fn render_local_blank_context_menu(
         clear_selection(selected_name);
     }
     blank_response.context_menu(|ui| {
-        if ui.button("New Folder").clicked() {
+        if ui.button(t("New Folder")).clicked() {
             begin_local_new_folder(pending_local_new_folder, local_new_folder_name);
             ui.close();
         }
         ui.separator();
-        if ui.button("Copy Current Folder Path").clicked() {
+        if ui.button(t("Copy Current Folder Path")).clicked() {
             ui.ctx().copy_text(current_directory_path(local_path));
             ui.close();
         }
@@ -1264,10 +1273,10 @@ fn file_table<R>(
     table
         .header(24.0, |mut header| {
             header.col(|ui| table_header_label(ui, ""));
-            header.col(|ui| table_header_label(ui, "Type"));
-            header.col(|ui| table_header_label(ui, "Name"));
-            header.col(|ui| table_header_label(ui, "Size"));
-            header.col(|ui| table_header_label(ui, "Modified"));
+            header.col(|ui| table_header_label(ui, t("Type")));
+            header.col(|ui| table_header_label(ui, t("Name")));
+            header.col(|ui| table_header_label(ui, t("Size")));
+            header.col(|ui| table_header_label(ui, t("Modified")));
         })
         .body(|mut body| {
             for entry in entries {
@@ -1310,14 +1319,14 @@ fn render_transfer_table(
         ui.set_min_height(TRANSFER_TABLE_HEIGHT - 18.0);
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("Transfers")
+                egui::RichText::new(t("Transfers"))
                     .size(13.0)
                     .color(crate::theme::palette().text)
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    egui::RichText::new("Right click a row to delete")
+                    egui::RichText::new(t("Right click a row to delete"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1326,7 +1335,7 @@ fn render_transfer_table(
         ui.add_space(6.0);
         if rows.is_empty() {
             ui.label(
-                egui::RichText::new("No file transfers")
+                egui::RichText::new(t("No file transfers"))
                     .size(12.0)
                     .color(crate::theme::palette().muted),
             );
@@ -1356,12 +1365,12 @@ fn render_transfer_table(
             .column(Column::initial(status_width).at_least(92.0).clip(true))
             .column(Column::initial(message_width).at_least(120.0).clip(true))
             .header(24.0, |mut header| {
-                header.col(|ui| table_header_label(ui, "ID"));
-                header.col(|ui| table_header_label(ui, "Direction"));
-                header.col(|ui| table_header_label(ui, "Item"));
-                header.col(|ui| table_header_label(ui, "Progress"));
-                header.col(|ui| table_header_label(ui, "Status"));
-                header.col(|ui| table_header_label(ui, "Message"));
+                header.col(|ui| table_header_label(ui, t("ID")));
+                header.col(|ui| table_header_label(ui, t("Direction")));
+                header.col(|ui| table_header_label(ui, t("Item")));
+                header.col(|ui| table_header_label(ui, t("Progress")));
+                header.col(|ui| table_header_label(ui, t("Status")));
+                header.col(|ui| table_header_label(ui, t("Message")));
             })
             .body(|mut body| {
                 for row_data in rows {
@@ -1399,7 +1408,7 @@ fn render_transfer_table(
                             response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
                         response.context_menu(|ui| {
-                            if ui.button("Delete").clicked() {
+                            if ui.button(t("Delete")).clicked() {
                                 if transfer_can_stop(row_data.status) {
                                     queue_cancel_transfer(outbound, transfers, &row_data);
                                 }
@@ -1528,19 +1537,19 @@ fn format_file_size(size: &str) -> String {
 
 fn transfer_direction_label(direction: FileTransferDirection) -> &'static str {
     match direction {
-        FileTransferDirection::Upload => "Upload",
-        FileTransferDirection::Download => "Download",
+        FileTransferDirection::Upload => t("Upload"),
+        FileTransferDirection::Download => t("Download"),
     }
 }
 
 fn transfer_status_label(status: FileTransferStatus) -> &'static str {
     match status {
-        FileTransferStatus::Scanning => "Scanning",
-        FileTransferStatus::Running => "Running",
-        FileTransferStatus::Cancelling => "Cancelling",
-        FileTransferStatus::Done => "Done",
-        FileTransferStatus::Failed => "Failed",
-        FileTransferStatus::Cancelled => "Cancelled",
+        FileTransferStatus::Scanning => t("Scanning"),
+        FileTransferStatus::Running => t("Running"),
+        FileTransferStatus::Cancelling => t("Cancelling"),
+        FileTransferStatus::Done => t("Done"),
+        FileTransferStatus::Failed => t("Failed"),
+        FileTransferStatus::Cancelled => t("Cancelled"),
     }
 }
 
@@ -1564,7 +1573,7 @@ fn transfer_can_stop(status: FileTransferStatus) -> bool {
 
 fn transfer_progress_label(row: &FileTransferRow) -> String {
     if row.status == FileTransferStatus::Scanning && row.total_bytes == 0 {
-        return "Scanning".to_string();
+        return t("Scanning").to_string();
     }
     if row.total_bytes > 0 {
         let percent =
@@ -1606,10 +1615,10 @@ fn render_status_bar(
         .unwrap_or(FileStatus::Ready);
     let notice = notice.lock().map(|value| value.clone()).unwrap_or_default();
     let (label, color) = match status {
-        FileStatus::Ready => ("Ready", crate::theme::palette().muted),
-        FileStatus::Pending => ("Pending", COLOR_WARN),
-        FileStatus::Done => ("Done", COLOR_GOOD),
-        FileStatus::Failed => ("Failed", COLOR_BAD),
+        FileStatus::Ready => (t("Ready"), crate::theme::palette().muted),
+        FileStatus::Pending => (t("Pending"), COLOR_WARN),
+        FileStatus::Done => (t("Done"), COLOR_GOOD),
+        FileStatus::Failed => (t("Failed"), COLOR_BAD),
     };
     crate::theme::status_frame().show(ui, |ui| {
         ui.set_min_height(26.0);
@@ -1639,13 +1648,13 @@ fn render_pending_dialogs(
 ) {
     let delete_path = pending_delete.lock().ok().and_then(|value| value.clone());
     if let Some(remote_path) = delete_path {
-        egui::Window::new("Confirm Delete")
+        egui::Window::new(t("Confirm Delete"))
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    egui::RichText::new("Delete this remote item?")
+                    egui::RichText::new(t("Delete this remote item?"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1658,7 +1667,7 @@ fn render_pending_dialogs(
                 ui.horizontal(|ui| {
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new("Delete").color(COLOR_BAD).strong(),
+                            egui::RichText::new(t("Delete")).color(COLOR_BAD).strong(),
                         ))
                         .clicked()
                     {
@@ -1668,7 +1677,7 @@ fn render_pending_dialogs(
                         }
                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         if let Ok(mut value) = pending_delete.lock() {
                             *value = None;
                         }
@@ -1679,13 +1688,13 @@ fn render_pending_dialogs(
 
     let rename_path = pending_rename.lock().ok().and_then(|value| value.clone());
     if let Some(remote_path) = rename_path {
-        egui::Window::new("Rename Item")
+        egui::Window::new(t("Rename Item"))
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    egui::RichText::new("Rename remote item")
+                    egui::RichText::new(t("Rename remote item"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1702,7 +1711,7 @@ fn render_pending_dialogs(
                 let response = ui.add_sized(
                     [420.0, 28.0],
                     egui::TextEdit::singleline(&mut name)
-                        .hint_text("New name")
+                        .hint_text(t("New name"))
                         .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
@@ -1712,14 +1721,14 @@ fn render_pending_dialogs(
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Rename").clicked() {
+                    if ui.button(t("Rename")).clicked() {
                         queue_payload(outbound, &request("rename", &remote_path, &name));
                         if let Ok(mut value) = pending_rename.lock() {
                             *value = None;
                         }
                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         if let Ok(mut value) = pending_rename.lock() {
                             *value = None;
                         }
@@ -1733,13 +1742,13 @@ fn render_pending_dialogs(
         .map(|value| *value)
         .unwrap_or(false);
     if show_new_folder {
-        egui::Window::new("New Remote Folder")
+        egui::Window::new(t("New Remote Folder"))
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    egui::RichText::new("Create folder in current remote directory")
+                    egui::RichText::new(t("Create folder in current remote directory"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1751,7 +1760,7 @@ fn render_pending_dialogs(
                 let response = ui.add_sized(
                     [420.0, 28.0],
                     egui::TextEdit::singleline(&mut name)
-                        .hint_text("Folder name")
+                        .hint_text(t("Folder name"))
                         .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
@@ -1761,7 +1770,7 @@ fn render_pending_dialogs(
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let create = ui.button("Create").clicked()
+                    let create = ui.button(t("Create")).clicked()
                         || (response.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter)));
                     if create {
@@ -1771,7 +1780,7 @@ fn render_pending_dialogs(
                         }
                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         if let Ok(mut value) = pending_new_folder.lock() {
                             *value = false;
                         }
@@ -1785,13 +1794,13 @@ fn render_pending_dialogs(
         .ok()
         .and_then(|value| value.clone());
     if let Some(path) = local_delete_path {
-        egui::Window::new("Confirm Local Delete")
+        egui::Window::new(t("Confirm Local Delete"))
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    egui::RichText::new("Delete this local item?")
+                    egui::RichText::new(t("Delete this local item?"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1804,7 +1813,7 @@ fn render_pending_dialogs(
                 ui.horizontal(|ui| {
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new("Delete").color(COLOR_BAD).strong(),
+                            egui::RichText::new(t("Delete")).color(COLOR_BAD).strong(),
                         ))
                         .clicked()
                     {
@@ -1820,7 +1829,7 @@ fn render_pending_dialogs(
                             *value = None;
                         }
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         if let Ok(mut value) = pending_local_delete.lock() {
                             *value = None;
                         }
@@ -1834,13 +1843,13 @@ fn render_pending_dialogs(
         .ok()
         .and_then(|value| value.clone());
     if let Some(path) = local_rename_path {
-        egui::Window::new("Rename Local Item")
+        egui::Window::new(t("Rename Local Item"))
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    egui::RichText::new("Rename local item")
+                    egui::RichText::new(t("Rename local item"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1857,7 +1866,7 @@ fn render_pending_dialogs(
                 let response = ui.add_sized(
                     [420.0, 28.0],
                     egui::TextEdit::singleline(&mut name)
-                        .hint_text("New name")
+                        .hint_text(t("New name"))
                         .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
@@ -1867,7 +1876,7 @@ fn render_pending_dialogs(
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Rename").clicked() {
+                    if ui.button(t("Rename")).clicked() {
                         rename_local_path(
                             &path,
                             &name,
@@ -1881,7 +1890,7 @@ fn render_pending_dialogs(
                             *value = None;
                         }
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         if let Ok(mut value) = pending_local_rename.lock() {
                             *value = None;
                         }
@@ -1895,13 +1904,13 @@ fn render_pending_dialogs(
         .map(|value| *value)
         .unwrap_or(false);
     if show_local_new_folder {
-        egui::Window::new("New Local Folder")
+        egui::Window::new(t("New Local Folder"))
             .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ui.ctx(), |ui| {
                 ui.label(
-                    egui::RichText::new("Create folder in current local directory")
+                    egui::RichText::new(t("Create folder in current local directory"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1913,7 +1922,7 @@ fn render_pending_dialogs(
                 let response = ui.add_sized(
                     [420.0, 28.0],
                     egui::TextEdit::singleline(&mut name)
-                        .hint_text("Folder name")
+                        .hint_text(t("Folder name"))
                         .vertical_align(egui::Align::Center),
                 );
                 if response.changed() {
@@ -1923,7 +1932,7 @@ fn render_pending_dialogs(
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let create = ui.button("Create").clicked()
+                    let create = ui.button(t("Create")).clicked()
                         || (response.lost_focus()
                             && ui.input(|input| input.key_pressed(egui::Key::Enter)));
                     if create {
@@ -1939,7 +1948,7 @@ fn render_pending_dialogs(
                             *value = false;
                         }
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t("Cancel")).clicked() {
                         if let Ok(mut value) = pending_local_new_folder.lock() {
                             *value = false;
                         }

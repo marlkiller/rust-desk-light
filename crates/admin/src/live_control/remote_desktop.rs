@@ -1,4 +1,5 @@
 use crate::{
+    i18n::t,
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
@@ -289,7 +290,7 @@ pub(crate) fn handle_ack(
             window.status = DesktopStatus::Failed;
         }
         DesktopResponse::Stopped => {
-            stop_capture(window, "Stopped");
+            stop_capture(window, t("Stopped"));
         }
     }
 }
@@ -308,7 +309,7 @@ pub(crate) fn render_windows(
                     input: false,
                 });
             }
-            stop_capture(window, "Stopped");
+            stop_capture(window, t("Stopped"));
             window.open = false;
         }
         if !window.open {
@@ -320,9 +321,9 @@ pub(crate) fn render_windows(
                 .is_some_and(|pending_since| pending_since.elapsed() > Duration::from_secs(10))
         {
             window.status = DesktopStatus::Failed;
-            window.notice = "Timed out waiting for remote desktop result".to_string();
+            window.notice = t("Timed out waiting for remote desktop result").to_string();
             window.pending_since = None;
-            stop_capture(window, "Timed out waiting for remote desktop result");
+            stop_capture(window, t("Timed out waiting for remote desktop result"));
             window.status = DesktopStatus::Failed;
         }
         if let Some(frame) = &window.frame {
@@ -341,7 +342,8 @@ pub(crate) fn render_windows(
         }
 
         let title = format!(
-            "Remote Desktop - {}",
+            "{} - {}",
+            t("Remote Desktop"),
             identity_title(&window.hostname, &window.username)
         );
         let viewport_id = egui::ViewportId::from_hash_of(("remote_desktop", &window.client_id));
@@ -442,7 +444,7 @@ pub(crate) fn render_windows(
         if let Ok(mut queued) = queued.lock() {
             for payload in queued.drain(..) {
                 if payload.trim() == "action=stop" {
-                    stop_capture(window, "Stopped");
+                    stop_capture(window, t("Stopped"));
                 }
                 window.queue_payload(payload);
             }
@@ -455,9 +457,9 @@ pub(crate) fn render_windows(
             if !input {
                 window.status = DesktopStatus::Pending;
                 window.notice = if payload.trim() == "action=stop" {
-                    "Stopping remote desktop".to_string()
+                    t("Stopping remote desktop").to_string()
                 } else {
-                    "Waiting for client result".to_string()
+                    t("Waiting for client result").to_string()
                 };
                 window.pending_since = Some(Instant::now());
             }
@@ -502,7 +504,7 @@ fn render_toolbar(
                 .map(|value| *value)
                 .unwrap_or_default();
             ui.label(
-                egui::RichText::new("Screen")
+                egui::RichText::new(t("Screen"))
                     .size(12.0)
                     .color(crate::theme::palette().muted),
             );
@@ -530,11 +532,11 @@ fn render_toolbar(
             }
         });
         toolbar_row(ui, |ui| {
-            if ui.button("Reload Screens").clicked() {
+            if ui.button(t("Reload Screens")).clicked() {
                 queue_ui_payload(queued, "action=screens".to_string());
             }
             if ui
-                .add_enabled(latest_frame.is_some(), egui::Button::new("Save Frame"))
+                .add_enabled(latest_frame.is_some(), egui::Button::new(t("Save Frame")))
                 .clicked()
             {
                 if let Some(frame) = latest_frame {
@@ -583,9 +585,9 @@ fn render_toolbar(
                 .add_enabled(
                     !screens.is_empty(),
                     egui::Button::new(if is_running {
-                        "Stop Capture"
+                        t("Stop Capture")
                     } else {
-                        "Start Capture"
+                        t("Start Capture")
                     }),
                 )
                 .clicked()
@@ -605,14 +607,20 @@ fn render_toolbar(
             }
             let mut follow = mouse_follow.load(Ordering::Relaxed);
             if ui
-                .add_enabled(is_running, egui::Checkbox::new(&mut follow, "Mouse Move"))
+                .add_enabled(
+                    is_running,
+                    egui::Checkbox::new(&mut follow, t("Mouse Move")),
+                )
                 .changed()
             {
                 mouse_follow.store(follow, Ordering::Relaxed);
             }
             let mut click = mouse_click.load(Ordering::Relaxed);
             if ui
-                .add_enabled(is_running, egui::Checkbox::new(&mut click, "Mouse Click"))
+                .add_enabled(
+                    is_running,
+                    egui::Checkbox::new(&mut click, t("Mouse Click")),
+                )
                 .changed()
             {
                 mouse_click.store(click, Ordering::Relaxed);
@@ -669,19 +677,28 @@ fn screen_label(screens: &[RemoteScreen], selected: usize) -> String {
         .iter()
         .find(|screen| screen.index == selected)
         .map(screen_label_one)
-        .unwrap_or_else(|| "No screen".to_string())
+        .unwrap_or_else(|| t("No screen").to_string())
 }
 
 fn screen_label_one(screen: &RemoteScreen) -> String {
-    let suffix = if screen.primary { " primary" } else { "" };
+    let suffix = if screen.primary {
+        format!(" {}", t("primary"))
+    } else {
+        String::new()
+    };
     let name = if screen.name.trim().is_empty() {
         String::new()
     } else {
         format!(" {}", screen.name.trim())
     };
     format!(
-        "Screen {}{} - {}x{}{}",
-        screen.index, name, screen.width, screen.height, suffix
+        "{} {}{} - {}x{}{}",
+        t("Screen"),
+        screen.index,
+        name,
+        screen.width,
+        screen.height,
+        suffix
     )
 }
 
@@ -806,17 +823,18 @@ fn set_last_mouse_target(
 
 fn render_status_bar(ui: &mut egui::Ui, status: DesktopStatus, notice: &str, stats: &DesktopStats) {
     let (label, color) = match status {
-        DesktopStatus::Ready => ("Ready", crate::theme::palette().muted),
-        DesktopStatus::Pending => ("Pending", COLOR_WARN),
-        DesktopStatus::Live => ("Live", COLOR_GOOD),
-        DesktopStatus::Failed => ("Failed", COLOR_BAD),
+        DesktopStatus::Ready => (t("Ready"), crate::theme::palette().muted),
+        DesktopStatus::Pending => (t("Pending"), COLOR_WARN),
+        DesktopStatus::Live => (t("Live"), COLOR_GOOD),
+        DesktopStatus::Failed => (t("Failed"), COLOR_BAD),
     };
     crate::theme::status_frame().show(ui, |ui| {
         crate::theme::render_status_line(ui, label, color, notice, |ui| {
             ui.separator();
             ui.label(crate::theme::muted_text(format!("FPS {:.1}", stats.fps)));
             ui.label(crate::theme::muted_text(format!(
-                "Frames {}",
+                "{} {}",
+                t("Frames"),
                 stats.frame_count
             )));
             if stats.screen_width > 0 && stats.screen_height > 0 {
@@ -856,9 +874,9 @@ fn frame_interval(target_fps: u32) -> Duration {
 
 fn quality_label(value: &str) -> &'static str {
     match value {
-        "low" => "Low",
-        "high" => "High",
-        _ => "Medium",
+        "low" => t("Low"),
+        "high" => t("High"),
+        _ => t("Medium"),
     }
 }
 
@@ -892,8 +910,8 @@ fn save_frame_dialog(frame: &DesktopFrame) -> Option<String> {
         .save_file()?;
 
     match save_frame_to_path(frame, &path) {
-        Ok(()) => Some(format!("Saved frame to {}", path.display())),
-        Err(error) => Some(format!("Save frame failed: {error}")),
+        Ok(()) => Some(format!("{} {}", t("Saved frame to"), path.display())),
+        Err(error) => Some(format!("{}: {error}", t("Save frame failed"))),
     }
 }
 

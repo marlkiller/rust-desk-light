@@ -1,4 +1,4 @@
-use crate::windowing;
+use crate::{i18n::t, windowing};
 use eframe::egui;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -80,11 +80,11 @@ pub(crate) fn handle_ack(
     }
 
     let (sender, text) = if let Some(text) = detail.strip_prefix("chat_message:") {
-        ("Client", text.trim_start())
+        (t("Client"), text.trim_start())
     } else if accepted {
-        ("Client", detail.as_str())
+        (t("Client"), detail.as_str())
     } else {
-        ("System", detail.as_str())
+        (t("System sender"), detail.as_str())
     };
     push_line(window, sender, text);
 }
@@ -104,7 +104,8 @@ pub(crate) fn render_windows(
 
         let client_id = window.client_id.clone();
         let title = format!(
-            "Text Chat - {}",
+            "{} - {}",
+            t("Text Chat"),
             identity_title(&window.hostname, &window.username)
         );
         let viewport_id = egui::ViewportId::from_hash_of(("admin_text_chat", &client_id));
@@ -151,7 +152,7 @@ pub(crate) fn render_windows(
             .ok()
             .and_then(|mut queue| queue.pop());
         if let Some(text) = text {
-            push_line(window, "Admin", &text);
+            push_line(window, t("Admin"), &text);
             outbound.push(OutboundMessage {
                 client_id: client_id.clone(),
                 text,
@@ -166,7 +167,7 @@ pub(crate) fn render_windows(
 fn render_messages(ui: &mut egui::Ui, messages: &Arc<Mutex<Vec<ChatLine>>>) {
     if let Ok(messages) = messages.lock() {
         let mut transcript = if messages.is_empty() {
-            "No messages yet.".to_string()
+            t("No messages yet.").to_string()
         } else {
             messages
                 .iter()
@@ -193,15 +194,15 @@ fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mu
         let response = ui.add_sized(
             [input_width, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(&mut text)
-                .hint_text("Message")
+                .hint_text(t("Message"))
                 .vertical_align(egui::Align::Center),
         );
         response.context_menu(|ui| {
-            if ui.button("Copy").clicked() {
+            if ui.button(t("Copy")).clicked() {
                 ui.ctx().copy_text(text.clone());
                 ui.close();
             }
-            if ui.button("Paste").clicked() {
+            if ui.button(t("Paste")).clicked() {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
                 ui.close();
@@ -215,7 +216,7 @@ fn render_input(ui: &mut egui::Ui, draft: &Arc<Mutex<String>>, outbound: &Arc<Mu
         let send_clicked = ui
             .add_sized(
                 [button_width, TOOLBAR_CONTROL_HEIGHT],
-                egui::Button::new("Send"),
+                egui::Button::new(t("Send")),
             )
             .clicked()
             || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));

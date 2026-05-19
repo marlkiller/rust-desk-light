@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use eframe::egui;
 use std::sync::Arc;
 
@@ -151,11 +152,11 @@ pub(super) fn activity_context_menu(
 ) {
     ui.interact(rect, id.with("activity_context_menu"), egui::Sense::click())
         .context_menu(|ui| {
-            if ui.button("Copy").clicked() {
+            if ui.button(t("Copy")).clicked() {
                 ui.ctx().copy_text(log_lines.join("\n"));
                 ui.close();
             }
-            if ui.button("Clear").clicked() {
+            if ui.button(t("Clear")).clicked() {
                 log_lines.clear();
                 ui.close();
             }
@@ -200,12 +201,12 @@ pub(super) fn empty_state(ui: &mut egui::Ui) {
     ui.add_space(48.0);
     ui.vertical_centered(|ui| {
         ui.label(
-            egui::RichText::new("No clients online")
+            egui::RichText::new(t("No clients online"))
                 .size(16.0)
                 .color(crate::theme::palette().text),
         );
         ui.label(
-            egui::RichText::new("Start a client or refresh after it connects.")
+            egui::RichText::new(t("Start a client or refresh after it connects."))
                 .size(13.0)
                 .color(crate::theme::palette().muted),
         );

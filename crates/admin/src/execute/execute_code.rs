@@ -1,4 +1,5 @@
 use super::ui;
+use crate::i18n::t;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
 use std::sync::{
@@ -33,11 +34,11 @@ pub(super) fn render(
         .unwrap_or_default();
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = ui::TOOLBAR_CONTROL_HEIGHT;
-        ui::render_inline_label(ui, "Language");
+        ui::render_inline_label(ui, t("Language"));
         egui::ComboBox::from_id_salt("execute_code_language")
             .width(140.0)
             .selected_text(if selected.is_empty() {
-                "Loading..."
+                t("Loading...")
             } else {
                 selected.as_str()
             })
@@ -55,7 +56,7 @@ pub(super) fn render(
                     }
                 }
             });
-        if ui.button("Refresh").clicked() {
+        if ui.button(t("Refresh")).clicked() {
             language_probe_requested.store(true, Ordering::Relaxed);
         }
         let status = language_status
@@ -76,7 +77,7 @@ pub(super) fn render(
         .map(|value| value.clone())
         .unwrap_or_default();
     ui.label(
-        egui::RichText::new("Code")
+        egui::RichText::new(t("Code"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
@@ -114,7 +115,7 @@ pub(super) fn render(
     ui::render_run_button(
         ui,
         can_run,
-        "Language and code are required",
+        t("Language and code are required"),
         send_requested,
     );
 }

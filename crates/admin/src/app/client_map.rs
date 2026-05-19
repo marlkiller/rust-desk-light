@@ -1,7 +1,10 @@
 mod world_map_data;
 
 use super::{ui, ClientRow};
-use crate::windowing;
+use crate::{
+    i18n::{t, tf},
+    windowing,
+};
 use eframe::egui;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -48,7 +51,7 @@ impl ClientMapWindow {
         let selected_current = selected_client_id.clone();
         let viewport_id = egui::ViewportId::from_hash_of("admin_client_map");
         let builder =
-            windowing::child_viewport_builder("Client Map", [1040.0, 680.0], [760.0, 540.0]);
+            windowing::child_viewport_builder(t("Client Map"), [1040.0, 680.0], [760.0, 540.0]);
 
         ctx.show_viewport_immediate(viewport_id, builder, |ui, _class| {
             if ui.ctx().input(|input| input.viewport().close_requested()) {
@@ -96,10 +99,10 @@ fn render_map_contents(
 ) {
     ui::panel(ui, |ui| {
         ui.horizontal(|ui| {
-            ui::section_title(ui, "Client Map");
+            ui::section_title(ui, t("Client Map"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    egui::RichText::new("IP location is approximate")
+                    egui::RichText::new(t("IP location is approximate"))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -123,13 +126,13 @@ fn render_map_contents(
             ui.vertical_centered(|ui| {
                 let (title, detail) = if clients.is_empty() {
                     (
-                        "No matching clients",
-                        "Clear or adjust the filter to show clients on the map.",
+                        t("No matching clients"),
+                        t("Clear or adjust the filter to show clients on the map."),
                     )
                 } else {
                     (
-                        "No geolocatable clients",
-                        "GeoIP may be configured, but current clients have no public IP location. Local, LAN, VPN, proxy, and relay addresses cannot be placed on the map.",
+                        t("No geolocatable clients"),
+                        t("GeoIP may be configured, but current clients have no public IP location. Local, LAN, VPN, proxy, and relay addresses cannot be placed on the map."),
                     )
                 };
                 ui.label(
@@ -144,7 +147,7 @@ fn render_map_contents(
                 );
                 ui.label(
                     egui::RichText::new(
-                        "If this is a public client, restart rdl-server-cli with --geoip-db /path/GeoLite2-City.mmdb.",
+                        t("If this is a public client, restart rdl-server-cli with --geoip-db /path/GeoLite2-City.mmdb."),
                     )
                         .size(12.0)
                         .color(crate::theme::palette().muted),
@@ -203,14 +206,14 @@ fn render_map_filter_toolbar(
         ui.add_sized(
             [search_width, ui::TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(client_filter)
-                .hint_text("Search by id, fingerprint, host, user, or OS")
+                .hint_text(t("Search by id, fingerprint, host, user, or OS"))
                 .vertical_align(egui::Align::Center),
         );
         egui::ComboBox::from_id_salt("client_map_os_filter")
             .width(combo_width)
             .selected_text(os_filter_label(os_filter))
             .show_ui(ui, |ui| {
-                ui.selectable_value(os_filter, String::new(), "All OS");
+                ui.selectable_value(os_filter, String::new(), t("All OS"));
                 if !os_options.is_empty() {
                     ui.separator();
                 }
@@ -258,7 +261,7 @@ fn os_filter_options(clients: &[ClientRow]) -> Vec<String> {
 
 fn os_filter_label(os_filter: &str) -> String {
     if os_filter.trim().is_empty() {
-        "OS: All".to_string()
+        format!("OS: {}", t("All OS"))
     } else {
         format!("OS: {}", truncate_label(os_filter, 24))
     }
@@ -309,8 +312,8 @@ fn render_map_stats_bar(
         egui::vec2(chip_width, MAP_STATS_HEIGHT),
     );
     let second = first.translate(egui::vec2(chip_width + 8.0, 0.0));
-    draw_stat_chip(&painter, first, "Located clients", located_count);
-    draw_stat_chip(&painter, second, "Filtered clients", filtered_count);
+    draw_stat_chip(&painter, first, t("Located clients"), located_count);
+    draw_stat_chip(&painter, second, t("Filtered clients"), filtered_count);
 }
 
 fn draw_stat_chip(painter: &egui::Painter, rect: egui::Rect, label: &str, value: usize) {
@@ -478,9 +481,18 @@ fn draw_map_summary(
     cluster_count: usize,
 ) {
     let summary = if located_count == cluster_count {
-        format!("{located_count} locations")
+        tf(
+            "{count} locations",
+            &[("count", &located_count.to_string())],
+        )
     } else {
-        format!("{located_count} clients / {cluster_count} clusters")
+        tf(
+            "{clients} clients / {clusters} clusters",
+            &[
+                ("clients", &located_count.to_string()),
+                ("clusters", &cluster_count.to_string()),
+            ],
+        )
     };
     let badge_rect = egui::Rect::from_min_size(
         rect.left_top() + egui::vec2(14.0, 14.0),
@@ -705,7 +717,10 @@ fn cluster_radius(cluster: &MapCluster) -> f32 {
 
 fn map_cluster_label(cluster: &MapCluster) -> String {
     if cluster.client_ids.len() > 1 {
-        format!("{} clients", cluster.client_ids.len())
+        tf(
+            "{count} clients",
+            &[("count", &cluster.client_ids.len().to_string())],
+        )
     } else {
         truncate_label(&cluster.title, 22)
     }
@@ -742,7 +757,10 @@ fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
                 (cluster.pos.y * count + pos.y) / (count + 1.0),
             );
             cluster.client_ids.push(row.info.id.clone());
-            cluster.title = format!("{} clients", cluster.client_ids.len());
+            cluster.title = tf(
+                "{count} clients",
+                &[("count", &cluster.client_ids.len().to_string())],
+            );
             cluster.detail.push('\n');
             cluster.detail.push('\n');
             cluster.detail.push_str(&detail);
@@ -788,19 +806,25 @@ fn map_point_detail(row: &ClientRow) -> String {
         .unwrap_or_else(|| "-".to_string());
 
     format!(
-        "id: {}\nip: {}\nhost: {}\nuser: {}\nos: {}\nlocation: {}",
+        "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}",
+        t("Client ID"),
         ui::compact_id(&row.info.id),
+        t("IP"),
         client_peer_ip(&row.info.peer_addr),
+        t("Host"),
         display_value(&row.info.hostname),
+        t("User"),
         display_value(&row.info.username),
+        t("OS Version"),
         display_value(&row.info.os),
+        t("Location"),
         location
     )
 }
 
 fn map_accuracy(accuracy_meters: u32) -> String {
     if accuracy_meters == 0 {
-        "unknown accuracy".to_string()
+        t("unknown accuracy").to_string()
     } else if accuracy_meters >= 1_000 {
         format!("~{} km", accuracy_meters / 1_000)
     } else {

@@ -38,7 +38,11 @@ use self::{
     },
 };
 use crate::{
-    command_menu, live_control, remote_management, runtime::Config, user_interaction, windowing,
+    command_menu,
+    i18n::{self, t, tf},
+    live_control, remote_management,
+    runtime::Config,
+    user_interaction, windowing,
 };
 use eframe::egui;
 use rdl_protocol::{
@@ -87,6 +91,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_gui(config: Config) -> eframe::Result {
     disable_macos_automatic_window_tabbing();
     crate::theme::set_theme_kind(crate::theme::ThemeKind::from_config(&config.theme));
+    i18n::set_language(i18n::Language::from_config(&config.language));
 
     let (input_tx, input_rx) = mpsc::sync_channel(ADMIN_INPUT_QUEUE_CAPACITY);
     let (voice_audio_tx, voice_audio_rx) = mpsc::sync_channel(VOICE_AUDIO_OUTBOUND_QUEUE_CAPACITY);
@@ -415,14 +420,6 @@ impl ClientStatus {
     fn can_receive_commands(self) -> bool {
         matches!(self, ClientStatus::Online)
     }
-
-    fn label(self) -> &'static str {
-        match self {
-            ClientStatus::Online => "online",
-            ClientStatus::Stale => "stale",
-            ClientStatus::Offline => "offline",
-        }
-    }
 }
 
 struct PendingVideoFrame {
@@ -594,17 +591,17 @@ fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
 
 fn client_status_display(status: ClientStatus) -> (&'static str, egui::Color32) {
     match status {
-        ClientStatus::Online => ("Online", COLOR_GOOD),
-        ClientStatus::Stale => ("Stale", COLOR_WARN),
-        ClientStatus::Offline => ("Offline", COLOR_BAD),
+        ClientStatus::Online => (t("Online"), COLOR_GOOD),
+        ClientStatus::Stale => (t("Stale"), COLOR_WARN),
+        ClientStatus::Offline => (t("Offline"), COLOR_BAD),
     }
 }
 
 fn client_commands_disabled_text(status: ClientStatus) -> &'static str {
     match status {
         ClientStatus::Online => "",
-        ClientStatus::Stale => "Client stale - commands disabled",
-        ClientStatus::Offline => "Client offline - commands disabled",
+        ClientStatus::Stale => t("Client stale - commands disabled"),
+        ClientStatus::Offline => t("Client offline - commands disabled"),
     }
 }
 
@@ -618,8 +615,8 @@ fn overview_metric(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_min_width(match label {
-                "Selected" => 170.0,
-                "Version" => 112.0,
+                value if value == t("Selected") => 170.0,
+                value if value == t("Version") => 112.0,
                 _ => 82.0,
             });
             ui.horizontal(|ui| {
@@ -663,14 +660,14 @@ fn parse_connection_settings(
     let token = token.trim().to_string();
 
     if ip.is_empty() {
-        return Err("Server IP cannot be empty.".to_string());
+        return Err(t("Server IP cannot be empty.").to_string());
     }
     let port = match port_text.parse::<u16>() {
         Ok(port) if port > 0 => port,
-        _ => return Err("Server port must be 1-65535.".to_string()),
+        _ => return Err(t("Server port must be 1-65535.").to_string()),
     };
     if token.is_empty() {
-        return Err("Token cannot be empty.".to_string());
+        return Err(t("Token cannot be empty.").to_string());
     }
 
     Ok((ip, port, token))
@@ -713,7 +710,7 @@ fn info_icon_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
             egui::Stroke::new(1.6, icon_color),
         );
     }
-    response.on_hover_text("About")
+    response.on_hover_text(t("About"))
 }
 
 fn package_repository() -> &'static str {
@@ -1159,7 +1156,8 @@ impl AdminApp {
                 });
             }
             Err(error) => {
-                self.settings.set_error(format!("Save failed: {error}"));
+                self.settings
+                    .set_error(tf("Save failed: {error}", &[("error", &error.to_string())]));
             }
         }
     }
@@ -1167,6 +1165,7 @@ impl AdminApp {
     fn save_settings_preferences(&mut self, theme: String, language: String) {
         match self.config.save_ui_preferences(&theme, &language) {
             Ok(()) => {
+                i18n::set_language(i18n::Language::from_config(&language));
                 self.settings.sync_preferences(&self.config);
                 if let Ok(handle) = self.repaint_handle.lock() {
                     if let Some(ctx) = handle.as_ref() {
@@ -1176,12 +1175,16 @@ impl AdminApp {
                         ctx.request_repaint();
                     }
                 }
-                self.settings.set_notice("Theme saved. Theme applied.");
-                self.push_log(format!("saved admin preferences theme={theme}"));
+                self.settings.set_notice(t("Theme and language saved."));
+                self.push_log(format!(
+                    "saved admin preferences theme={theme} language={language}"
+                ));
             }
             Err(error) => {
-                self.settings
-                    .set_error(format!("Save preferences failed: {error}"));
+                self.settings.set_error(tf(
+                    "Save preferences failed: {error}",
+                    &[("error", &error.to_string())],
+                ));
             }
         }
     }
@@ -1199,7 +1202,7 @@ impl AdminApp {
 
         let mut open = self.about_open;
         let mut close_requested = false;
-        egui::Window::new("About")
+        egui::Window::new(t("About"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -1212,16 +1215,16 @@ impl AdminApp {
                         .strong(),
                 );
                 ui.add_space(6.0);
-                about_row(ui, "Version", rdl_version::display_version());
-                about_row(ui, "Author", PACKAGE_AUTHORS);
-                about_row(ui, "Repository", package_repository());
-                about_row(ui, "License", PACKAGE_LICENSE);
+                about_row(ui, t("Version"), rdl_version::display_version());
+                about_row(ui, t("Author"), PACKAGE_AUTHORS);
+                about_row(ui, t("Repository"), package_repository());
+                about_row(ui, t("License"), PACKAGE_LICENSE);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Copy repository").clicked() {
+                    if ui.button(t("Copy repository")).clicked() {
                         ui.ctx().copy_text(package_repository().to_string());
                     }
-                    if ui.button("Close").clicked() {
+                    if ui.button(t("Close")).clicked() {
                         close_requested = true;
                     }
                 });
@@ -2204,7 +2207,7 @@ impl AdminApp {
         self.refresh_command_result_window(
             client_id,
             CommandKind::ProcessManager,
-            "Refreshing process list...",
+            t("Refreshing..."),
         );
     }
 
@@ -2212,7 +2215,7 @@ impl AdminApp {
         self.refresh_command_result_window(
             client_id,
             CommandKind::WindowManager,
-            "Refreshing window list...",
+            t("Refreshing..."),
         );
     }
 
@@ -2248,10 +2251,10 @@ impl AdminApp {
     fn render_menu_bar(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("🌐 Client Map").clicked() {
+                if ui.button(format!("🌐 {}", t("Client Map"))).clicked() {
                     self.client_map_window.open();
                 }
-                if ui.button("Client Builder").clicked() {
+                if ui.button(t("Client Builder")).clicked() {
                     self.client_builder_open = true;
                 }
                 if let Some(client_id) = self.selected_client_id.clone() {
@@ -2277,20 +2280,20 @@ impl AdminApp {
                                 .color(color)
                                 .strong(),
                         )
-                        .on_hover_text(
+                        .on_hover_text(t(
                             "Remote commands become available when the client reconnects",
-                        );
+                        ));
                     }
                 } else {
                     ui.separator();
                     ui.label(
-                        egui::RichText::new("Select a client for actions")
+                        egui::RichText::new(t("Select a client for actions"))
                             .size(12.0)
                             .color(crate::theme::palette().muted),
                     );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("⚙ Setting").clicked() {
+                    if ui.button(format!("⚙ {}", t("Setting"))).clicked() {
                         self.settings.open();
                     }
                     ui.separator();
@@ -2301,7 +2304,7 @@ impl AdminApp {
 
     fn render_activity(&mut self, ui: &mut egui::Ui) {
         panel(ui, |ui| {
-            section_title(ui, "Activity");
+            section_title(ui, t("Activity"));
             ui.add_space(6.0);
             let output = egui::ScrollArea::vertical()
                 .id_salt("admin_activity_scroll_area")
@@ -2336,7 +2339,7 @@ impl AdminApp {
                 refresh_command_window(
                     &self.input_tx,
                     window,
-                    "Refreshing command result...",
+                    t("Refreshing..."),
                     "refresh",
                     now,
                     &mut pending_logs,
@@ -2346,7 +2349,7 @@ impl AdminApp {
                 refresh_command_window(
                     &self.input_tx,
                     window,
-                    "Auto refreshing performance monitor...",
+                    t("Refreshing..."),
                     "auto_refresh",
                     now,
                     &mut pending_logs,
@@ -2367,7 +2370,7 @@ impl AdminApp {
                         payload,
                     });
                     window.status = CommandResultStatus::Pending;
-                    window.detail = "Applying startup manager change...".to_string();
+                    window.detail = t("Waiting for client result...").to_string();
                     window.open = true;
                     pending_logs.push(format!(
                         "startup manager {} on {}",

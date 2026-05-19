@@ -3,6 +3,7 @@ use super::{
     table_cell_label, table_row_key, table_value, DisplayTableRow, ResultTable,
     TABLE_BODY_CELL_HEIGHT, TABLE_BODY_TEXT_SIZE, TABLE_HEADER_CELL_HEIGHT, TABLE_HEADER_TEXT_SIZE,
 };
+use crate::i18n::t;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
 use egui_extras::Column;
@@ -68,7 +69,7 @@ pub(super) fn render_result(
 
     if groups.is_empty() {
         ui.label(
-            egui::RichText::new("No registry values match the current filter.")
+            egui::RichText::new(t("No registry values match the current filter."))
                 .size(12.0)
                 .color(crate::theme::palette().muted),
         );
@@ -154,14 +155,14 @@ fn render_registry_tree_panel(
             ui.set_max_width(width);
             ui.vertical(|ui| {
                 ui.label(
-                    egui::RichText::new("Registry")
+                    egui::RichText::new(t("Registry"))
                         .size(12.0)
                         .color(crate::theme::palette().text)
                         .strong(),
                 );
                 ui.add_space(6.0);
                 egui::CollapsingHeader::new(
-                    egui::RichText::new("Computer")
+                    egui::RichText::new(t("Computer"))
                         .size(12.0)
                         .color(crate::theme::palette().text),
                 )
@@ -219,7 +220,7 @@ fn render_registry_tree_root(
         }
     }
     response.header_response.context_menu(|ui| {
-        if ui.button("Copy Path").clicked() {
+        if ui.button(t("Copy Path")).clicked() {
             ui.ctx().copy_text(registry_display_hive(&root.hive));
             ui.close();
         }
@@ -276,7 +277,7 @@ fn render_registry_tree_node(
         }
     }
     response.header_response.context_menu(|ui| {
-        if ui.button("Copy Path").clicked() {
+        if ui.button(t("Copy Path")).clicked() {
             ui.ctx()
                 .copy_text(registry_display_path(id_prefix, &node.name));
             ui.close();
@@ -309,7 +310,7 @@ fn render_registry_tree_leaf(
         queue_registry_key_request(table_selected_row, registry_key_requested, group);
     }
     response.context_menu(|ui| {
-        if ui.button("Copy Path").clicked() {
+        if ui.button(t("Copy Path")).clicked() {
             ui.ctx()
                 .copy_text(registry_display_path(&group.hive, &group.path));
             ui.close();
@@ -364,7 +365,7 @@ fn render_registry_values_table(
         .collect::<Vec<_>>();
     if value_rows.is_empty() {
         ui.label(
-            egui::RichText::new("No values in this key.")
+            egui::RichText::new(t("No values in this key."))
                 .size(12.0)
                 .color(crate::theme::palette().muted),
         );
@@ -377,7 +378,7 @@ fn render_registry_values_table(
         .column(Column::initial(92.0).at_least(72.0).clip(true))
         .column(Column::remainder().at_least(220.0).clip(true))
         .header(TABLE_HEADER_CELL_HEIGHT + 7.0, |mut header| {
-            for label in ["Name", "Type", "Data"] {
+            for label in [t("Name"), t("Type"), t("Data")] {
                 header.col(|ui| {
                     let _ = table_cell_label(
                         ui,
@@ -420,27 +421,27 @@ fn render_registry_values_table(
                     let row_text = row_text.clone();
                     cell_response.context_menu(|ui| {
                         let copy_label = match index {
-                            0 => "Copy Name",
-                            1 => "Copy Type",
-                            _ => "Copy Data",
+                            0 => t("Copy Name"),
+                            1 => t("Copy Type"),
+                            _ => t("Copy Data"),
                         };
                         if ui.button(copy_label).clicked() {
                             ui.ctx().copy_text(cell_text.clone());
                             ui.close();
                         }
-                        if ui.button("Copy Value Data").clicked() {
+                        if ui.button(t("Copy Value Data")).clicked() {
                             ui.ctx().copy_text(value_text.clone());
                             ui.close();
                         }
-                        if ui.button("Copy Value Name").clicked() {
+                        if ui.button(t("Copy Value Name")).clicked() {
                             ui.ctx().copy_text(name_text.clone());
                             ui.close();
                         }
-                        if ui.button("Copy Key Path").clicked() {
+                        if ui.button(t("Copy Key Path")).clicked() {
                             ui.ctx().copy_text(path_text.clone());
                             ui.close();
                         }
-                        if ui.button("Copy Row").clicked() {
+                        if ui.button(t("Copy Row")).clicked() {
                             ui.ctx().copy_text(row_text.clone());
                             ui.close();
                         }

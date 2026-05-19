@@ -2,7 +2,10 @@ use super::{
     execute_code::{self, CodeLanguage},
     execute_file, execute_static_command, result, ui,
 };
-use crate::windowing;
+use crate::{
+    i18n::{self, t, tf},
+    windowing,
+};
 use eframe::egui;
 use rdl_protocol::{default_static_command_preset_id, CommandKind};
 use std::sync::{
@@ -79,7 +82,7 @@ pub(crate) fn open_window(
         code_text: Arc::new(Mutex::new(String::new())),
         code_languages: Arc::new(Mutex::new(Vec::new())),
         language_status: Arc::new(Mutex::new(if command == CommandKind::ExecuteCode {
-            "Loading languages...".to_string()
+            t("Loading languages...").to_string()
         } else {
             String::new()
         })),
@@ -170,7 +173,7 @@ pub(crate) fn render_windows(
             && window.command == CommandKind::ExecuteCode
         {
             if let Ok(mut status) = window.language_status.lock() {
-                *status = "Loading languages...".to_string();
+                *status = t("Loading languages...").to_string();
             }
             outbound.push(OutboundExecuteCommand {
                 client_id: client_id.clone(),
@@ -181,7 +184,7 @@ pub(crate) fn render_windows(
 
         if window.send_requested.swap(false, Ordering::Relaxed) {
             if let Ok(mut status) = window.result_status.lock() {
-                *status = "Running...".to_string();
+                *status = t("Running...").to_string();
             }
             outbound.push(OutboundExecuteCommand {
                 client_id: client_id.clone(),
@@ -238,7 +241,7 @@ fn handle_language_ack(window: &mut ExecuteWindow, detail: &str) {
     }
     if languages.is_empty() {
         if let Ok(mut status) = window.language_status.lock() {
-            *status = "No supported language found".to_string();
+            *status = t("No supported language found").to_string();
         }
         return;
     }
@@ -250,7 +253,10 @@ fn handle_language_ack(window: &mut ExecuteWindow, detail: &str) {
         }
     }
     if let Ok(mut status) = window.language_status.lock() {
-        *status = format!("{} language(s) available", languages.len());
+        *status = tf(
+            "{count} language(s) available",
+            &[("count", &languages.len().to_string())],
+        );
     }
 }
 
@@ -342,18 +348,7 @@ fn identity_title(hostname: &str, username: &str) -> String {
 }
 
 fn command_title(command: &CommandKind) -> String {
-    command
-        .as_str()
-        .split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    i18n::command_title(command).to_string()
 }
 
 #[cfg(test)]

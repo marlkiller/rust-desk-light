@@ -29,14 +29,6 @@ impl ThemeKind {
             Self::Dark => "dark",
         }
     }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::System => "System",
-            Self::Light => "Light",
-            Self::Dark => "Dark",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

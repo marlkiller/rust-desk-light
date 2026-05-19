@@ -1,4 +1,5 @@
 use crate::{
+    i18n::{t, tf},
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
@@ -204,7 +205,7 @@ pub(crate) fn open_window(
         devices: Vec::new(),
         selected_device: Arc::new(Mutex::new(0)),
         status: AudioStatus::Ready,
-        notice: "Select an input device and click Start".to_string(),
+        notice: t("Select an input device and click Start").to_string(),
         stats: AudioStats::default(),
         running: Arc::new(AtomicBool::new(false)),
         outbound: Vec::new(),
@@ -261,9 +262,9 @@ pub(crate) fn handle_ack(
             }
             window.status = AudioStatus::Ready;
             window.notice = if window.devices.is_empty() {
-                "No audio input devices found".to_string()
+                t("No audio input devices found").to_string()
             } else {
-                "Select an input device and click Start".to_string()
+                t("Select an input device and click Start").to_string()
             };
         }
         AudioResponse::Started {
@@ -276,7 +277,7 @@ pub(crate) fn handle_ack(
             window.last_incoming_seq = 0;
             window.register_playback();
         }
-        AudioResponse::Stopped => stop_listen(window, "Stopped"),
+        AudioResponse::Stopped => stop_listen(window, t("Stopped")),
         AudioResponse::Error(message) => {
             stop_listen(window, &message);
             window.status = AudioStatus::Failed;
@@ -300,7 +301,7 @@ pub(crate) fn render_windows(
                     payload: "action=stop".to_string(),
                 });
             }
-            stop_listen(window, "Stopped");
+            stop_listen(window, t("Stopped"));
             window.open = false;
         }
         if !window.open {
@@ -310,12 +311,13 @@ pub(crate) fn render_windows(
             .pending_since
             .is_some_and(|pending_since| pending_since.elapsed() > Duration::from_secs(20))
         {
-            stop_listen(window, "Timed out waiting for audio result");
+            stop_listen(window, t("Timed out waiting for audio result"));
             window.status = AudioStatus::Failed;
         }
 
         let title = format!(
-            "Audio Listen - {}",
+            "{} - {}",
+            t("Audio Listen"),
             identity_title(&window.hostname, &window.username)
         );
         let viewport_id = egui::ViewportId::from_hash_of(("audio_listen", &window.client_id));
@@ -354,7 +356,7 @@ pub(crate) fn render_windows(
         if let Ok(mut queued) = queued.lock() {
             for payload in queued.drain(..) {
                 if payload.trim() == "action=stop" {
-                    stop_listen(window, "Stopped");
+                    stop_listen(window, t("Stopped"));
                 }
                 window.queue_payload(payload);
             }
@@ -370,7 +372,7 @@ pub(crate) fn render_windows(
                     Err(error) => {
                         window.running.store(false, Ordering::Relaxed);
                         window.status = AudioStatus::Failed;
-                        window.notice = format!("Audio output failed: {error}");
+                        window.notice = format!("{}: {error}", t("Audio output failed"));
                         continue;
                     }
                 }
@@ -380,10 +382,10 @@ pub(crate) fn render_windows(
 
             window.status = AudioStatus::Pending;
             window.notice = match action.as_deref() {
-                Some("devices") => "Loading audio input devices".to_string(),
-                Some("start") => "Waiting for client audio".to_string(),
-                Some("stop") => "Stopping audio listen".to_string(),
-                _ => "Waiting for client result".to_string(),
+                Some("devices") => t("Loading audio input devices").to_string(),
+                Some("start") => t("Waiting for client audio").to_string(),
+                Some("stop") => t("Stopping audio listen").to_string(),
+                _ => t("Waiting for client result").to_string(),
             };
             window.pending_since = Some(Instant::now());
             outbound.push(OutboundCommand {
@@ -431,7 +433,7 @@ fn render_toolbar(
                 .map(|value| *value)
                 .unwrap_or_default();
             ui.label(
-                egui::RichText::new("Device")
+                egui::RichText::new(t("Device"))
                     .size(12.0)
                     .color(crate::theme::palette().muted),
             );
@@ -466,7 +468,7 @@ fn render_toolbar(
         });
         toolbar_row(ui, |ui| {
             if ui
-                .add_enabled(!is_running, egui::Button::new("Reload Devices"))
+                .add_enabled(!is_running, egui::Button::new(t("Reload Devices")))
                 .clicked()
             {
                 queue_ui_payload(queued, "action=devices\nscan=full".to_string());
@@ -478,7 +480,7 @@ fn render_toolbar(
             if ui
                 .add_enabled(
                     !devices.is_empty(),
-                    egui::Button::new(if is_running { "Stop" } else { "Start" }),
+                    egui::Button::new(if is_running { t("Stop") } else { t("Start") }),
                 )
                 .clicked()
             {
@@ -575,7 +577,7 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let meta = if stats.sample_rate == 0 {
-                "no audio".to_string()
+                t("no audio").to_string()
             } else {
                 format!(
                     "{} {}ch {}B",
@@ -610,10 +612,10 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
 
 fn status_pill(ui: &mut egui::Ui, status: AudioStatus) {
     let (label, color) = match status {
-        AudioStatus::Ready => ("Ready", crate::theme::palette().muted),
-        AudioStatus::Pending => ("Pending", COLOR_WARN),
-        AudioStatus::Live => ("Live", COLOR_GOOD),
-        AudioStatus::Failed => ("Failed", COLOR_BAD),
+        AudioStatus::Ready => (t("Ready"), crate::theme::palette().muted),
+        AudioStatus::Pending => (t("Pending"), COLOR_WARN),
+        AudioStatus::Live => (t("Live"), COLOR_GOOD),
+        AudioStatus::Failed => (t("Failed"), COLOR_BAD),
     };
     egui::Frame::default()
         .fill(color.gamma_multiply(0.10))
@@ -654,7 +656,10 @@ fn handle_frame(window: &mut AudioListenWindow, frame: AudioFrame) {
         .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
     window.stats.last_frame_at = Some(now);
     window.status = AudioStatus::Live;
-    window.notice = format!("Receiving audio frame {}", frame.seq);
+    window.notice = tf(
+        "Receiving audio frame {seq}",
+        &[("seq", &frame.seq.to_string())],
+    );
 }
 
 fn stop_listen(window: &mut AudioListenWindow, notice: &str) {
@@ -1219,14 +1224,14 @@ impl AudioResponse {
         match lines.next().unwrap_or_default().trim() {
             "audio_listen_devices" => Self::Devices(parse_devices(lines)),
             "audio_listen_started" => Self::Started {
-                message: "Client accepted audio listen".to_string(),
+                message: t("Client accepted audio listen").to_string(),
                 generation: payload_field(detail, "generation")
                     .and_then(|value| value.parse::<u64>().ok()),
             },
             "audio_listen_stopped" => Self::Stopped,
             "audio_listen_error" => Self::Error(
                 payload_field(detail, "message")
-                    .unwrap_or_else(|| "audio listen failed".to_string()),
+                    .unwrap_or_else(|| t("audio listen failed").to_string()),
             ),
             other => Self::Other(other.to_string()),
         }
@@ -1275,7 +1280,7 @@ fn device_label(devices: &[AudioDevice], selected: usize) -> String {
         .iter()
         .find(|device| device.index == selected)
         .map(device_label_one)
-        .unwrap_or_else(|| "No input devices".to_string())
+        .unwrap_or_else(|| t("No input devices").to_string())
 }
 
 fn device_label_one(device: &AudioDevice) -> String {

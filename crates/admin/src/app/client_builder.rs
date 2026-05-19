@@ -1,5 +1,5 @@
 use super::ui::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, TOOLBAR_CONTROL_HEIGHT};
-use crate::runtime::Config;
+use crate::{i18n::t, runtime::Config};
 use chrono::{Local, TimeZone};
 use eframe::egui;
 use rdl_config::{ConfigKind, EndpointConfig};
@@ -61,7 +61,7 @@ impl ClientBuilderState {
             auth_token: config.auth_token.clone(),
             template_detail: String::new(),
             build_status: BuildStatus::Idle,
-            template_status: TemplateStatus::Unknown("Template not loaded".to_string()),
+            template_status: TemplateStatus::Unknown(t("Template not loaded").to_string()),
             last_template_path: String::new(),
         };
         state.refresh_template_report();
@@ -79,46 +79,46 @@ impl ClientBuilderState {
         }
 
         let mut log_line = None;
-        egui::Window::new("Client Builder")
+        egui::Window::new(t("Client Builder"))
             .open(open)
             .default_width(620.0)
             .resizable(true)
             .show(ctx, |ui| {
-                path_row(ui, "Template", &mut self.template_path, true);
+                path_row(ui, t("Template"), &mut self.template_path, true);
                 self.refresh_template_report_if_needed();
                 ui.add_space(6.0);
                 render_template_detail(ui, &self.template_detail, &self.template_status);
                 ui.add_space(6.0);
-                path_row(ui, "Output", &mut self.output_path, false);
+                path_row(ui, t("Output"), &mut self.output_path, false);
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
-                    form_label(ui, "Server");
+                    form_label(ui, t("Server"));
                     ui.add_sized(
                         [240.0, TOOLBAR_CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut self.server_ip)
-                            .hint_text("IP or host")
+                            .hint_text(t("IP or host"))
                             .vertical_align(egui::Align::Center),
                     );
                     ui.add_sized(
                         [92.0, TOOLBAR_CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut self.server_port)
-                            .hint_text("Port")
+                            .hint_text(t("Port"))
                             .vertical_align(egui::Align::Center),
                     );
-                    if ui.button("Use current").clicked() {
+                    if ui.button(t("Use current")).clicked() {
                         self.server_ip = admin_config.ip.clone();
                         self.server_port = admin_config.port.to_string();
                     }
                 });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    form_label(ui, "Token");
+                    form_label(ui, t("Token"));
                     ui.add_sized(
                         [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
                         egui::TextEdit::singleline(&mut self.auth_token)
                             .password(true)
-                            .hint_text("Optional client auth token")
+                            .hint_text(t("Optional client auth token"))
                             .vertical_align(egui::Align::Center),
                     );
                 });
@@ -127,13 +127,13 @@ impl ClientBuilderState {
                 ui.horizontal(|ui| {
                     let generate_response = ui.add_enabled(
                         self.template_status.is_valid(),
-                        egui::Button::new("Generate"),
+                        egui::Button::new(t("Generate")),
                     );
                     let generate_clicked = generate_response.clicked();
                     if !self.template_status.is_valid() {
                         generate_response.on_hover_text(self.template_status.notice());
                     }
-                    if ui.button("Reload Template").clicked() {
+                    if ui.button(t("Reload Template")).clicked() {
                         self.build_status = BuildStatus::Idle;
                         self.refresh_template_report();
                     }
@@ -166,17 +166,17 @@ impl ClientBuilderState {
         let template_path = PathBuf::from(&template_text);
         let output_path = PathBuf::from(&output_text);
         if template_path.as_os_str().is_empty() {
-            return Err("Select a client template binary.".to_string());
+            return Err(t("Select a client template binary.").to_string());
         }
         if output_path.as_os_str().is_empty() {
-            return Err("Select an output path.".to_string());
+            return Err(t("Select an output path.").to_string());
         }
         if ip.is_empty() {
-            return Err("Server IP cannot be empty.".to_string());
+            return Err(t("Server IP cannot be empty.").to_string());
         }
         let port = match port_text.parse::<u16>() {
             Ok(port) => port,
-            Err(_) => return Err("Server port must be 1-65535.".to_string()),
+            Err(_) => return Err(t("Server port must be 1-65535.").to_string()),
         };
 
         let config_toml = rdl_config::client_embedded_config_toml(
@@ -231,14 +231,14 @@ fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, open_file: bool)
             [text_width, TOOLBAR_CONTROL_HEIGHT],
             egui::TextEdit::singleline(value).vertical_align(egui::Align::Center),
         );
-        if ui.button("Browse").clicked() {
+        if ui.button(t("Browse")).clicked() {
             let selected = if open_file {
                 rfd::FileDialog::new()
-                    .set_title("Select client template")
+                    .set_title(t("Select client template"))
                     .pick_file()
             } else {
                 rfd::FileDialog::new()
-                    .set_title("Save configured client")
+                    .set_title(t("Save configured client"))
                     .save_file()
             };
             if let Some(path) = selected {
@@ -257,12 +257,12 @@ fn form_label(ui: &mut egui::Ui, label: &str) {
 
 fn render_template_detail(ui: &mut egui::Ui, detail: &str, status: &TemplateStatus) {
     let label = match status {
-        TemplateStatus::Unknown(_) => "⚪ Details",
-        TemplateStatus::Valid(_) => "✅ Details",
-        TemplateStatus::Invalid(_) => "❌ Details",
+        TemplateStatus::Unknown(_) => format!("! {}", t("Details")),
+        TemplateStatus::Valid(_) => format!("+ {}", t("Details")),
+        TemplateStatus::Invalid(_) => format!("x {}", t("Details")),
     };
     ui.horizontal_top(|ui| {
-        form_label(ui, label);
+        form_label(ui, &label);
         let mut detail = detail.to_string();
         ui.add_sized(
             [ui.available_width(), DETAILS_HEIGHT],
@@ -279,12 +279,12 @@ fn render_template_detail(ui: &mut egui::Ui, detail: &str, status: &TemplateStat
 fn render_build_status_bar(ui: &mut egui::Ui, status: &BuildStatus) {
     let (label, notice, color) = match status {
         BuildStatus::Idle => (
-            "Ready",
-            "No client has been generated in this window yet",
+            t("Ready"),
+            t("No client has been generated in this window yet"),
             COLOR_MUTED,
         ),
-        BuildStatus::Success(message) => ("Generated", message.as_str(), COLOR_GOOD),
-        BuildStatus::Error(message) => ("Failed", message.as_str(), COLOR_BAD),
+        BuildStatus::Success(message) => (t("Generated"), message.as_str(), COLOR_GOOD),
+        BuildStatus::Error(message) => (t("Failed"), message.as_str(), COLOR_BAD),
     };
     egui::Frame::default()
         .fill(color.gamma_multiply(0.08))
@@ -357,8 +357,14 @@ fn inspect_template(path_text: &str) -> TemplateReport {
     let path_text = path_text.trim();
     if path_text.is_empty() {
         return TemplateReport {
-            detail: "Template: not selected\nValidation: not loaded".to_string(),
-            status: TemplateStatus::Unknown("Select a client template binary".to_string()),
+            detail: format!(
+                "{}: {}\n{}: {}",
+                t("Template"),
+                t("not selected"),
+                t("Validation"),
+                t("not loaded")
+            ),
+            status: TemplateStatus::Unknown(t("Select a client template binary").to_string()),
         };
     }
 
@@ -367,9 +373,14 @@ fn inspect_template(path_text: &str) -> TemplateReport {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) => {
-            let notice = format!("Template cannot be read: {error}");
+            let notice = format!("{}: {error}", t("Template cannot be read"));
             return TemplateReport {
-                detail: format!("Template\nValidation: invalid - {notice}"),
+                detail: format!(
+                    "{}\n{}: {} - {notice}",
+                    t("Template"),
+                    t("Validation"),
+                    t("invalid")
+                ),
                 status: TemplateStatus::Invalid(notice),
             };
         }
@@ -379,39 +390,45 @@ fn inspect_template(path_text: &str) -> TemplateReport {
     let modified = metadata
         .modified()
         .map(format_system_time)
-        .unwrap_or_else(|error| format!("modified unavailable ({error})"));
+        .unwrap_or_else(|error| format!("{} ({error})", t("modified unavailable")));
 
     if !metadata.is_file() {
-        let notice = "Template path is not a file".to_string();
+        let notice = t("Template path is not a file").to_string();
         return TemplateReport {
             detail: format!(
-                "Template\nSize: {size} ({} bytes)\nModified: {modified}\nValidation: invalid - {notice}",
-                metadata.len()
+                "{}\n{}: {size} ({} {})\n{}: {modified}\n{}: {} - {notice}",
+                t("Template"),
+                t("Size"),
+                metadata.len(),
+                t("bytes"),
+                t("Modified"),
+                t("Validation"),
+                t("invalid")
             ),
             status: TemplateStatus::Invalid(notice),
         };
     }
 
     let mut detail_lines = vec![
-        "Template".to_string(),
-        format!("Size: {size} ({} bytes)", metadata.len()),
-        format!("Modified: {modified}"),
-        "Embedded mode: generated clients do not load, create, or save client.toml".to_string(),
+        t("Template").to_string(),
+        format!("{}: {size} ({} {})", t("Size"), metadata.len(), t("bytes")),
+        format!("{}: {modified}", t("Modified")),
+        t("Embedded mode: generated clients do not load, create, or save client.toml").to_string(),
     ];
 
     let binary = match fs::read(path) {
         Ok(bytes) => {
             let binary = detect_binary_format(&bytes);
-            detail_lines.push(format!("Platform: {}", binary.platform));
-            detail_lines.push(format!("Format: {}", binary.format));
-            detail_lines.push(format!("Arch: {}", binary.arch));
+            detail_lines.push(format!("{}: {}", t("Platform"), binary.platform));
+            detail_lines.push(format!("{}: {}", t("Format"), binary.format));
+            detail_lines.push(format!("{}: {}", t("Arch"), binary.arch));
             binary
         }
         Err(error) => {
-            let notice = format!("Template bytes cannot be read: {error}");
+            let notice = format!("{}: {error}", t("Template bytes cannot be read"));
             return TemplateReport {
                 detail: {
-                    detail_lines.push(format!("Validation: invalid - {notice}"));
+                    detail_lines.push(format!("{}: {} - {notice}", t("Validation"), t("invalid")));
                     detail_lines.join("\n")
                 },
                 status: TemplateStatus::Invalid(notice),
@@ -425,16 +442,23 @@ fn inspect_template(path_text: &str) -> TemplateReport {
             if let Some(offset) = inspection.slot_offset {
                 slot_present = true;
                 detail_lines.push(format!(
-                    "Embedded slot: present offset={} capacity={} used={}",
-                    offset, inspection.payload_capacity, inspection.payload_bytes
+                    "{}: {} {}={} {}={} {}={}",
+                    t("Embedded slot"),
+                    t("present"),
+                    t("offset"),
+                    offset,
+                    t("capacity"),
+                    inspection.payload_capacity,
+                    t("used"),
+                    inspection.payload_bytes
                 ));
                 match inspection.config {
                     Some(config) => {
-                        let ip = config.ip.unwrap_or_else(|| "<missing>".to_string());
+                        let ip = config.ip.unwrap_or_else(|| format!("<{}>", t("missing")));
                         let port = config
                             .port
                             .map(|port| port.to_string())
-                            .unwrap_or_else(|| "<missing>".to_string());
+                            .unwrap_or_else(|| format!("<{}>", t("missing")));
                         let token = if config
                             .auth_token
                             .as_deref()
@@ -442,45 +466,59 @@ fn inspect_template(path_text: &str) -> TemplateReport {
                             .unwrap_or_default()
                             .is_empty()
                         {
-                            "no"
+                            t("no")
                         } else {
-                            "yes"
+                            t("yes")
                         };
-                        detail_lines
-                            .push(format!("Embedded config: server={ip}:{port} token={token}"));
+                        detail_lines.push(format!(
+                            "{}: {}={ip}:{port} {}={token}",
+                            t("Embedded config"),
+                            t("server"),
+                            t("token")
+                        ));
                         detail_lines.push(
-                            "Reuse: existing embedded config will be replaced when generated"
+                            t("Reuse: existing embedded config will be replaced when generated")
                                 .to_string(),
                         );
                     }
                     None => {
-                        detail_lines.push("Embedded config: empty".to_string());
+                        detail_lines.push(format!("{}: {}", t("Embedded config"), t("empty")));
                     }
                 }
             } else {
-                detail_lines
-                    .push("Embedded slot: missing (not a supported client template)".to_string());
+                detail_lines.push(format!(
+                    "{}: {}",
+                    t("Embedded slot"),
+                    t("missing (not a supported client template)")
+                ));
             }
         }
         Err(error) => {
-            detail_lines.push(format!("Embedded slot: error ({error})"));
+            detail_lines.push(format!("{}: {} ({error})", t("Embedded slot"), t("error")));
         }
     }
 
     let status = if binary.platform == "Unknown" {
-        TemplateStatus::Invalid("Unsupported or unknown binary format".to_string())
+        TemplateStatus::Invalid(t("Unsupported or unknown binary format").to_string())
     } else if !slot_present {
-        TemplateStatus::Invalid("Embedded config slot is missing".to_string())
+        TemplateStatus::Invalid(t("Embedded config slot is missing").to_string())
     } else {
         TemplateStatus::Valid(format!(
-            "{} {} {} template is ready",
-            binary.platform, binary.format, binary.arch
+            "{} {} {} {}",
+            binary.platform,
+            binary.format,
+            binary.arch,
+            t("template is ready")
         ))
     };
     let validation = match &status {
-        TemplateStatus::Valid(notice) => format!("Validation: valid - {notice}"),
-        TemplateStatus::Invalid(notice) => format!("Validation: invalid - {notice}"),
-        TemplateStatus::Unknown(notice) => format!("Validation: not loaded - {notice}"),
+        TemplateStatus::Valid(notice) => format!("{}: {} - {notice}", t("Validation"), t("valid")),
+        TemplateStatus::Invalid(notice) => {
+            format!("{}: {} - {notice}", t("Validation"), t("invalid"))
+        }
+        TemplateStatus::Unknown(notice) => {
+            format!("{}: {} - {notice}", t("Validation"), t("not loaded"))
+        }
     };
     detail_lines.push(validation);
 

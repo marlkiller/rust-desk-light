@@ -7,3 +7,7 @@ port = 5169
 
 [auth]
 # token = "change-me"
+
+[ui]
+# theme = "system" # system, light, dark
+language = "en" # en, zh-CN

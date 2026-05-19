@@ -1,3 +1,4 @@
+use crate::i18n::t;
 use eframe::egui;
 use rdl_protocol::CommandKind;
 
@@ -22,7 +23,7 @@ pub fn render_toolbar_actions(
     gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    ui.label(crate::theme::muted_text("Quick").strong());
+    ui.label(crate::theme::muted_text(t("Quick")).strong());
     toolbar_command(
         ui,
         client_id,
@@ -62,10 +63,12 @@ pub fn render_toolbar_actions(
 }
 
 pub fn render_unavailable_client_menu(ui: &mut egui::Ui, client_id: &str, status: &str) {
-    ui.label(egui::RichText::new(format!("Client {status}")).strong());
-    ui.label("Remote commands are disabled until this client reconnects.");
+    ui.label(egui::RichText::new(format!("{} {status}", t("Client"))).strong());
+    ui.label(t(
+        "Remote commands are disabled until this client reconnects.",
+    ));
     ui.separator();
-    if ui.button("Copy Client ID").clicked() {
+    if ui.button(t("Copy Client ID")).clicked() {
         ui.ctx().copy_text(client_id.to_string());
         ui.close();
     }
@@ -249,7 +252,7 @@ fn render_live_control(
         })
         .response;
     if !gui_available {
-        response.on_hover_text("Disabled: selected client has no GUI session");
+        response.on_hover_text(t("Disabled: selected client has no GUI session"));
     }
 }
 
@@ -303,7 +306,7 @@ fn render_user_interaction(
         })
         .response;
     if !gui_available {
-        response.on_hover_text("Disabled: selected client has no GUI session");
+        response.on_hover_text(t("Disabled: selected client has no GUI session"));
     }
 }
 
@@ -398,32 +401,33 @@ fn render_plugins(
 fn toolbar_command(
     ui: &mut egui::Ui,
     client_id: &str,
-    label: &str,
+    label: &'static str,
     command: CommandKind,
     enabled: bool,
-    disabled_hover: &str,
+    disabled_hover: &'static str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     let response = ui.add_enabled(
         enabled,
-        egui::Button::new(format!("{} {}", command_icon(&command), label)),
+        egui::Button::new(format!("{} {}", command_icon(&command), t(label))),
     );
     if response.clicked() {
         send_command(client_id, command);
     }
     if !enabled && !disabled_hover.is_empty() {
-        response.on_hover_text(disabled_hover);
+        response.on_hover_text(t(disabled_hover));
     }
 }
 
 fn menu_command(
     ui: &mut egui::Ui,
     client_id: &str,
-    label: &str,
+    label: &'static str,
     command: CommandKind,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     let icon = command_icon(&command);
+    let label = t(label);
     let label = if command_is_implemented(&command) {
         label.to_string()
     } else {
@@ -435,8 +439,8 @@ fn menu_command(
     }
 }
 
-fn menu_title(icon: &str, label: &str) -> String {
-    format!("{icon} {label}")
+fn menu_title(icon: &str, label: &'static str) -> String {
+    format!("{icon} {}", t(label))
 }
 
 fn command_icon(command: &CommandKind) -> &'static str {

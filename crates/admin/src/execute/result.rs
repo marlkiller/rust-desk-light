@@ -1,21 +1,22 @@
 use super::ui;
+use crate::i18n::t;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 
 pub(super) fn status_text(accepted: bool, detail: &str) -> String {
     if !accepted {
-        return "Rejected".to_string();
+        return t("Rejected").to_string();
     }
     detail
         .lines()
         .find_map(|line| line.strip_prefix("status="))
         .map(|status| match status.trim() {
-            "success" => "Completed".to_string(),
-            "failed" => "Failed".to_string(),
-            other if !other.is_empty() => format!("Status: {other}"),
-            _ => "Completed".to_string(),
+            "success" => t("Completed").to_string(),
+            "failed" => t("Failed").to_string(),
+            other if !other.is_empty() => format!("{}: {other}", t("Status")),
+            _ => t("Completed").to_string(),
         })
-        .unwrap_or_else(|| "Completed".to_string())
+        .unwrap_or_else(|| t("Completed").to_string())
 }
 
 pub(super) fn output_text(detail: &str) -> String {
@@ -68,14 +69,14 @@ pub(super) fn render(ui: &mut egui::Ui, result_detail: &Arc<Mutex<String>>) {
     ui.separator();
     ui.add_space(6.0);
     ui.label(
-        egui::RichText::new("Output")
+        egui::RichText::new(t("Output"))
             .size(12.0)
             .color(crate::theme::palette().muted),
     );
     ui.add_space(4.0);
     let height = ui.available_height().clamp(96.0, 180.0);
     let mut output = if detail.trim().is_empty() {
-        "No output yet".to_string()
+        t("No output yet").to_string()
     } else {
         detail
     };
