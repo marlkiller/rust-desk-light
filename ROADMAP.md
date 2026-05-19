@@ -53,11 +53,16 @@
 
 - [ ] Improve conflict handling: overwrite, skip, rename.
 
+### Reverse Proxy
+
+- [ ] Add a Quasar-style reverse proxy for the three-part architecture: Admin opens a local SOCKS5 listener, Server only routes framed proxy messages, and the selected Client opens outbound TCP connections to target hosts.
+- [ ] Support per-connection proxy streams with open, data, and close messages so browser/tool traffic can flow through a chosen remote Client.
+- [ ] Keep this separate from client/server outbound network proxy settings; this feature is a remote network egress tunnel, not an HTTP/SOCKS proxy used to reach the RDL server.
+
 ### Menu TODOs
 
 - Move To Group.
 - Clone Client Settings.
-- Proxy.
 - Create Task.
 - Command Preset.
 - Plugin Manager.

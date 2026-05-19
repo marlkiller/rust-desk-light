@@ -220,6 +220,14 @@ fn render_remote_management(
             CommandKind::PerformanceMonitor,
             send_command,
         );
+        ui.separator();
+        menu_command(
+            ui,
+            client_id,
+            "Reverse Proxy",
+            CommandKind::Proxy,
+            send_command,
+        );
     });
 }
 
@@ -331,8 +339,6 @@ fn render_system_info(
             CommandKind::Clipboard,
             send_command,
         );
-        ui.separator();
-        menu_command(ui, client_id, "Proxy", CommandKind::Proxy, send_command);
     });
 }
 
@@ -511,6 +517,7 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::EventLog
             | CommandKind::ActiveConnections
             | CommandKind::PerformanceMonitor
+            | CommandKind::Proxy
             | CommandKind::TextChat
             | CommandKind::VoiceChat
             | CommandKind::OpenTextInNotepad

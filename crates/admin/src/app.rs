@@ -2,7 +2,7 @@ mod client_builder;
 mod client_map;
 mod client_table;
 mod command_result;
-mod event;
+pub(crate) mod event;
 mod file_transfer;
 mod network;
 mod payload;
@@ -379,6 +379,7 @@ struct AdminApp {
     audio_udp_sessions: HashMap<String, AudioUdpSession>,
     audio_udp_next_stream_id: u64,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
+    proxy_windows: Vec<remote_management::reverse_proxy::ReverseProxyWindow>,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     voice_chat_windows: Vec<user_interaction::voice_chat::VoiceChatWindow>,
     interaction_command_windows: Vec<user_interaction::InteractionCommandWindow>,
@@ -846,6 +847,7 @@ impl AdminApp {
             audio_udp_sessions: HashMap::new(),
             audio_udp_next_stream_id: now_epoch_ms() as u64,
             terminal_windows: Vec::new(),
+            proxy_windows: Vec::new(),
             chat_windows: Vec::new(),
             voice_chat_windows: Vec::new(),
             voice_audio_tx,
@@ -893,6 +895,7 @@ impl AdminApp {
                     self.stop_all_audio_udp_sessions();
                     self.stop_all_voice_udp_sessions();
                     self.clear_voice_udp_senders();
+                    remote_management::reverse_proxy::stop_all(&mut self.proxy_windows);
                     for client in &mut self.clients {
                         client.status = ClientStatus::Offline;
                     }
@@ -1093,6 +1096,44 @@ impl AdminApp {
                             message,
                         );
                     }
+                }
+                AdminEvent::ProxyOpenResult {
+                    client_id,
+                    stream_id,
+                    accepted,
+                    detail,
+                } => {
+                    remote_management::reverse_proxy::handle_open_result(
+                        &mut self.proxy_windows,
+                        &client_id,
+                        stream_id,
+                        accepted,
+                        detail,
+                    );
+                }
+                AdminEvent::ProxyData {
+                    client_id,
+                    stream_id,
+                    bytes,
+                } => {
+                    remote_management::reverse_proxy::handle_data(
+                        &mut self.proxy_windows,
+                        &client_id,
+                        stream_id,
+                        bytes,
+                    );
+                }
+                AdminEvent::ProxyClose {
+                    client_id,
+                    stream_id,
+                    reason,
+                } => {
+                    remote_management::reverse_proxy::handle_close(
+                        &mut self.proxy_windows,
+                        &client_id,
+                        stream_id,
+                        reason,
+                    );
                 }
                 AdminEvent::Log(line) => self.push_log(line),
             }
@@ -1512,6 +1553,10 @@ impl AdminApp {
             self.open_terminal_window(client_id);
             return;
         }
+        if command == CommandKind::Proxy {
+            self.open_proxy_window(client_id);
+            return;
+        }
         if command == CommandKind::RemoteDesktop {
             self.open_desktop_window(client_id);
             return;
@@ -1589,6 +1634,16 @@ impl AdminApp {
             hostname,
             username,
             os,
+        );
+    }
+
+    fn open_proxy_window(&mut self, client_id: &str) {
+        let (hostname, username) = self.client_window_identity(client_id);
+        remote_management::reverse_proxy::open_window(
+            &mut self.proxy_windows,
+            client_id,
+            hostname,
+            username,
         );
     }
 
@@ -2914,6 +2969,14 @@ impl AdminApp {
             });
             self.push_log(format!("sent remote_terminal to {}", outbound.client_id));
         }
+    }
+
+    fn render_proxy_windows(&mut self, ctx: &egui::Context) {
+        remote_management::reverse_proxy::render_windows(
+            ctx,
+            &mut self.proxy_windows,
+            &self.input_tx,
+        );
     }
 }
 

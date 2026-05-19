@@ -6,13 +6,13 @@ use rdl_protocol::{
 use std::sync::{mpsc::Sender, Arc, Mutex};
 
 #[derive(Clone)]
-pub(super) struct ReconnectEndpoint {
+pub(crate) struct ReconnectEndpoint {
     pub(super) ip: String,
     pub(super) port: u16,
     pub(super) auth_token: String,
 }
 
-pub(super) enum AdminInput {
+pub(crate) enum AdminInput {
     Command {
         target_id: String,
         command: CommandKind,
@@ -37,6 +37,7 @@ pub(super) enum AdminInput {
         payload: String,
     },
     FileTransfer(Message),
+    Proxy(Message),
     Reconnect {
         reason: String,
         endpoint: Option<ReconnectEndpoint>,
@@ -105,6 +106,22 @@ pub(super) enum AdminEvent {
         bytes: Vec<u8>,
     },
     FileTransfer(Message),
+    ProxyOpenResult {
+        client_id: String,
+        stream_id: u64,
+        accepted: bool,
+        detail: String,
+    },
+    ProxyData {
+        client_id: String,
+        stream_id: u64,
+        bytes: Vec<u8>,
+    },
+    ProxyClose {
+        client_id: String,
+        stream_id: u64,
+        reason: String,
+    },
     Log(String),
 }
 

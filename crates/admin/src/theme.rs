@@ -288,6 +288,10 @@ pub(crate) fn map_label_color(alpha: u8) -> egui::Color32 {
 
 pub(crate) const CONTROL_HEIGHT: f32 = 28.0;
 pub(crate) const COMPACT_CONTROL_HEIGHT: f32 = 24.0;
+pub(crate) const PANEL_MARGIN: f32 = 8.0;
+pub(crate) const SECTION_GAP: f32 = 6.0;
+pub(crate) const TABLE_HEADER_HEIGHT: f32 = COMPACT_CONTROL_HEIGHT;
+pub(crate) const TABLE_ROW_HEIGHT: f32 = COMPACT_CONTROL_HEIGHT;
 
 pub(crate) fn panel_frame() -> egui::Frame {
     let palette = palette();

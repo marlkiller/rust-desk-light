@@ -12,8 +12,9 @@ use rdl_protocol::{
     audio_udp, now_epoch_ms, write_envelope_with_token, AudioSource, CommandKind, EnvelopeDecoder,
     FileTransferAction, FileTransferDirection, Message, Role, VideoSource,
 };
-use std::io;
-use std::net::{TcpStream, UdpSocket};
+use std::collections::HashMap;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, TcpStream, UdpSocket};
 #[cfg(feature = "gui")]
 use std::sync::Mutex;
 use std::sync::{
@@ -40,6 +41,8 @@ const AUDIO_STREAM_REPORT_INTERVAL_MS: u64 = 1_000;
 const AUDIO_UDP_REGISTER_INTERVAL_MS: u64 = 250;
 const AUDIO_UDP_RECV_TIMEOUT_MS: u64 = 20;
 const AUDIO_UDP_MAX_PAYLOAD_BYTES: usize = 1_200;
+const PROXY_BUFFER_BYTES: usize = 16 * 1024;
+const PROXY_WRITE_POLL_MS: u64 = 50;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
@@ -279,7 +282,13 @@ fn client_connection_once(
     let mut voice_chat_player: Option<crate::live_control::AudioOutputPlayer> = None;
     let mut voice_chat_invite_udp_endpoint: Option<AudioUdpEndpoint> = None;
     let mut voice_chat_udp_stop: Option<Arc<AtomicBool>> = None;
+    let mut proxy_streams = HashMap::<u64, ClientProxyStream>::new();
+    let (proxy_done_tx, proxy_done_rx) = mpsc::channel::<u64>();
     loop {
+        while let Ok(stream_id) = proxy_done_rx.try_recv() {
+            proxy_streams.remove(&stream_id);
+        }
+
         while let Ok(input) = input_rx.try_recv() {
             match input {
                 ClientInput::ChatReply { text } => queue_message(
@@ -959,6 +968,91 @@ fn client_connection_once(
                     _ => {}
                 },
             },
+            Message::ProxyOpen {
+                target_id,
+                stream_id,
+                host,
+                port,
+            } => {
+                if target_id != identity.id {
+                    continue;
+                }
+                if let Some(existing) = proxy_streams.remove(&stream_id) {
+                    existing.stop.store(true, Ordering::Relaxed);
+                }
+                let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>();
+                let stop = Arc::new(AtomicBool::new(false));
+                proxy_streams.insert(
+                    stream_id,
+                    ClientProxyStream {
+                        data_tx,
+                        stop: stop.clone(),
+                    },
+                );
+                let worker_high_tx = out_tx.clone();
+                let worker_bulk_tx = bulk_out_tx.clone();
+                let worker_token = session_token.clone();
+                let worker_done_tx = proxy_done_tx.clone();
+                thread::spawn(move || {
+                    client_proxy_stream_loop(
+                        target_id,
+                        stream_id,
+                        host,
+                        port,
+                        data_rx,
+                        worker_high_tx,
+                        worker_bulk_tx,
+                        worker_token,
+                        stop,
+                        worker_done_tx,
+                    );
+                });
+            }
+            Message::ProxyData {
+                client_id,
+                stream_id,
+                bytes,
+            } => {
+                if client_id != identity.id {
+                    continue;
+                }
+                let Some(stream) = proxy_streams.get(&stream_id) else {
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::ProxyClose {
+                            client_id,
+                            stream_id,
+                            reason: "proxy stream is not open".to_string(),
+                        },
+                    );
+                    continue;
+                };
+                if stream.data_tx.send(bytes).is_err() {
+                    proxy_streams.remove(&stream_id);
+                    let _ = queue_message(
+                        &out_tx,
+                        &session_token,
+                        Message::ProxyClose {
+                            client_id,
+                            stream_id,
+                            reason: "proxy target writer stopped".to_string(),
+                        },
+                    );
+                }
+            }
+            Message::ProxyClose {
+                client_id,
+                stream_id,
+                reason: _,
+            } => {
+                if client_id != identity.id {
+                    continue;
+                }
+                if let Some(stream) = proxy_streams.remove(&stream_id) {
+                    stream.stop.store(true, Ordering::Relaxed);
+                }
+            }
             Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
             Message::Error { detail } if detail.starts_with("auth failed") => {
                 event_sink.send(ClientEvent::Log(format!("server: {detail}")));
@@ -1411,6 +1505,11 @@ struct ClientOutbound {
     message: Message,
 }
 
+struct ClientProxyStream {
+    data_tx: Sender<Vec<u8>>,
+    stop: Arc<AtomicBool>,
+}
+
 struct DesktopStreamState {
     running: AtomicBool,
     generation: std::sync::atomic::AtomicU64,
@@ -1747,6 +1846,205 @@ fn write_client_outbound(
         return false;
     }
     true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn client_proxy_stream_loop(
+    client_id: String,
+    stream_id: u64,
+    host: String,
+    port: u16,
+    data_rx: Receiver<Vec<u8>>,
+    out_tx: SyncSender<ClientOutbound>,
+    bulk_out_tx: SyncSender<ClientOutbound>,
+    session_token: String,
+    stop: Arc<AtomicBool>,
+    done_tx: Sender<u64>,
+) {
+    let addr_label = format!("{host}:{port}");
+    let mut target = match TcpStream::connect((host.as_str(), port)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = queue_message(
+                &out_tx,
+                &session_token,
+                Message::ProxyOpenResult {
+                    client_id,
+                    stream_id,
+                    accepted: false,
+                    detail: format!("connect {addr_label} failed: {error}"),
+                },
+            );
+            let _ = done_tx.send(stream_id);
+            return;
+        }
+    };
+    let reader = match target.try_clone() {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = queue_message(
+                &out_tx,
+                &session_token,
+                Message::ProxyOpenResult {
+                    client_id,
+                    stream_id,
+                    accepted: false,
+                    detail: format!("clone target stream failed: {error}"),
+                },
+            );
+            let _ = done_tx.send(stream_id);
+            return;
+        }
+    };
+    let _ = target.set_nodelay(true);
+    let _ = reader.set_nodelay(true);
+
+    if queue_message(
+        &out_tx,
+        &session_token,
+        Message::ProxyOpenResult {
+            client_id: client_id.clone(),
+            stream_id,
+            accepted: true,
+            detail: format!("connected {addr_label}"),
+        },
+    )
+    .is_err()
+    {
+        let _ = done_tx.send(stream_id);
+        return;
+    }
+
+    let close_sent = Arc::new(AtomicBool::new(false));
+    let reader_close_sent = close_sent.clone();
+    let reader_client_id = client_id.clone();
+    let reader_token = session_token.clone();
+    let reader_stop = stop.clone();
+    let reader_done_tx = done_tx.clone();
+    thread::spawn(move || {
+        client_proxy_target_reader_loop(
+            reader,
+            reader_client_id,
+            stream_id,
+            bulk_out_tx,
+            reader_token,
+            reader_stop,
+            reader_close_sent,
+            reader_done_tx,
+        );
+    });
+
+    while !stop.load(Ordering::Relaxed) {
+        match data_rx.recv_timeout(Duration::from_millis(PROXY_WRITE_POLL_MS)) {
+            Ok(bytes) => {
+                if let Err(error) = target.write_all(&bytes) {
+                    send_proxy_close_once(
+                        &out_tx,
+                        &session_token,
+                        &client_id,
+                        stream_id,
+                        format!("target write failed: {error}"),
+                        &close_sent,
+                    );
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = target.shutdown(Shutdown::Both);
+    send_proxy_close_once(
+        &out_tx,
+        &session_token,
+        &client_id,
+        stream_id,
+        "proxy stream closed".to_string(),
+        &close_sent,
+    );
+    let _ = done_tx.send(stream_id);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn client_proxy_target_reader_loop(
+    mut target: TcpStream,
+    client_id: String,
+    stream_id: u64,
+    bulk_out_tx: SyncSender<ClientOutbound>,
+    session_token: String,
+    stop: Arc<AtomicBool>,
+    close_sent: Arc<AtomicBool>,
+    done_tx: Sender<u64>,
+) {
+    let mut buffer = [0_u8; PROXY_BUFFER_BYTES];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        match target.read(&mut buffer) {
+            Ok(0) => {
+                send_proxy_close_once(
+                    &bulk_out_tx,
+                    &session_token,
+                    &client_id,
+                    stream_id,
+                    "target closed".to_string(),
+                    &close_sent,
+                );
+                break;
+            }
+            Ok(len) => {
+                if queue_message(
+                    &bulk_out_tx,
+                    &session_token,
+                    Message::ProxyData {
+                        client_id: client_id.clone(),
+                        stream_id,
+                        bytes: buffer[..len].to_vec(),
+                    },
+                )
+                .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) => {
+                send_proxy_close_once(
+                    &bulk_out_tx,
+                    &session_token,
+                    &client_id,
+                    stream_id,
+                    format!("target read failed: {error}"),
+                    &close_sent,
+                );
+                break;
+            }
+        }
+    }
+    let _ = target.shutdown(Shutdown::Both);
+    let _ = done_tx.send(stream_id);
+}
+
+fn send_proxy_close_once(
+    out_tx: &SyncSender<ClientOutbound>,
+    session_token: &str,
+    client_id: &str,
+    stream_id: u64,
+    reason: String,
+    close_sent: &AtomicBool,
+) {
+    if close_sent.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let _ = queue_message(
+        out_tx,
+        session_token,
+        Message::ProxyClose {
+            client_id: client_id.to_string(),
+            stream_id,
+            reason,
+        },
+    );
 }
 
 fn command_ack_send_failure(

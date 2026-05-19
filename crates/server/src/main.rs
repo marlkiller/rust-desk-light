@@ -88,6 +88,7 @@ struct Peer {
 }
 
 type FileTransferKey = (String, u64, &'static str);
+type ProxyStreamKey = (String, u64);
 
 #[derive(Clone)]
 struct AuthConfig {
@@ -517,13 +518,14 @@ fn server_message_is_bulk(message: &Message) -> bool {
                 | FileTransferAction::Chunk
                 | FileTransferAction::Progress,
             ..
-        }
+        } | Message::ProxyData { .. }
     )
 }
 
 fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthConfig) {
     let mut peers: HashMap<usize, Peer> = HashMap::new();
     let mut cancelled_file_transfers = HashSet::<FileTransferKey>::new();
+    let mut proxy_routes = HashMap::<ProxyStreamKey, usize>::new();
 
     loop {
         let event = match events_rx.recv_timeout(Duration::from_millis(MAINTENANCE_TICK_MS)) {
@@ -922,6 +924,132 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthC
                             send_audio_error(peer_id, &target_id, source, error, &peers);
                         }
                     }
+                    Message::ProxyOpen {
+                        target_id,
+                        stream_id,
+                        host,
+                        port,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        if peer_role(peer_id, &peers) != Some(Role::Admin) {
+                            eprintln!("peer #{peer_id} sent proxy open without admin role");
+                            continue;
+                        }
+                        println!(
+                            "audit event=proxy_open peer=#{peer_id} identity={} client={} stream={} target={}:{}",
+                            peer_identity(peer_id, &peers),
+                            target_id,
+                            stream_id,
+                            host,
+                            port
+                        );
+                        let key = (target_id.clone(), stream_id);
+                        proxy_routes.insert(key.clone(), peer_id);
+                        if let Some(error) =
+                            route_proxy_open_to_client(&peers, &target_id, stream_id, host, port)
+                        {
+                            proxy_routes.remove(&key);
+                            send_proxy_open_result(
+                                peer_id, &target_id, stream_id, false, error, &peers,
+                            );
+                        }
+                    }
+                    Message::ProxyOpenResult {
+                        client_id,
+                        stream_id,
+                        accepted,
+                        detail,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        if peer_role(peer_id, &peers) != Some(Role::Client) {
+                            eprintln!("peer #{peer_id} sent proxy open result without client role");
+                            continue;
+                        }
+                        let key = (client_id.clone(), stream_id);
+                        if let Some(error) = route_proxy_to_admin(
+                            &peers,
+                            &proxy_routes,
+                            &key,
+                            Message::ProxyOpenResult {
+                                client_id: client_id.clone(),
+                                stream_id,
+                                accepted,
+                                detail,
+                            },
+                        ) {
+                            eprintln!("proxy open result route failed: {error}");
+                        }
+                        if !accepted {
+                            proxy_routes.remove(&key);
+                        }
+                    }
+                    Message::ProxyData {
+                        client_id,
+                        stream_id,
+                        bytes,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        let key = (client_id.clone(), stream_id);
+                        match peer_role(peer_id, &peers) {
+                            Some(Role::Admin) => {
+                                if let Some(error) =
+                                    route_proxy_data_to_client(&peers, &client_id, stream_id, bytes)
+                                {
+                                    proxy_routes.remove(&key);
+                                    send_proxy_close(peer_id, &client_id, stream_id, error, &peers);
+                                }
+                            }
+                            Some(Role::Client) => {
+                                if let Some(error) = route_proxy_to_admin(
+                                    &peers,
+                                    &proxy_routes,
+                                    &key,
+                                    Message::ProxyData {
+                                        client_id,
+                                        stream_id,
+                                        bytes,
+                                    },
+                                ) {
+                                    eprintln!("proxy data route failed: {error}");
+                                }
+                            }
+                            _ => eprintln!("peer #{peer_id} sent proxy data before registration"),
+                        }
+                    }
+                    Message::ProxyClose {
+                        client_id,
+                        stream_id,
+                        reason,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        let key = (client_id.clone(), stream_id);
+                        match peer_role(peer_id, &peers) {
+                            Some(Role::Admin) => {
+                                if let Some(error) = route_proxy_close_to_client(
+                                    &peers, &client_id, stream_id, reason,
+                                ) {
+                                    send_proxy_close(peer_id, &client_id, stream_id, error, &peers);
+                                }
+                                proxy_routes.remove(&key);
+                            }
+                            Some(Role::Client) => {
+                                if let Some(error) = route_proxy_to_admin(
+                                    &peers,
+                                    &proxy_routes,
+                                    &key,
+                                    Message::ProxyClose {
+                                        client_id,
+                                        stream_id,
+                                        reason,
+                                    },
+                                ) {
+                                    eprintln!("proxy close route failed: {error}");
+                                }
+                                proxy_routes.remove(&key);
+                            }
+                            _ => eprintln!("peer #{peer_id} sent proxy close before registration"),
+                        }
+                    }
                     Message::Ping => {
                         mark_seen(peer_id, &mut peers);
                         if let Some(peer) = peers.get(&peer_id) {
@@ -948,6 +1076,7 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthC
                     .unwrap_or("unknown")
                     .to_string();
                 println!("audit event=disconnect peer=#{peer_id} identity={identity}");
+                remove_proxy_routes_for_peer(peer_id, removed.as_ref(), &mut proxy_routes, &peers);
                 if removed.and_then(|peer| peer.client_info).is_some() {
                     broadcast_clients(&peers);
                 }
@@ -955,6 +1084,10 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthC
         }
         maintain_peers(&mut peers);
     }
+}
+
+fn peer_role(peer_id: usize, peers: &HashMap<usize, Peer>) -> Option<Role> {
+    peers.get(&peer_id).and_then(|peer| peer.role.clone())
 }
 
 fn mark_seen(peer_id: usize, peers: &mut HashMap<usize, Peer>) {
@@ -1170,6 +1303,97 @@ fn route_audio_control_to_client(
         .map(|error| error.to_string())
 }
 
+fn route_proxy_open_to_client(
+    peers: &HashMap<usize, Peer>,
+    target_id: &str,
+    stream_id: u64,
+    host: String,
+    port: u16,
+) -> Option<String> {
+    let Some(peer) = find_client_peer(peers, target_id) else {
+        return Some(format!("client '{target_id}' is offline"));
+    };
+    peer.sender
+        .send(Message::ProxyOpen {
+            target_id: target_id.to_string(),
+            stream_id,
+            host,
+            port,
+        })
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn route_proxy_data_to_client(
+    peers: &HashMap<usize, Peer>,
+    client_id: &str,
+    stream_id: u64,
+    bytes: Vec<u8>,
+) -> Option<String> {
+    let Some(peer) = find_client_peer(peers, client_id) else {
+        return Some(format!("client '{client_id}' is offline"));
+    };
+    peer.sender
+        .send(Message::ProxyData {
+            client_id: client_id.to_string(),
+            stream_id,
+            bytes,
+        })
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn route_proxy_close_to_client(
+    peers: &HashMap<usize, Peer>,
+    client_id: &str,
+    stream_id: u64,
+    reason: String,
+) -> Option<String> {
+    let Some(peer) = find_client_peer(peers, client_id) else {
+        return Some(format!("client '{client_id}' is offline"));
+    };
+    peer.sender
+        .send(Message::ProxyClose {
+            client_id: client_id.to_string(),
+            stream_id,
+            reason,
+        })
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn route_proxy_to_admin(
+    peers: &HashMap<usize, Peer>,
+    proxy_routes: &HashMap<ProxyStreamKey, usize>,
+    key: &ProxyStreamKey,
+    message: Message,
+) -> Option<String> {
+    let Some(admin_peer_id) = proxy_routes.get(key) else {
+        return Some(format!(
+            "proxy stream {} for client '{}' has no admin route",
+            key.1, key.0
+        ));
+    };
+    let Some(peer) = peers.get(admin_peer_id) else {
+        return Some(format!("admin peer #{admin_peer_id} is offline"));
+    };
+    peer.sender
+        .send(message)
+        .err()
+        .map(|error| error.to_string())
+}
+
+fn find_client_peer<'a>(peers: &'a HashMap<usize, Peer>, client_id: &str) -> Option<&'a Peer> {
+    peers.values().find(|peer| {
+        peer.role == Some(Role::Client)
+            && peer
+                .client_info
+                .as_ref()
+                .map(|info| info.id == client_id)
+                .unwrap_or(false)
+    })
+}
+
 fn route_file_transfer_to_client(
     peers: &HashMap<usize, Peer>,
     message: &Message,
@@ -1353,6 +1577,79 @@ fn send_audio_error(
             accepted: false,
             detail: format!("{prefix}_error\nmessage={error}"),
         });
+    }
+}
+
+fn send_proxy_open_result(
+    peer_id: usize,
+    client_id: &str,
+    stream_id: u64,
+    accepted: bool,
+    detail: String,
+    peers: &HashMap<usize, Peer>,
+) {
+    if let Some(peer) = peers.get(&peer_id) {
+        let _ = peer.sender.send(Message::ProxyOpenResult {
+            client_id: client_id.to_string(),
+            stream_id,
+            accepted,
+            detail,
+        });
+    }
+}
+
+fn send_proxy_close(
+    peer_id: usize,
+    client_id: &str,
+    stream_id: u64,
+    reason: String,
+    peers: &HashMap<usize, Peer>,
+) {
+    if let Some(peer) = peers.get(&peer_id) {
+        let _ = peer.sender.send(Message::ProxyClose {
+            client_id: client_id.to_string(),
+            stream_id,
+            reason,
+        });
+    }
+}
+
+fn remove_proxy_routes_for_peer(
+    peer_id: usize,
+    removed: Option<&Peer>,
+    proxy_routes: &mut HashMap<ProxyStreamKey, usize>,
+    peers: &HashMap<usize, Peer>,
+) {
+    let removed_client_id = removed
+        .and_then(|peer| peer.client_info.as_ref())
+        .map(|info| info.id.clone());
+    let routes = proxy_routes
+        .iter()
+        .filter_map(|((client_id, stream_id), admin_peer_id)| {
+            if *admin_peer_id == peer_id || removed_client_id.as_deref() == Some(client_id) {
+                Some((client_id.clone(), *stream_id, *admin_peer_id))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    for (client_id, stream_id, admin_peer_id) in routes {
+        proxy_routes.remove(&(client_id.clone(), stream_id));
+        if admin_peer_id == peer_id {
+            let _ = route_proxy_close_to_client(
+                peers,
+                &client_id,
+                stream_id,
+                "admin disconnected".to_string(),
+            );
+        } else if let Some(peer) = peers.get(&admin_peer_id) {
+            let _ = peer.sender.send(Message::ProxyClose {
+                client_id,
+                stream_id,
+                reason: "client disconnected".to_string(),
+            });
+        }
     }
 }
 

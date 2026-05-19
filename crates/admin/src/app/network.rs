@@ -191,6 +191,9 @@ fn admin_connection_once(
                 AdminInput::FileTransfer(message) => {
                     send(&mut stream, &mut next_message_id, &session_token, message)
                 }
+                AdminInput::Proxy(message) => {
+                    send(&mut stream, &mut next_message_id, &session_token, message)
+                }
                 AdminInput::Reconnect { reason, endpoint } => {
                     debug_log!("debug event=admin_reconnect_request reason={reason}");
                     let _ = stream.shutdown(Shutdown::Both);
@@ -301,6 +304,41 @@ fn admin_connection_once(
                         }
                     }
                     event_sink.send(AdminEvent::FileTransfer(message));
+                }
+                Message::ProxyOpenResult {
+                    client_id,
+                    stream_id,
+                    accepted,
+                    detail,
+                } => {
+                    event_sink.send(AdminEvent::ProxyOpenResult {
+                        client_id,
+                        stream_id,
+                        accepted,
+                        detail,
+                    });
+                }
+                Message::ProxyData {
+                    client_id,
+                    stream_id,
+                    bytes,
+                } => {
+                    event_sink.send(AdminEvent::ProxyData {
+                        client_id,
+                        stream_id,
+                        bytes,
+                    });
+                }
+                Message::ProxyClose {
+                    client_id,
+                    stream_id,
+                    reason,
+                } => {
+                    event_sink.send(AdminEvent::ProxyClose {
+                        client_id,
+                        stream_id,
+                        reason,
+                    });
                 }
                 Message::Ping => send(
                     &mut stream,

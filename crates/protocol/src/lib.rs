@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_SERVER_IP: &str = "127.0.0.1";
 pub const DEFAULT_SERVER_PORT: u16 = 5169;
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const FRAME_MAGIC: [u8; 4] = *b"RDL1";
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 pub const REMOTE_TERMINAL_CANCEL: &str = "__rdl_terminal_cancel";
@@ -339,6 +339,48 @@ mod tests {
             panic!("expected clients message");
         };
         assert_eq!(clients[0].location, Some(location));
+    }
+
+    #[test]
+    fn proxy_messages_roundtrip_binary_data() {
+        let messages = [
+            Message::ProxyOpen {
+                target_id: "client-1".to_string(),
+                stream_id: 42,
+                host: "example.com".to_string(),
+                port: 443,
+            },
+            Message::ProxyOpenResult {
+                client_id: "client-1".to_string(),
+                stream_id: 42,
+                accepted: true,
+                detail: "connected example.com:443".to_string(),
+            },
+            Message::ProxyData {
+                client_id: "client-1".to_string(),
+                stream_id: 42,
+                bytes: vec![0, 1, 2, 255],
+            },
+            Message::ProxyClose {
+                client_id: "client-1".to_string(),
+                stream_id: 42,
+                reason: "closed".to_string(),
+            },
+        ];
+
+        for message in messages {
+            let envelope = Envelope {
+                version: PROTOCOL_VERSION,
+                message_id: 1,
+                correlation_id: None,
+                role: Role::Admin,
+                session_token: "token".to_string(),
+                message,
+            };
+            let frame = encode_envelope(&envelope).unwrap();
+            let decoded = decode_envelope(&frame).unwrap();
+            assert_eq!(decoded.message, envelope.message);
+        }
     }
 }
 
@@ -927,6 +969,28 @@ pub enum Message {
         source: AudioSource,
         payload: String,
     },
+    ProxyOpen {
+        target_id: String,
+        stream_id: u64,
+        host: String,
+        port: u16,
+    },
+    ProxyOpenResult {
+        client_id: String,
+        stream_id: u64,
+        accepted: bool,
+        detail: String,
+    },
+    ProxyData {
+        client_id: String,
+        stream_id: u64,
+        bytes: Vec<u8>,
+    },
+    ProxyClose {
+        client_id: String,
+        stream_id: u64,
+        reason: String,
+    },
     Error {
         detail: String,
     },
@@ -957,6 +1021,10 @@ impl Message {
             Self::CommandOutput { .. } => 15,
             Self::FileTransfer { .. } => 16,
             Self::AudioControl { .. } => 17,
+            Self::ProxyOpen { .. } => 18,
+            Self::ProxyOpenResult { .. } => 19,
+            Self::ProxyData { .. } => 20,
+            Self::ProxyClose { .. } => 21,
         }
     }
 
@@ -1121,6 +1189,46 @@ impl Message {
                 writer.u8(source.to_code());
                 writer.string(payload);
             }
+            Self::ProxyOpen {
+                target_id,
+                stream_id,
+                host,
+                port,
+            } => {
+                writer.string(target_id);
+                writer.u64(*stream_id);
+                writer.string(host);
+                writer.u16(*port);
+            }
+            Self::ProxyOpenResult {
+                client_id,
+                stream_id,
+                accepted,
+                detail,
+            } => {
+                writer.string(client_id);
+                writer.u64(*stream_id);
+                writer.bool(*accepted);
+                writer.string(detail);
+            }
+            Self::ProxyData {
+                client_id,
+                stream_id,
+                bytes,
+            } => {
+                writer.string(client_id);
+                writer.u64(*stream_id);
+                writer.byte_vec(bytes);
+            }
+            Self::ProxyClose {
+                client_id,
+                stream_id,
+                reason,
+            } => {
+                writer.string(client_id);
+                writer.u64(*stream_id);
+                writer.string(reason);
+            }
             Self::Error { detail } => writer.string(detail),
             Self::Session { token } => writer.string(token),
         }
@@ -1256,6 +1364,28 @@ impl Message {
                 target_id: reader.string()?,
                 source: AudioSource::from_code(reader.u8()?)?,
                 payload: reader.string()?,
+            },
+            18 => Self::ProxyOpen {
+                target_id: reader.string()?,
+                stream_id: reader.u64()?,
+                host: reader.string()?,
+                port: reader.u16()?,
+            },
+            19 => Self::ProxyOpenResult {
+                client_id: reader.string()?,
+                stream_id: reader.u64()?,
+                accepted: reader.bool()?,
+                detail: reader.string()?,
+            },
+            20 => Self::ProxyData {
+                client_id: reader.string()?,
+                stream_id: reader.u64()?,
+                bytes: reader.byte_vec()?,
+            },
+            21 => Self::ProxyClose {
+                client_id: reader.string()?,
+                stream_id: reader.u64()?,
+                reason: reader.string()?,
             },
             _ => return Err(ProtocolError::InvalidMessageKind(kind)),
         };
