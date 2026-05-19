@@ -1,5 +1,5 @@
 use crate::realtime_video::RealtimeVideoReceiver;
-use rdl_protocol::{write_envelope, FileTransferAction, Message, Role};
+use rdl_protocol::{write_envelope, FileTransferAction, FileTransferDirection, Message, Role};
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
@@ -93,13 +93,16 @@ pub(crate) fn message_is_bulk(message: &Message) -> bool {
     matches!(
         message,
         Message::FileTransfer {
-            action: FileTransferAction::Start
-                | FileTransferAction::Directory
+            direction: FileTransferDirection::Download,
+            action: FileTransferAction::Directory
                 | FileTransferAction::Chunk
-                | FileTransferAction::Progress
-                | FileTransferAction::Finish
-                | FileTransferAction::Cancel
                 | FileTransferAction::Complete,
+            ..
+        } | Message::FileTransfer {
+            direction: FileTransferDirection::Upload,
+            action: FileTransferAction::Directory
+                | FileTransferAction::Chunk
+                | FileTransferAction::Finish,
             ..
         } | Message::ProxyData { .. }
     )

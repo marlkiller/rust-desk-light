@@ -598,11 +598,7 @@ impl AdminApp {
             }
         }
         for (client_id, payload) in latest_desktop_frames {
-            if payload.starts_with("remote_desktop_frame\n") {
-                self.spawn_desktop_frame_decode(client_id, payload);
-            } else {
-                self.handle_desktop_ack(&client_id, true, payload);
-            }
+            self.handle_desktop_ack(&client_id, true, payload);
         }
         for (client_id, payload) in latest_camera_frames {
             self.spawn_camera_frame_decode(client_id, payload);

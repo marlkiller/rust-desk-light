@@ -5,7 +5,7 @@ use crate::payload::{
     video_source_command,
 };
 use crate::stream_state::DesktopStreamState;
-use rdl_protocol::{CommandKind, Message, VideoSource};
+use rdl_protocol::{Message, VideoSource};
 use std::io;
 use std::sync::{
     atomic::Ordering,
@@ -14,49 +14,6 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
-
-pub(crate) fn remote_desktop_stream_loop(
-    client_id: String,
-    start_payload: String,
-    out_tx: SyncSender<ClientOutbound>,
-    session_token: String,
-    stream_state: Arc<DesktopStreamState>,
-    generation: u64,
-) {
-    let screen = remote_desktop_value(&start_payload, "screen")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or_default();
-    let quality =
-        remote_desktop_value(&start_payload, "quality").unwrap_or_else(|| "medium".to_string());
-    let fps = video_fps_from_payload(&start_payload, &quality);
-    let interval = Duration::from_millis((1000 / fps).max(1));
-    while stream_state.running.load(Ordering::Relaxed)
-        && stream_state.generation.load(Ordering::Relaxed) == generation
-    {
-        let started = Instant::now();
-        let payload = crate::live_control::handle(
-            &CommandKind::RemoteDesktop,
-            &format!("action=screenshot\nscreen={screen}\nquality={quality}"),
-        );
-        if queue_message(
-            &out_tx,
-            &session_token,
-            Message::DesktopFrame {
-                client_id: client_id.clone(),
-                payload,
-            },
-        )
-        .is_err()
-        {
-            stream_state.running.store(false, Ordering::Relaxed);
-            break;
-        }
-        let elapsed = started.elapsed();
-        if elapsed < interval {
-            thread::sleep(interval - elapsed);
-        }
-    }
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn video_stream_loop(

@@ -4,7 +4,7 @@ use crate::audio_stream::{
     AudioUdpEndpoint, AudioUdpSender, AUDIO_STREAM_STOP_SETTLE_MS, AUDIO_UDP_RECV_TIMEOUT_MS,
 };
 use crate::live_control::realtime_video::latest_video_channel;
-use crate::live_video_stream::{remote_desktop_stream_loop, video_stream_loop};
+use crate::live_video_stream::video_stream_loop;
 use crate::outbound::{self, queue_file_transfer_reply, queue_message};
 use crate::payload::{
     desktop_input_reply_payload, desktop_payload_is_move, detail_value, remote_desktop_action,
@@ -26,7 +26,7 @@ use std::net::{TcpStream, UdpSocket};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver},
-    Arc,
+    Arc, Mutex,
 };
 use std::thread;
 use std::time::Duration;
@@ -131,6 +131,7 @@ fn client_connection_once(
     });
     let voice_chat_mic_muted = Arc::new(AtomicBool::new(false));
     let voice_chat_speaker_muted = Arc::new(AtomicBool::new(false));
+    let desktop_input_lock = Arc::new(Mutex::new(()));
     let mut voice_chat_player: Option<crate::live_control::AudioOutputPlayer> = None;
     let mut voice_chat_invite_udp_endpoint: Option<AudioUdpEndpoint> = None;
     let mut voice_chat_udp_stop: Option<Arc<AtomicBool>> = None;
@@ -571,26 +572,18 @@ fn client_connection_once(
 
                 match remote_desktop_action(&payload).as_deref() {
                     Some("start") => {
-                        desktop_stream.running.store(false, Ordering::Relaxed);
-                        let generation = desktop_stream
-                            .generation
-                            .fetch_add(1, Ordering::Relaxed)
-                            .saturating_add(1);
-                        thread::sleep(Duration::from_millis(5));
-                        desktop_stream.running.store(true, Ordering::Relaxed);
-                        let worker_tx = out_tx.clone();
-                        let worker_token = session_token.clone();
-                        let stream_state = desktop_stream.clone();
-                        thread::spawn(move || {
-                            remote_desktop_stream_loop(
-                                target_id,
-                                payload,
-                                worker_tx,
-                                worker_token,
-                                stream_state,
-                                generation,
-                            );
-                        });
+                        let _ = queue_message(
+                            &out_tx,
+                            &session_token,
+                            Message::DesktopFrame {
+                                client_id: target_id,
+                                payload: concat!(
+                                    "remote_desktop_error\n",
+                                    "message=remote desktop streaming requires video control"
+                                )
+                                .to_string(),
+                            },
+                        );
                     }
                     Some("stop") => {
                         desktop_stream.running.store(false, Ordering::Relaxed);
@@ -639,7 +632,12 @@ fn client_connection_once(
 
                 let worker_tx = out_tx.clone();
                 let worker_token = session_token.clone();
+                let input_lock = desktop_input_lock.clone();
                 thread::spawn(move || {
+                    let _input_guard = match input_lock.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
                     let should_reply = !desktop_payload_is_move(&payload);
                     let result = crate::live_control::handle(&CommandKind::RemoteDesktop, &payload);
                     let input_failed = result.starts_with("remote_desktop_error\n");

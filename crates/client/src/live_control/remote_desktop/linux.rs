@@ -25,13 +25,6 @@ pub(crate) mod capture {
         }
     }
 
-    pub(crate) fn capture_video_frame(
-        screen_index: usize,
-        quality: &str,
-    ) -> Result<RemoteDesktopVideoFrame, String> {
-        CaptureStream::new(screen_index, quality).and_then(|mut capture| capture.capture_frame())
-    }
-
     pub(crate) struct CaptureStream {
         screen: Screen,
         quality: QualityProfile,

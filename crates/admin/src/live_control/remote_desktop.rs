@@ -3,7 +3,6 @@ use crate::{
     theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
     windowing,
 };
-use base64::Engine;
 use eframe::egui;
 use std::path::Path;
 use std::sync::{
@@ -54,18 +53,6 @@ pub(crate) struct DesktopFrame {
     encoded_bytes: usize,
     format: String,
     image: egui::ColorImage,
-}
-
-pub(crate) fn decode_frame_payload(detail: &str) -> Result<DesktopFrame, String> {
-    let mut lines = detail.lines();
-    if lines.next().unwrap_or_default().trim() != "remote_desktop_frame" {
-        return Err("not a remote desktop frame payload".to_string());
-    }
-    match parse_frame(lines.collect::<Vec<_>>().as_slice()) {
-        DesktopResponse::Frame(frame) => Ok(frame),
-        DesktopResponse::Error(message) => Err(message),
-        _ => Err("remote desktop payload did not contain a frame".to_string()),
-    }
 }
 
 pub(crate) fn decode_video_frame(
@@ -279,9 +266,6 @@ pub(crate) fn handle_ack(
         window.status = DesktopStatus::Failed;
         return;
     }
-    let latency_ms = window
-        .pending_since
-        .map(|pending_since| pending_since.elapsed().as_millis());
     window.pending_since = None;
     match DesktopResponse::parse(&detail) {
         DesktopResponse::Screens(screens) => {
@@ -292,9 +276,6 @@ pub(crate) fn handle_ack(
             } else {
                 "Select a screen and click Start".to_string()
             };
-        }
-        DesktopResponse::Frame(frame) => {
-            handle_frame(window, frame, latency_ms, None);
         }
         DesktopResponse::Input(message) => {
             window.status = DesktopStatus::Live;
@@ -993,7 +974,6 @@ fn save_frame_to_path(frame: &DesktopFrame, path: &Path) -> Result<(), String> {
 
 enum DesktopResponse {
     Screens(Vec<RemoteScreen>),
-    Frame(DesktopFrame),
     Input(String),
     Error(String),
     Stopped,
@@ -1004,7 +984,9 @@ impl DesktopResponse {
         let mut lines = detail.lines();
         match lines.next().unwrap_or_default().trim() {
             "remote_desktop_screens" => parse_screens(lines.collect::<Vec<_>>().as_slice()),
-            "remote_desktop_frame" => parse_frame(lines.collect::<Vec<_>>().as_slice()),
+            "remote_desktop_frame" => {
+                Self::Error("legacy remote desktop frame payload is not supported".to_string())
+            }
             "remote_desktop_input" => {
                 let message = detail
                     .lines()
@@ -1045,56 +1027,6 @@ fn parse_screens(lines: &[&str]) -> DesktopResponse {
         });
     }
     DesktopResponse::Screens(screens)
-}
-
-fn parse_frame(lines: &[&str]) -> DesktopResponse {
-    let mut screen_width = 0;
-    let mut screen_height = 0;
-    let mut image_width = 0;
-    let mut image_height = 0;
-    let mut encoded_bytes = 0;
-    let mut format = "image".to_string();
-    let mut png_base64 = "";
-    for line in lines {
-        if let Some(rest) = line.strip_prefix("screen_width=") {
-            screen_width = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("screen_height=") {
-            screen_height = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("image_width=") {
-            image_width = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("image_height=") {
-            image_height = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("bytes=") {
-            encoded_bytes = rest.parse().unwrap_or_default();
-        } else if let Some(rest) = line.strip_prefix("format=") {
-            format = rest.to_string();
-        } else if let Some(rest) = line.strip_prefix("png_base64=") {
-            png_base64 = rest;
-        }
-    }
-    if screen_width == 0 || screen_height == 0 || image_width == 0 || image_height == 0 {
-        return DesktopResponse::Error("invalid remote frame metadata".to_string());
-    }
-    let bytes = match base64::engine::general_purpose::STANDARD.decode(png_base64) {
-        Ok(bytes) => bytes,
-        Err(error) => return DesktopResponse::Error(format!("decode frame failed: {error}")),
-    };
-    let image = match image::load_from_memory(&bytes) {
-        Ok(image) => image.to_rgba8(),
-        Err(error) => return DesktopResponse::Error(format!("load frame failed: {error}")),
-    };
-    let size = [image.width() as usize, image.height() as usize];
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-    DesktopResponse::Frame(DesktopFrame {
-        seq: rdl_protocol::now_epoch_ms() as u64,
-        screen_width,
-        screen_height,
-        image_width: size[0],
-        image_height: size[1],
-        encoded_bytes,
-        format,
-        image: color_image,
-    })
 }
 
 fn identity_title(hostname: &str, username: &str) -> String {

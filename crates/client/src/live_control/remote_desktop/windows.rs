@@ -5,7 +5,7 @@ pub(crate) mod capture {
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
     use std::ptr::{null, null_mut};
-    use windows_sys::Win32::Foundation::{LPARAM, RECT};
+    use windows_sys::Win32::Foundation::{GetLastError, LPARAM, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
         EnumDisplayMonitors, GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject,
@@ -44,13 +44,6 @@ pub(crate) mod capture {
             }
             Err(error) => format!("remote_desktop_error\nmessage={error}"),
         }
-    }
-
-    pub(crate) fn capture_video_frame(
-        screen_index: usize,
-        quality: &str,
-    ) -> Result<RemoteDesktopVideoFrame, String> {
-        CaptureStream::new(screen_index, quality).and_then(|mut capture| capture.capture_frame())
     }
 
     pub(crate) struct CaptureStream {
@@ -134,22 +127,7 @@ pub(crate) mod capture {
         }
 
         pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
-            let blit_ok = unsafe {
-                BitBlt(
-                    self.memory_dc,
-                    0,
-                    0,
-                    self.screen.width as i32,
-                    self.screen.height as i32,
-                    self.screen_dc,
-                    self.screen.x,
-                    self.screen.y,
-                    SRCCOPY | CAPTUREBLT,
-                )
-            };
-            if blit_ok == 0 {
-                return Err("BitBlt failed".to_string());
-            }
+            self.capture_to_bitmap()?;
             let dib_lines = unsafe {
                 GetDIBits(
                     self.memory_dc,
@@ -197,6 +175,71 @@ pub(crate) mod capture {
                 format: "jpeg".to_string(),
                 bytes: encoded,
             })
+        }
+
+        fn capture_to_bitmap(&mut self) -> Result<(), String> {
+            match self.bit_blt(SRCCOPY | CAPTUREBLT, "BitBlt CAPTUREBLT") {
+                Ok(()) => return Ok(()),
+                Err(first_error) => {
+                    if self.bit_blt(SRCCOPY, "BitBlt SRCCOPY").is_ok() {
+                        return Ok(());
+                    }
+                    self.refresh_screen_dc().map_err(|refresh_error| {
+                        format!("{first_error}; screen dc refresh failed: {refresh_error}")
+                    })?;
+                }
+            }
+
+            match self.bit_blt(SRCCOPY | CAPTUREBLT, "BitBlt CAPTUREBLT after dc refresh") {
+                Ok(()) => Ok(()),
+                Err(refreshed_error) => self
+                    .bit_blt(SRCCOPY, "BitBlt SRCCOPY after dc refresh")
+                    .map_err(|fallback_error| format!("{refreshed_error}; {fallback_error}")),
+            }
+        }
+
+        fn bit_blt(&self, raster_op: u32, label: &str) -> Result<(), String> {
+            let ok = unsafe {
+                BitBlt(
+                    self.memory_dc,
+                    0,
+                    0,
+                    self.screen.width as i32,
+                    self.screen.height as i32,
+                    self.screen_dc,
+                    self.screen.x,
+                    self.screen.y,
+                    raster_op,
+                )
+            };
+            if ok != 0 {
+                return Ok(());
+            }
+            Err(format!(
+                "{} failed: error={} screen={} origin={},{} size={}x{}",
+                label,
+                last_error_code(),
+                self.screen.index,
+                self.screen.x,
+                self.screen.y,
+                self.screen.width,
+                self.screen.height
+            ))
+        }
+
+        fn refresh_screen_dc(&mut self) -> Result<(), String> {
+            unsafe {
+                if !self.screen_dc.is_null() {
+                    ReleaseDC(null_mut(), self.screen_dc);
+                    self.screen_dc = null_mut();
+                }
+                let screen_dc = GetDC(null_mut());
+                if screen_dc.is_null() {
+                    return Err(format!("GetDC failed: error={}", last_error_code()));
+                }
+                self.screen_dc = screen_dc;
+            }
+            Ok(())
         }
     }
 
@@ -300,10 +343,14 @@ pub(crate) mod capture {
     fn sanitize(value: &str) -> String {
         value.replace(['\t', '\r', '\n'], " ")
     }
+
+    fn last_error_code() -> u32 {
+        unsafe { GetLastError() }
+    }
 }
 
 pub(crate) mod input {
-    use std::mem::size_of;
+    use std::{mem::size_of, thread, time::Duration};
 
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -315,6 +362,9 @@ pub(crate) mod input {
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
         SM_YVIRTUALSCREEN,
     };
+
+    const CLICK_MOVE_SETTLE: Duration = Duration::from_millis(8);
+    const CLICK_HOLD: Duration = Duration::from_millis(24);
 
     pub(crate) fn move_mouse(x: i32, y: i32) -> String {
         if let Err(error) = send_mouse_inputs(&[move_input(x, y)]) {
@@ -328,9 +378,15 @@ pub(crate) mod input {
             "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
             _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         };
-        if let Err(error) =
-            send_mouse_inputs(&[move_input(x, y), button_input(down), button_input(up)])
-        {
+        if let Err(error) = send_mouse_inputs(&[move_input(x, y)]) {
+            return format!("remote_desktop_error\nmessage={error}");
+        }
+        thread::sleep(CLICK_MOVE_SETTLE);
+        if let Err(error) = send_mouse_inputs(&[button_input(down)]) {
+            return format!("remote_desktop_error\nmessage={error}");
+        }
+        thread::sleep(CLICK_HOLD);
+        if let Err(error) = send_mouse_inputs(&[button_input(up)]) {
             return format!("remote_desktop_error\nmessage={error}");
         }
         format!("remote_desktop_input\nmessage=click {button} {x} {y}")

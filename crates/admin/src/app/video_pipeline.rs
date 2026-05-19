@@ -221,23 +221,6 @@ fn wait_for_video_frame<'a>(
 }
 
 impl AdminApp {
-    pub(super) fn spawn_desktop_frame_decode(&self, client_id: String, payload: String) {
-        let sink = AdminEventSink::new(
-            self.event_tx.clone(),
-            Some(self.repaint_handle.clone()),
-            None,
-        );
-        thread::spawn(move || {
-            let decode_started = Instant::now();
-            let result = live_control::remote_desktop::decode_frame_payload(&payload);
-            sink.send(AdminEvent::DecodedDesktopFrame {
-                client_id,
-                result,
-                decode_ms: Some(decode_started.elapsed().as_millis()),
-            });
-        });
-    }
-
     pub(super) fn spawn_camera_frame_decode(&self, client_id: String, payload: String) {
         let sink = AdminEventSink::new(
             self.event_tx.clone(),

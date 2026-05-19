@@ -1,8 +1,6 @@
 use std::process::Command;
 use std::time::Duration;
 
-use base64::Engine;
-
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -78,10 +76,6 @@ pub fn handle(payload: &str) -> String {
     let request = RemoteDesktopRequest::parse(payload);
     match request.action.as_str() {
         "screens" => screens(),
-        "screenshot" | "" => screenshot(
-            request.screen.unwrap_or_default(),
-            request.quality.as_deref().unwrap_or("medium"),
-        ),
         "stop" => stop(),
         "move" => move_mouse(request.x, request.y),
         "click" => click(
@@ -128,8 +122,6 @@ struct RemoteDesktopRequest {
     y: Option<i32>,
     button: Option<String>,
     value: Option<String>,
-    screen: Option<usize>,
-    quality: Option<String>,
 }
 
 impl RemoteDesktopRequest {
@@ -149,58 +141,10 @@ impl RemoteDesktopRequest {
                 request.button = Some(rest.trim().to_ascii_lowercase());
             } else if let Some(rest) = line.strip_prefix("value=") {
                 request.value = Some(rest.to_string());
-            } else if let Some(rest) = line.strip_prefix("screen=") {
-                request.screen = rest.trim().parse().ok();
-            } else if let Some(rest) = line.strip_prefix("quality=") {
-                request.quality = Some(rest.trim().to_ascii_lowercase());
             }
         }
         request
     }
-}
-
-fn screenshot(screen_index: usize, quality: &str) -> String {
-    match capture_video_frame(screen_index, quality) {
-        Ok(frame) => format_frame_payload(screen_index, frame),
-        Err(error) => format!("remote_desktop_error\nmessage={error}"),
-    }
-}
-
-pub(crate) fn capture_video_frame(
-    screen_index: usize,
-    quality: &str,
-) -> Result<RemoteDesktopVideoFrame, String> {
-    #[cfg(target_os = "windows")]
-    {
-        return windows::capture::capture_video_frame(screen_index, quality);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        return linux::capture::capture_video_frame(screen_index, quality);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        return macos::capture::capture_video_frame(screen_index, quality);
-    }
-    #[allow(unreachable_code)]
-    {
-        let _ = (screen_index, quality);
-        Err("screenshot is not implemented for this platform".to_string())
-    }
-}
-
-fn format_frame_payload(screen_index: usize, frame: RemoteDesktopVideoFrame) -> String {
-    format!(
-        "remote_desktop_frame\nscreen_index={}\nscreen_width={}\nscreen_height={}\nimage_width={}\nimage_height={}\nformat={}\nbytes={}\npng_base64={}",
-        screen_index,
-        frame.source_width,
-        frame.source_height,
-        frame.image_width,
-        frame.image_height,
-        frame.format,
-        frame.bytes.len(),
-        base64::engine::general_purpose::STANDARD.encode(frame.bytes)
-    )
 }
 
 fn click(x: Option<i32>, y: Option<i32>, button: &str) -> String {

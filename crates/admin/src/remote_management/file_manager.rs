@@ -366,6 +366,11 @@ pub(crate) fn handle_transfer(
             } else {
                 FileTransferStatus::Done
             };
+            let total_bytes = if !cancelled && transferred_bytes > 0 {
+                transferred_bytes
+            } else {
+                total_bytes
+            };
             update_transfer_status(
                 &window.transfers,
                 transfer_id,
@@ -2159,7 +2164,7 @@ fn update_transfer_status(
     }
     if let Some(total_bytes) = total_bytes {
         if total_bytes > 0 {
-            row.total_bytes = row.total_bytes.max(total_bytes);
+            row.total_bytes = total_bytes;
         }
     }
     if let Some(transferred_bytes) = transferred_bytes {
