@@ -283,6 +283,7 @@ fn zh(key: &'static str) -> &'static str {
         "Format" => "格式",
         "Frame received" => "已收到画面",
         "Frames" => "帧数",
+        "FPS" => "FPS",
         "Generate" => "生成",
         "Generated" => "已生成",
         "General SOCKS server failure" => "SOCKS 服务器通用失败",
@@ -636,6 +637,8 @@ fn zh(key: &'static str) -> &'static str {
         "Validation" => "验证",
         "valid" => "有效",
         "yes" => "是",
+        "Decode" => "解码",
+        "Texture" => "纹理",
         _ => key,
     }
 }

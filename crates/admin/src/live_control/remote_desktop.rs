@@ -13,8 +13,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const DEFAULT_QUALITY: &str = "medium";
+const DEFAULT_TARGET_FPS: u32 = 5;
 const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
+const FPS_DROPDOWN_WIDTH: f32 = 74.0;
 const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
 pub(crate) struct RemoteDesktopWindow {
@@ -30,6 +32,7 @@ pub(crate) struct RemoteDesktopWindow {
     screens: Vec<RemoteScreen>,
     selected_screen: Arc<Mutex<usize>>,
     quality: Arc<Mutex<String>>,
+    target_fps: Arc<Mutex<u32>>,
     mouse_follow: Arc<AtomicBool>,
     mouse_click: Arc<AtomicBool>,
     last_mouse_move: Arc<Mutex<Instant>>,
@@ -98,6 +101,7 @@ pub(crate) fn handle_decoded_frame(
     windows: &mut [RemoteDesktopWindow],
     client_id: &str,
     frame: DesktopFrame,
+    decode_ms: Option<u128>,
 ) {
     let Some(window) = windows
         .iter_mut()
@@ -116,10 +120,15 @@ pub(crate) fn handle_decoded_frame(
     {
         return;
     }
-    handle_frame(window, frame, None);
+    handle_frame(window, frame, None, decode_ms);
 }
 
-fn handle_frame(window: &mut RemoteDesktopWindow, frame: DesktopFrame, latency_ms: Option<u128>) {
+fn handle_frame(
+    window: &mut RemoteDesktopWindow,
+    frame: DesktopFrame,
+    latency_ms: Option<u128>,
+    decode_ms: Option<u128>,
+) {
     if !window.running.load(Ordering::Relaxed) {
         return;
     }
@@ -140,12 +149,13 @@ fn handle_frame(window: &mut RemoteDesktopWindow, frame: DesktopFrame, latency_m
     window.stats.encoded_bytes = frame.encoded_bytes;
     window.stats.format = frame.format.clone();
     window.stats.latency_ms = latency_ms;
+    window.stats.decode_ms = decode_ms;
     window.stats.last_frame_at = Some(now);
     window.stats.screen_width = frame.screen_width;
     window.stats.screen_height = frame.screen_height;
     window.frame = Some(frame);
     window.status = DesktopStatus::Live;
-    window.notice = "Frame received".to_string();
+    window.notice = t("Frame received").to_string();
 }
 
 fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
@@ -159,6 +169,8 @@ fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
     window.pending_since = None;
     window.stats.fps = 0.0;
     window.stats.latency_ms = None;
+    window.stats.decode_ms = None;
+    window.stats.upload_ms = None;
     window.status = DesktopStatus::Ready;
     window.notice = notice.to_string();
 }
@@ -170,6 +182,8 @@ struct DesktopStats {
     encoded_bytes: usize,
     format: String,
     latency_ms: Option<u128>,
+    decode_ms: Option<u128>,
+    upload_ms: Option<u128>,
     last_frame_at: Option<Instant>,
     screen_width: u32,
     screen_height: u32,
@@ -231,6 +245,7 @@ pub(crate) fn open_window(
         screens: Vec::new(),
         selected_screen: Arc::new(Mutex::new(0)),
         quality: Arc::new(Mutex::new(DEFAULT_QUALITY.to_string())),
+        target_fps: Arc::new(Mutex::new(DEFAULT_TARGET_FPS)),
         mouse_follow: Arc::new(AtomicBool::new(false)),
         mouse_click: Arc::new(AtomicBool::new(false)),
         last_mouse_move: Arc::new(Mutex::new(Instant::now())),
@@ -279,7 +294,7 @@ pub(crate) fn handle_ack(
             };
         }
         DesktopResponse::Frame(frame) => {
-            handle_frame(window, frame, latency_ms);
+            handle_frame(window, frame, latency_ms, None);
         }
         DesktopResponse::Input(message) => {
             window.status = DesktopStatus::Live;
@@ -328,6 +343,7 @@ pub(crate) fn render_windows(
         }
         if let Some(frame) = &window.frame {
             if window.texture_seq != frame.seq {
+                let upload_started = Instant::now();
                 if let Some(texture) = &mut window.texture {
                     texture.set(frame.image.clone(), egui::TextureOptions::LINEAR);
                 } else {
@@ -337,6 +353,7 @@ pub(crate) fn render_windows(
                         egui::TextureOptions::LINEAR,
                     ));
                 }
+                window.stats.upload_ms = Some(upload_started.elapsed().as_millis());
                 window.texture_seq = frame.seq;
             }
         }
@@ -378,6 +395,7 @@ pub(crate) fn render_windows(
         let screens = window.screens.clone();
         let selected_screen = window.selected_screen.clone();
         let quality = window.quality.clone();
+        let target_fps = window.target_fps.clone();
         let mouse_follow = window.mouse_follow.clone();
         let mouse_click = window.mouse_click.clone();
         let last_mouse_move = window.last_mouse_move.clone();
@@ -401,6 +419,7 @@ pub(crate) fn render_windows(
                         &screens,
                         &selected_screen,
                         &quality,
+                        &target_fps,
                         &mouse_follow,
                         &mouse_click,
                         &running,
@@ -433,10 +452,10 @@ pub(crate) fn render_windows(
                 });
             if running.load(Ordering::Relaxed) {
                 ui.ctx().request_repaint_after(frame_interval(
-                    quality
+                    target_fps
                         .lock()
-                        .map(|value| quality_fps(&value))
-                        .unwrap_or_else(|_| quality_fps(DEFAULT_QUALITY)),
+                        .map(|value| *value)
+                        .unwrap_or(DEFAULT_TARGET_FPS),
                 ));
             }
         });
@@ -489,6 +508,7 @@ fn render_toolbar(
     screens: &[RemoteScreen],
     selected_screen: &Arc<Mutex<usize>>,
     quality: &Arc<Mutex<String>>,
+    target_fps: &Arc<Mutex<u32>>,
     mouse_follow: &Arc<AtomicBool>,
     mouse_click: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
@@ -577,6 +597,37 @@ fn render_toolbar(
             if let Ok(mut value) = quality.lock() {
                 *value = selected_quality.clone();
             }
+            ui.separator();
+            ui.label(
+                egui::RichText::new(t("FPS"))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+            );
+            let mut selected_fps = target_fps
+                .lock()
+                .map(|value| *value)
+                .unwrap_or(DEFAULT_TARGET_FPS);
+            toolbar_dropdown(
+                ui,
+                "remote_desktop_fps",
+                fps_label(selected_fps),
+                FPS_DROPDOWN_WIDTH,
+                !is_running,
+                |ui| {
+                    ui.set_min_width(FPS_DROPDOWN_WIDTH);
+                    for option in [2_u32, 5, 8, 10, 12] {
+                        if ui
+                            .selectable_value(&mut selected_fps, option, fps_label(option))
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
+                },
+            );
+            if let Ok(mut value) = target_fps.lock() {
+                *value = selected_fps;
+            }
             let selected = selected_screen
                 .lock()
                 .map(|value| *value)
@@ -601,7 +652,9 @@ fn render_toolbar(
                     running.store(true, Ordering::Relaxed);
                     queue_ui_payload(
                         queued,
-                        format!("action=start\nscreen={selected}\nquality={selected_quality}"),
+                        format!(
+                            "action=start\nscreen={selected}\nquality={selected_quality}\nfps={selected_fps}"
+                        ),
                     );
                 }
             }
@@ -850,6 +903,20 @@ fn render_status_bar(ui: &mut egui::Ui, status: DesktopStatus, notice: &str, sta
                     stats.format
                 )));
             }
+            if let Some(decode_ms) = stats.decode_ms {
+                ui.label(crate::theme::muted_text(format!(
+                    "{} {} ms",
+                    t("Decode"),
+                    decode_ms
+                )));
+            }
+            if let Some(upload_ms) = stats.upload_ms {
+                ui.label(crate::theme::muted_text(format!(
+                    "{} {} ms",
+                    t("Texture"),
+                    upload_ms
+                )));
+            }
             if let Some(latency_ms) = stats.latency_ms {
                 ui.label(crate::theme::muted_text(format!("RTT {} ms", latency_ms)));
             }
@@ -880,12 +947,8 @@ fn quality_label(value: &str) -> &'static str {
     }
 }
 
-fn quality_fps(value: &str) -> u32 {
-    match value {
-        "low" => 10,
-        "high" => 2,
-        _ => 5,
-    }
+fn fps_label(value: u32) -> String {
+    format!("{value} {}", t("FPS"))
 }
 
 fn remote_desktop_payload_is_input(payload: &str) -> bool {

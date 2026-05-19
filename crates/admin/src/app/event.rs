@@ -80,6 +80,7 @@ pub(super) enum AdminEvent {
     DecodedDesktopFrame {
         client_id: String,
         result: Result<live_control::remote_desktop::DesktopFrame, String>,
+        decode_ms: Option<u128>,
     },
     DecodedCameraFrame {
         client_id: String,

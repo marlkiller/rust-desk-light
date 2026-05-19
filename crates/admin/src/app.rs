@@ -952,11 +952,16 @@ impl AdminApp {
                 AdminEvent::DesktopFrame { client_id, payload } => {
                     latest_desktop_frames.insert(client_id, payload);
                 }
-                AdminEvent::DecodedDesktopFrame { client_id, result } => match result {
+                AdminEvent::DecodedDesktopFrame {
+                    client_id,
+                    result,
+                    decode_ms,
+                } => match result {
                     Ok(frame) => live_control::remote_desktop::handle_decoded_frame(
                         &mut self.desktop_windows,
                         &client_id,
                         frame,
+                        decode_ms,
                     ),
                     Err(message) => self.handle_desktop_ack(
                         &client_id,
@@ -1355,8 +1360,13 @@ impl AdminApp {
             None,
         );
         thread::spawn(move || {
+            let decode_started = Instant::now();
             let result = live_control::remote_desktop::decode_frame_payload(&payload);
-            sink.send(AdminEvent::DecodedDesktopFrame { client_id, result });
+            sink.send(AdminEvent::DecodedDesktopFrame {
+                client_id,
+                result,
+                decode_ms: Some(decode_started.elapsed().as_millis()),
+            });
         });
     }
 
@@ -1383,28 +1393,35 @@ impl AdminApp {
             Some(self.repaint_handle.clone()),
             None,
         );
-        thread::spawn(move || match source {
-            VideoSource::RemoteDesktop => {
-                let result = live_control::remote_desktop::decode_video_frame(
-                    frame.seq,
-                    frame.source_width,
-                    frame.source_height,
-                    frame.image_width,
-                    frame.image_height,
-                    frame.format,
-                    frame.bytes,
-                );
-                sink.send(AdminEvent::DecodedDesktopFrame { client_id, result });
-            }
-            VideoSource::Camera => {
-                let result = live_control::camera::decode_video_frame(
-                    frame.seq,
-                    frame.image_width,
-                    frame.image_height,
-                    frame.format,
-                    frame.bytes,
-                );
-                sink.send(AdminEvent::DecodedCameraFrame { client_id, result });
+        thread::spawn(move || {
+            let decode_started = Instant::now();
+            match source {
+                VideoSource::RemoteDesktop => {
+                    let result = live_control::remote_desktop::decode_video_frame(
+                        frame.seq,
+                        frame.source_width,
+                        frame.source_height,
+                        frame.image_width,
+                        frame.image_height,
+                        frame.format,
+                        frame.bytes,
+                    );
+                    sink.send(AdminEvent::DecodedDesktopFrame {
+                        client_id,
+                        result,
+                        decode_ms: Some(decode_started.elapsed().as_millis()),
+                    });
+                }
+                VideoSource::Camera => {
+                    let result = live_control::camera::decode_video_frame(
+                        frame.seq,
+                        frame.image_width,
+                        frame.image_height,
+                        frame.format,
+                        frame.bytes,
+                    );
+                    sink.send(AdminEvent::DecodedCameraFrame { client_id, result });
+                }
             }
         });
     }

@@ -2116,6 +2116,13 @@ fn remote_desktop_value(payload: &str, key: &str) -> Option<String> {
         .map(|value| value.trim().to_string())
 }
 
+fn video_fps_from_payload(payload: &str, quality: &str) -> u64 {
+    remote_desktop_value(payload, "fps")
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|fps| fps.clamp(1, 30))
+        .unwrap_or_else(|| quality_fps(quality))
+}
+
 fn remote_desktop_stream_loop(
     client_id: String,
     start_payload: String,
@@ -2129,7 +2136,7 @@ fn remote_desktop_stream_loop(
         .unwrap_or_default();
     let quality =
         remote_desktop_value(&start_payload, "quality").unwrap_or_else(|| "medium".to_string());
-    let fps = quality_fps(&quality);
+    let fps = video_fps_from_payload(&start_payload, &quality);
     let interval = Duration::from_millis((1000 / fps).max(1));
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
@@ -2172,38 +2179,65 @@ fn video_stream_loop(
     let quality = remote_desktop_value(&start_payload, "quality")
         .or_else(|| video_control_value(&start_payload, "quality"))
         .unwrap_or_else(|| "medium".to_string());
-    let fps = quality_fps(&quality);
+    let fps = video_fps_from_payload(&start_payload, &quality);
     let interval = Duration::from_millis((1000 / fps).max(1));
+    let mut remote_desktop_capture = None;
+    let camera_device = video_control_value(&start_payload, "device")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    if matches!(source, VideoSource::RemoteDesktop) {
+        let remote_desktop_screen = video_control_value(&start_payload, "screen")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_default();
+        match crate::live_control::open_remote_desktop_capture(remote_desktop_screen, &quality) {
+            Ok(capture) => {
+                remote_desktop_capture = Some(capture);
+            }
+            Err(error) => {
+                stream_state.running.store(false, Ordering::Relaxed);
+                let _ = queue_message(
+                    &out_tx,
+                    &session_token,
+                    Message::CommandAck {
+                        client_id,
+                        command: video_source_command(&source),
+                        accepted: false,
+                        detail: error,
+                    },
+                );
+                return;
+            }
+        }
+    }
     let mut seq = stream_sequence_base(generation);
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let frame = match &source {
             VideoSource::RemoteDesktop => {
-                let screen = video_control_value(&start_payload, "screen")
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or_default();
-                crate::live_control::capture_remote_desktop_video_frame(screen, &quality).map(
-                    |frame| Message::VideoFrame {
-                        client_id: client_id.clone(),
-                        source: VideoSource::RemoteDesktop,
-                        seq,
-                        source_width: frame.source_width,
-                        source_height: frame.source_height,
-                        image_width: frame.image_width,
-                        image_height: frame.image_height,
-                        format: frame.format,
-                        bytes: frame.bytes,
-                    },
-                )
+                let capture = remote_desktop_capture
+                    .as_mut()
+                    .ok_or_else(|| "remote desktop capture is not open".to_string());
+                capture.and_then(|capture| {
+                    crate::live_control::capture_remote_desktop_stream_frame(capture).map(|frame| {
+                        Message::VideoFrame {
+                            client_id: client_id.clone(),
+                            source: VideoSource::RemoteDesktop,
+                            seq,
+                            source_width: frame.source_width,
+                            source_height: frame.source_height,
+                            image_width: frame.image_width,
+                            image_height: frame.image_height,
+                            format: frame.format,
+                            bytes: frame.bytes,
+                        }
+                    })
+                })
             }
             VideoSource::Camera => {
-                let device = video_control_value(&start_payload, "device")
-                    .and_then(|value| value.parse::<usize>().ok())
-                    .unwrap_or_default();
-                crate::live_control::capture_camera_video_frame(device, &quality).map(|frame| {
-                    Message::VideoFrame {
+                crate::live_control::capture_camera_video_frame(camera_device, &quality).map(
+                    |frame| Message::VideoFrame {
                         client_id: client_id.clone(),
                         source: VideoSource::Camera,
                         seq,
@@ -2213,8 +2247,8 @@ fn video_stream_loop(
                         image_height: frame.height,
                         format: frame.format,
                         bytes: frame.bytes,
-                    }
-                })
+                    },
+                )
             }
         };
         match frame {
@@ -2559,12 +2593,13 @@ fn try_queue_realtime_message(
     out_tx: &SyncSender<ClientOutbound>,
     session_token: &str,
     message: Message,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     match out_tx.try_send(ClientOutbound {
         session_token: session_token.to_string(),
         message,
     }) {
-        Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
+        Ok(()) => Ok(true),
+        Err(mpsc::TrySendError::Full(_)) => Ok(false),
         Err(mpsc::TrySendError::Disconnected(_)) => Err(io::Error::new(
             io::ErrorKind::BrokenPipe,
             "outbound queue disconnected",
