@@ -363,18 +363,19 @@ pub(crate) fn render_windows(
             save_current_frame(window);
         }
         while let Some(payload) = window.outbound.pop() {
-            if !camera_payload_is_frame_refresh(&payload)
+            let stop_payload = payload.trim() == "action=stop";
+            if stop_payload {
+                window.status = CameraStatus::Ready;
+                window.notice = t("Stopped").to_string();
+                window.pending_since = None;
+            } else if !camera_payload_is_frame_refresh(&payload)
                 || !window.running.load(Ordering::Relaxed)
                 || window.frame.is_none()
             {
                 window.status = CameraStatus::Pending;
-                window.notice = if payload.trim() == "action=stop" {
-                    t("Stopping camera").to_string()
-                } else {
-                    t("Waiting for client result").to_string()
-                };
+                window.notice = t("Waiting for client result").to_string();
+                window.pending_since = Some(Instant::now());
             }
-            window.pending_since = Some(Instant::now());
             window.last_request_at = Some(Instant::now());
             outbound.push(OutboundCommand {
                 client_id: client_id.clone(),
@@ -485,7 +486,6 @@ fn render_toolbar(
             if let Ok(mut value) = quality.lock() {
                 *value = selected_quality.clone();
             }
-            ui.separator();
             ui.label(
                 egui::RichText::new(t("FPS"))
                     .size(12.0)
@@ -516,6 +516,7 @@ fn render_toolbar(
             if let Ok(mut value) = target_fps.lock() {
                 *value = selected_fps;
             }
+            ui.separator();
             let selected = selected_device
                 .lock()
                 .map(|value| *value)

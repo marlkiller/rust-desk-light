@@ -1,7 +1,7 @@
 pub(crate) mod capture {
     use super::super::RemoteDesktopVideoFrame;
     use image::codecs::jpeg::JpegEncoder;
-    use image::{imageops::FilterType, DynamicImage, RgbaImage};
+    use image::ExtendedColorType;
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
     use std::ptr::{null, null_mut};
@@ -9,8 +9,8 @@ pub(crate) mod capture {
     use windows_sys::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
         EnumDisplayMonitors, GetDC, GetDIBits, GetMonitorInfoW, ReleaseDC, SelectObject,
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
-        HMONITOR, MONITORINFOEXW, SRCCOPY,
+        SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
+        DIB_RGB_COLORS, HALFTONE, HBITMAP, HDC, HGDIOBJ, HMONITOR, MONITORINFOEXW, SRCCOPY,
     };
 
     #[derive(Clone)]
@@ -49,6 +49,10 @@ pub(crate) mod capture {
     pub(crate) struct CaptureStream {
         screen: Screen,
         quality: QualityProfile,
+        image_width: u32,
+        image_height: u32,
+        bgra_buffer: Vec<u8>,
+        rgb_buffer: Vec<u8>,
     }
 
     impl CaptureStream {
@@ -62,18 +66,28 @@ pub(crate) mod capture {
             if screen.width == 0 || screen.height == 0 {
                 return Err("selected screen has invalid size".to_string());
             }
+            let quality = quality_profile(quality);
+            let (image_width, image_height) =
+                scaled_size(screen.width, screen.height, quality.max_width);
             Ok(Self {
                 screen,
-                quality: quality_profile(quality),
+                quality,
+                image_width,
+                image_height,
+                bgra_buffer: Vec::new(),
+                rgb_buffer: Vec::new(),
             })
         }
 
         pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
-            let rgba = capture_rgba(
+            capture_bgra(
                 self.screen.x,
                 self.screen.y,
                 self.screen.width,
                 self.screen.height,
+                self.image_width,
+                self.image_height,
+                &mut self.bgra_buffer,
             )
             .map_err(|error| {
                 format!(
@@ -85,30 +99,21 @@ pub(crate) mod capture {
                     self.screen.height
                 )
             })?;
-            let image = RgbaImage::from_raw(self.screen.width, self.screen.height, rgba)
-                .ok_or_else(|| "captured frame buffer has invalid size".to_string())?;
-            let scale = (self.quality.max_width as f32 / self.screen.width as f32).min(1.0);
-            let (image_width, image_height, output_image) = if scale < 1.0 {
-                let width = ((self.screen.width as f32 * scale).round() as u32).max(1);
-                let height = ((self.screen.height as f32 * scale).round() as u32).max(1);
-                let resized = image::imageops::resize(&image, width, height, FilterType::Triangle);
-                (width, height, DynamicImage::ImageRgba8(resized))
-            } else {
-                (
-                    self.screen.width,
-                    self.screen.height,
-                    DynamicImage::ImageRgba8(image),
-                )
-            };
+            write_rgb_from_bgra(&self.bgra_buffer, &mut self.rgb_buffer)?;
             let mut encoded = Vec::new();
             JpegEncoder::new_with_quality(&mut encoded, self.quality.jpeg_quality)
-                .encode_image(&output_image)
+                .encode(
+                    &self.rgb_buffer,
+                    self.image_width,
+                    self.image_height,
+                    ExtendedColorType::Rgb8,
+                )
                 .map_err(|error| format!("jpeg encode failed: {error}"))?;
             Ok(RemoteDesktopVideoFrame {
                 source_width: self.screen.width,
                 source_height: self.screen.height,
-                image_width,
-                image_height,
+                image_width: self.image_width,
+                image_height: self.image_height,
                 format: "jpeg".to_string(),
                 bytes: encoded,
             })
@@ -157,9 +162,27 @@ pub(crate) mod capture {
         Ok(screens)
     }
 
-    fn capture_rgba(x: i32, y: i32, width: u32, height: u32) -> Result<Vec<u8>, String> {
-        let buffer_len = width
-            .checked_mul(height)
+    fn scaled_size(source_width: u32, source_height: u32, max_width: u32) -> (u32, u32) {
+        let scale = (max_width as f32 / source_width as f32).min(1.0);
+        if scale >= 1.0 {
+            return (source_width, source_height);
+        }
+        let width = ((source_width as f32 * scale).round() as u32).max(1);
+        let height = ((source_height as f32 * scale).round() as u32).max(1);
+        (width, height)
+    }
+
+    fn capture_bgra(
+        x: i32,
+        y: i32,
+        source_width: u32,
+        source_height: u32,
+        image_width: u32,
+        image_height: u32,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        let buffer_len = image_width
+            .checked_mul(image_height)
             .and_then(|pixels| pixels.checked_mul(4))
             .ok_or_else(|| "selected screen is too large".to_string())?
             as usize;
@@ -176,7 +199,7 @@ pub(crate) mod capture {
                     last_error_code()
                 ));
             }
-            let bitmap = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
+            let bitmap = CreateCompatibleBitmap(screen_dc, image_width as i32, image_height as i32);
             if bitmap.is_null() {
                 DeleteDC(memory_dc);
                 ReleaseDC(null_mut(), screen_dc);
@@ -193,24 +216,22 @@ pub(crate) mod capture {
                 return Err(format!("SelectObject failed: error={}", last_error_code()));
             }
 
-            let blit_ok = BitBlt(
+            let blit_result = blit_to_bitmap(
                 memory_dc,
-                0,
-                0,
-                width as i32,
-                height as i32,
                 screen_dc,
                 x,
                 y,
-                SRCCOPY | CAPTUREBLT,
+                source_width,
+                source_height,
+                image_width,
+                image_height,
             );
-            let blit_error = last_error_code();
-            let mut buffer = vec![0u8; buffer_len];
+            buffer.resize(buffer_len, 0);
             let mut info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width as i32,
-                    biHeight: -(height as i32),
+                    biWidth: image_width as i32,
+                    biHeight: -(image_height as i32),
                     biPlanes: 1,
                     biBitCount: 32,
                     biCompression: BI_RGB,
@@ -222,12 +243,12 @@ pub(crate) mod capture {
                 },
                 bmiColors: [zeroed()],
             };
-            let dib_lines = if blit_ok != 0 {
+            let dib_lines = if blit_result.is_ok() {
                 GetDIBits(
                     memory_dc,
                     bitmap as HBITMAP,
                     0,
-                    height,
+                    image_height,
                     buffer.as_mut_ptr() as *mut c_void,
                     &mut info,
                     DIB_RGB_COLORS,
@@ -241,18 +262,124 @@ pub(crate) mod capture {
             DeleteDC(memory_dc);
             ReleaseDC(null_mut(), screen_dc);
 
-            if blit_ok == 0 {
-                return Err(format!("BitBlt failed: error={blit_error}"));
-            }
+            blit_result?;
             if dib_lines == 0 {
                 return Err(format!("GetDIBits failed: error={dib_error}"));
             }
-            for pixel in buffer.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-                pixel[3] = 255;
-            }
-            Ok(buffer)
+            Ok(())
         }
+    }
+
+    fn blit_to_bitmap(
+        memory_dc: HDC,
+        screen_dc: HDC,
+        x: i32,
+        y: i32,
+        source_width: u32,
+        source_height: u32,
+        image_width: u32,
+        image_height: u32,
+    ) -> Result<(), String> {
+        let scaled = source_width != image_width || source_height != image_height;
+        let operation = if scaled { "StretchBlt" } else { "BitBlt" };
+        if scaled {
+            unsafe {
+                SetStretchBltMode(memory_dc, HALFTONE);
+            }
+        }
+        let capture_result = blit_with_op(
+            memory_dc,
+            screen_dc,
+            x,
+            y,
+            source_width,
+            source_height,
+            image_width,
+            image_height,
+            SRCCOPY | CAPTUREBLT,
+        );
+        if capture_result.is_ok() {
+            return Ok(());
+        }
+        let capture_error = capture_result.err().unwrap_or_default();
+        let srccopy_result = blit_with_op(
+            memory_dc,
+            screen_dc,
+            x,
+            y,
+            source_width,
+            source_height,
+            image_width,
+            image_height,
+            SRCCOPY,
+        );
+        if srccopy_result.is_ok() {
+            return Ok(());
+        }
+        let srccopy_error = srccopy_result.err().unwrap_or_default();
+        Err(format!(
+            "{operation} CAPTUREBLT failed: error={capture_error}; {operation} SRCCOPY failed: error={srccopy_error}"
+        ))
+    }
+
+    fn blit_with_op(
+        memory_dc: HDC,
+        screen_dc: HDC,
+        x: i32,
+        y: i32,
+        source_width: u32,
+        source_height: u32,
+        image_width: u32,
+        image_height: u32,
+        raster_op: u32,
+    ) -> Result<(), u32> {
+        let ok = unsafe {
+            if source_width == image_width && source_height == image_height {
+                BitBlt(
+                    memory_dc,
+                    0,
+                    0,
+                    image_width as i32,
+                    image_height as i32,
+                    screen_dc,
+                    x,
+                    y,
+                    raster_op,
+                )
+            } else {
+                StretchBlt(
+                    memory_dc,
+                    0,
+                    0,
+                    image_width as i32,
+                    image_height as i32,
+                    screen_dc,
+                    x,
+                    y,
+                    source_width as i32,
+                    source_height as i32,
+                    raster_op,
+                )
+            }
+        };
+        if ok != 0 {
+            Ok(())
+        } else {
+            Err(last_error_code())
+        }
+    }
+
+    fn write_rgb_from_bgra(bgra: &[u8], rgb: &mut Vec<u8>) -> Result<(), String> {
+        if bgra.len() % 4 != 0 {
+            return Err("captured frame buffer has invalid size".to_string());
+        }
+        rgb.resize(bgra.len() / 4 * 3, 0);
+        for (source, target) in bgra.chunks_exact(4).zip(rgb.chunks_exact_mut(3)) {
+            target[0] = source[2];
+            target[1] = source[1];
+            target[2] = source[0];
+        }
+        Ok(())
     }
 
     unsafe extern "system" fn enum_monitor(

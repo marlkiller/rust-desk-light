@@ -380,14 +380,19 @@ pub(crate) fn render_windows(
                 window.player = None;
             }
 
-            window.status = AudioStatus::Pending;
-            window.notice = match action.as_deref() {
-                Some("devices") => t("Loading audio input devices").to_string(),
-                Some("start") => t("Waiting for client audio").to_string(),
-                Some("stop") => t("Stopping audio listen").to_string(),
-                _ => t("Waiting for client result").to_string(),
-            };
-            window.pending_since = Some(Instant::now());
+            if action.as_deref() == Some("stop") {
+                window.status = AudioStatus::Ready;
+                window.notice = t("Stopped").to_string();
+                window.pending_since = None;
+            } else {
+                window.status = AudioStatus::Pending;
+                window.notice = match action.as_deref() {
+                    Some("devices") => t("Loading audio input devices").to_string(),
+                    Some("start") => t("Waiting for client audio").to_string(),
+                    _ => t("Waiting for client result").to_string(),
+                };
+                window.pending_since = Some(Instant::now());
+            }
             outbound.push(OutboundCommand {
                 client_id: client_id.clone(),
                 payload,

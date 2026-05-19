@@ -147,8 +147,6 @@ fn handle_frame(
 
 fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
     window.running.store(false, Ordering::Relaxed);
-    window.mouse_follow.store(false, Ordering::Relaxed);
-    window.mouse_click.store(false, Ordering::Relaxed);
     window.outbound.clear();
     if let Ok(mut target) = window.last_mouse_target.lock() {
         *target = None;
@@ -454,13 +452,14 @@ pub(crate) fn render_windows(
         }
         while let Some(payload) = window.outbound.pop() {
             let input = remote_desktop_payload_is_input(&payload);
-            if !input {
+            let stop_payload = payload.trim() == "action=stop";
+            if stop_payload {
+                window.status = DesktopStatus::Ready;
+                window.notice = t("Stopped").to_string();
+                window.pending_since = None;
+            } else if !input {
                 window.status = DesktopStatus::Pending;
-                window.notice = if payload.trim() == "action=stop" {
-                    t("Stopping remote desktop").to_string()
-                } else {
-                    t("Waiting for client result").to_string()
-                };
+                window.notice = t("Waiting for client result").to_string();
                 window.pending_since = Some(Instant::now());
             }
             outbound.push(OutboundCommand {
@@ -578,7 +577,6 @@ fn render_toolbar(
             if let Ok(mut value) = quality.lock() {
                 *value = selected_quality.clone();
             }
-            ui.separator();
             ui.label(
                 egui::RichText::new(t("FPS"))
                     .size(12.0)
@@ -609,6 +607,7 @@ fn render_toolbar(
             if let Ok(mut value) = target_fps.lock() {
                 *value = selected_fps;
             }
+            ui.separator();
             let selected = selected_screen
                 .lock()
                 .map(|value| *value)
@@ -626,8 +625,6 @@ fn render_toolbar(
             {
                 if is_running {
                     running.store(false, Ordering::Relaxed);
-                    mouse_follow.store(false, Ordering::Relaxed);
-                    mouse_click.store(false, Ordering::Relaxed);
                     queue_ui_payload(queued, "action=stop".to_string());
                 } else {
                     running.store(true, Ordering::Relaxed);

@@ -15,6 +15,8 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
+const MAX_CONSECUTIVE_FRAME_ERRORS: u32 = 3;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn video_stream_loop(
     client_id: String,
@@ -82,6 +84,7 @@ pub(crate) fn video_stream_loop(
         }
     }
     let mut seq = stream_sequence_base(generation);
+    let mut consecutive_frame_errors = 0u32;
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
@@ -130,6 +133,7 @@ pub(crate) fn video_stream_loop(
         };
         match frame {
             Ok(message) => {
+                consecutive_frame_errors = 0;
                 if try_queue_realtime_message(&realtime_tx, &session_token, message).is_err() {
                     stream_state.running.store(false, Ordering::Relaxed);
                     break;
@@ -137,6 +141,11 @@ pub(crate) fn video_stream_loop(
                 seq = seq.saturating_add(1);
             }
             Err(error) => {
+                consecutive_frame_errors = consecutive_frame_errors.saturating_add(1);
+                if consecutive_frame_errors < MAX_CONSECUTIVE_FRAME_ERRORS {
+                    sleep_remaining(started, interval);
+                    continue;
+                }
                 let _ = queue_message(
                     &out_tx,
                     &session_token,
@@ -144,17 +153,23 @@ pub(crate) fn video_stream_loop(
                         client_id: client_id.clone(),
                         command: video_source_command(&source),
                         accepted: false,
-                        detail: error,
+                        detail: format!(
+                            "{error} after {consecutive_frame_errors} consecutive frame attempts"
+                        ),
                     },
                 );
                 stream_state.running.store(false, Ordering::Relaxed);
                 break;
             }
         }
-        let elapsed = started.elapsed();
-        if elapsed < interval {
-            thread::sleep(interval - elapsed);
-        }
+        sleep_remaining(started, interval);
+    }
+}
+
+fn sleep_remaining(started: Instant, interval: Duration) {
+    let elapsed = started.elapsed();
+    if elapsed < interval {
+        thread::sleep(interval - elapsed);
     }
 }
 
