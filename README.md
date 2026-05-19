@@ -32,13 +32,13 @@ Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`, an
 Start the local development stack:
 
 ```sh
-./scripts/start-dev.sh
+./scripts/start-dev.sh --release
 ```
 
 Windows:
 
 ```powershell
-.\scripts\start-dev.bat
+.\scripts\start-dev.bat --release
 ```
 
 Manual local run:

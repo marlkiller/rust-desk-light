@@ -6,6 +6,31 @@ DEFAULT_IP="127.0.0.1"
 DEFAULT_PORT="5169"
 DEFAULT_AUTH_TOKEN="change-me"
 
+BUILD_MODE="${1:-debug}"
+case "$BUILD_MODE" in
+  debug | --debug)
+    BUILD_PROFILE="debug"
+    CARGO_PROFILE_ARGS=()
+    TARGET_PROFILE_DIR="debug"
+    ;;
+  release | --release | -r)
+    BUILD_PROFILE="release"
+    CARGO_PROFILE_ARGS=(--release)
+    TARGET_PROFILE_DIR="release"
+    ;;
+  -h | --help)
+    echo "Usage: $0 [debug|release|--debug|--release|-r]"
+    echo
+    echo "Defaults to debug. Use release for smoother local live-control testing."
+    exit 0
+    ;;
+  *)
+    echo "Unknown build mode: $BUILD_MODE" >&2
+    echo "Usage: $0 [debug|release|--debug|--release|-r]" >&2
+    exit 2
+    ;;
+esac
+
 IP="${RDL_IP:-$DEFAULT_IP}"
 PORT="${RDL_PORT:-$DEFAULT_PORT}"
 AUTH_TOKEN="${RDL_AUTH_TOKEN:-$DEFAULT_AUTH_TOKEN}"
@@ -20,19 +45,20 @@ shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-echo "Building rust-desk-light"
-cargo build --workspace --manifest-path "$ROOT_DIR/Cargo.toml"
+echo "Building rust-desk-light ($BUILD_PROFILE)"
+cargo build --workspace --manifest-path "$ROOT_DIR/Cargo.toml" "${CARGO_PROFILE_ARGS[@]}"
 
 GEOIP_DB_PATH="$(rdl_find_geoip_db "$ROOT_DIR" || true)"
-SERVER_CMD="cd $(shell_quote "$ROOT_DIR") && ./target/debug/rdl-server-cli --ip $(shell_quote "$IP") --port $(shell_quote "$PORT") --auth-token $(shell_quote "$AUTH_TOKEN")"
+SERVER_CMD="cd $(shell_quote "$ROOT_DIR") && ./target/$TARGET_PROFILE_DIR/rdl-server-cli --ip $(shell_quote "$IP") --port $(shell_quote "$PORT") --auth-token $(shell_quote "$AUTH_TOKEN")"
 if [[ -n "$GEOIP_DB_PATH" ]]; then
   SERVER_CMD="$SERVER_CMD --geoip-db $(shell_quote "$GEOIP_DB_PATH")"
 fi
 SERVER_CMD="$SERVER_CMD 2>&1 | tee $(shell_quote "$LOG_DIR/server.log")"
-CLIENT_BIN="$ROOT_DIR/target/debug/rdl-client-gui"
-ADMIN_BIN="$ROOT_DIR/target/debug/rdl-admin-gui"
+CLIENT_BIN="$ROOT_DIR/target/$TARGET_PROFILE_DIR/rdl-client-gui"
+ADMIN_BIN="$ROOT_DIR/target/$TARGET_PROFILE_DIR/rdl-admin-gui"
 
 echo "Starting rust-desk-light dev stack"
+echo "build: $BUILD_PROFILE"
 echo "server: $IP:$PORT"
 echo "auth token: $AUTH_TOKEN"
 if [[ -n "$GEOIP_DB_PATH" ]]; then
