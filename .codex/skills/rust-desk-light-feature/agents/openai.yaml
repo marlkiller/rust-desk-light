@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Desk Light Feature"
+  short_description: "Implement rust-desk-light features in the repo style."
+  default_prompt: "Use $rust-desk-light-feature to implement a rust-desk-light feature with the project protocol, UI, and i18n conventions."

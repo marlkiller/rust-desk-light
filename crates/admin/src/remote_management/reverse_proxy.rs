@@ -31,6 +31,7 @@ const TEST_CONNECT_TIMEOUT_MS: u64 = 10_000;
 const TEST_DETAIL_WAIT_MS: u64 = 800;
 const TEST_DETAIL_POLL_MS: u64 = 25;
 const MAX_PRE_OPEN_FAILURES: usize = 16;
+const MAX_CLOSED_STREAMS: usize = 500;
 const SOCKS_REPLY_SUCCEEDED: u8 = 0x00;
 const SOCKS_REPLY_GENERAL_FAILURE: u8 = 0x01;
 const SOCKS_REPLY_HOST_UNREACHABLE: u8 = 0x04;
@@ -49,13 +50,11 @@ pub(crate) struct ReverseProxyWindow {
     notice: Arc<Mutex<String>>,
     streams: Arc<Mutex<HashMap<u64, ProxyStreamState>>>,
     pre_open_failures: Arc<Mutex<Vec<ProxyPreOpenFailure>>>,
-    selected_stream: Arc<Mutex<Option<u64>>>,
     next_stream_id: Arc<AtomicU64>,
     listener_stop: Option<Arc<AtomicBool>>,
     start_requested: Arc<AtomicBool>,
     stop_requested: Arc<AtomicBool>,
     clear_closed_requested: Arc<AtomicBool>,
-    kill_selected_requested: Arc<AtomicBool>,
     test_requested: Arc<AtomicBool>,
     test_in_flight: Arc<AtomicBool>,
     close_requested: Arc<AtomicBool>,
@@ -75,7 +74,6 @@ enum ProxyStatus {
 enum ProxyStreamStatus {
     Opening,
     Open,
-    Closing,
     Closed,
     Failed,
 }
@@ -130,13 +128,11 @@ pub(crate) fn open_window(
         notice: Arc::new(Mutex::new(t("Stopped").to_string())),
         streams: Arc::new(Mutex::new(HashMap::new())),
         pre_open_failures: Arc::new(Mutex::new(Vec::new())),
-        selected_stream: Arc::new(Mutex::new(None)),
         next_stream_id: Arc::new(AtomicU64::new(initial_stream_id())),
         listener_stop: None,
         start_requested: Arc::new(AtomicBool::new(false)),
         stop_requested: Arc::new(AtomicBool::new(false)),
         clear_closed_requested: Arc::new(AtomicBool::new(false)),
-        kill_selected_requested: Arc::new(AtomicBool::new(false)),
         test_requested: Arc::new(AtomicBool::new(false)),
         test_in_flight: Arc::new(AtomicBool::new(false)),
         close_requested: Arc::new(AtomicBool::new(false)),
@@ -173,11 +169,9 @@ pub(crate) fn render_windows(
         let status = window.status.clone();
         let notice = window.notice.clone();
         let streams = window.streams.clone();
-        let selected_stream = window.selected_stream.clone();
         let start_requested = window.start_requested.clone();
         let stop_requested = window.stop_requested.clone();
         let clear_closed_requested = window.clear_closed_requested.clone();
-        let kill_selected_requested = window.kill_selected_requested.clone();
         let test_requested = window.test_requested.clone();
         let test_in_flight = window.test_in_flight.clone();
         let close_requested = window.close_requested.clone();
@@ -219,13 +213,7 @@ pub(crate) fn render_windows(
                         egui::vec2(ui.available_width(), connections_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            render_connections(
-                                ui,
-                                &streams,
-                                &selected_stream,
-                                &clear_closed_requested,
-                                &kill_selected_requested,
-                            );
+                            render_connections(ui, &streams, &clear_closed_requested);
                         },
                     );
                     ui.add_space(SECTION_GAP);
@@ -241,12 +229,6 @@ pub(crate) fn render_windows(
         }
         if window.clear_closed_requested.swap(false, Ordering::Relaxed) {
             clear_closed_streams(window);
-        }
-        if window
-            .kill_selected_requested
-            .swap(false, Ordering::Relaxed)
-        {
-            kill_selected_stream(window, input_tx);
         }
         if window.test_requested.swap(false, Ordering::Relaxed) {
             start_test_connection(window, ctx.clone());
@@ -284,6 +266,9 @@ pub(crate) fn handle_open_result(
             let _ = stream
                 .inbound_tx
                 .send(ProxyInbound::OpenResult { accepted, detail });
+            if !accepted {
+                prune_closed_streams_locked(&mut streams);
+            }
         }
     }
 }
@@ -430,6 +415,7 @@ fn stop_window_local(window: &mut ReverseProxyWindow, set_stopped: bool) {
                     .send(ProxyInbound::Close(t("Proxy stopped").to_string()));
             }
         }
+        prune_closed_streams_locked(&mut streams);
     }
     if set_stopped {
         set_status(&window.status, ProxyStatus::Stopped);
@@ -446,24 +432,6 @@ fn clear_closed_streams(window: &mut ReverseProxyWindow) {
             )
         });
     }
-}
-
-fn kill_selected_stream(window: &mut ReverseProxyWindow, input_tx: &SyncSender<AdminInput>) {
-    let selected = window.selected_stream.lock().ok().and_then(|value| *value);
-    let Some(stream_id) = selected else {
-        return;
-    };
-    let _ = input_tx.send(AdminInput::Proxy(Message::ProxyClose {
-        client_id: window.client_id.clone(),
-        stream_id,
-        reason: "killed by admin".to_string(),
-    }));
-    mark_stream_closed(
-        &window.streams,
-        stream_id,
-        ProxyStreamStatus::Closing,
-        t("Killed by admin"),
-    );
 }
 
 fn start_test_connection(window: &ReverseProxyWindow, egui_ctx: egui::Context) {
@@ -1262,11 +1230,9 @@ fn render_endpoint(
     crate::theme::panel_frame_with_margin(PANEL_MARGIN).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().interact_size.y = COMPACT_CONTROL_HEIGHT;
-            let endpoint = format!(
-                "SOCKS5 {}:{}",
-                locked_string(listen_ip),
-                locked_string(listen_port)
-            );
+            let endpoint =
+                proxy_endpoint_uri(&locked_string(listen_ip), &locked_string(listen_port));
+            let copy_command = proxy_env_command(&endpoint);
             let copy_enabled = matches!(locked_status(status), ProxyStatus::Listening);
             let spacing = ui.spacing().item_spacing.x;
             let action_width = action_area_width(ui, &["Copy"]);
@@ -1300,9 +1266,10 @@ fn render_endpoint(
                 |ui| {
                     if ui
                         .add_enabled(copy_enabled, egui::Button::new(t("Copy")))
+                        .on_hover_text(copy_command.clone())
                         .clicked()
                     {
-                        ui.ctx().copy_text(endpoint);
+                        ui.ctx().copy_text(copy_command);
                     }
                 },
             );
@@ -1337,72 +1304,27 @@ fn render_endpoint(
                 },
             );
         });
-        ui.add_space(SECTION_GAP);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().interact_size.y = COMPACT_CONTROL_HEIGHT;
-            let example = curl_example_command(
-                &locked_string(listen_ip),
-                &locked_string(listen_port),
-                &locked_string(test_target),
-            );
-            let copy_enabled = matches!(locked_status(status), ProxyStatus::Listening);
-            let spacing = ui.spacing().item_spacing.x;
-            let action_width = action_area_width(ui, &["Copy"]);
-            let label_width = action_button_width(ui, t("Example"));
-            let command_width = (ui.available_width() - label_width - action_width - spacing * 2.0)
-                .max(ui.spacing().interact_size.x);
-            ui.add_sized(
-                [label_width, COMPACT_CONTROL_HEIGHT],
-                egui::Label::new(crate::theme::muted_text(t("Example")).strong()),
-            );
-            ui.add_sized(
-                [command_width, COMPACT_CONTROL_HEIGHT],
-                egui::Label::new(
-                    egui::RichText::new(example.clone()).font(egui::FontId::monospace(12.0)),
-                )
-                .truncate(),
-            )
-            .on_hover_text(example.clone());
-            ui.allocate_ui_with_layout(
-                egui::vec2(action_width, COMPACT_CONTROL_HEIGHT),
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| {
-                    if ui
-                        .add_enabled(copy_enabled, egui::Button::new(t("Copy")))
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(example);
-                    }
-                },
-            );
-        });
     });
 }
 
-fn curl_example_command(listen_ip: &str, listen_port: &str, target: &str) -> String {
-    format!(
-        "curl.exe --socks5-hostname {}:{} {}",
-        proxy_connect_host(listen_ip),
-        listen_port.trim(),
-        curl_example_target_url(target)
-    )
+fn proxy_endpoint_uri(listen_ip: &str, listen_port: &str) -> String {
+    let host = proxy_connect_host(listen_ip);
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    format!("socks5://{}:{}", host, listen_port.trim())
 }
 
-fn curl_example_target_url(target: &str) -> String {
-    match parse_test_target(target).or_else(|_| parse_test_target(DEFAULT_TEST_TARGET)) {
-        Ok(target) => {
-            let host = if target.host.contains(':') {
-                format!("[{}]", target.host)
-            } else {
-                target.host
-            };
-            match target.port {
-                80 => format!("http://{host}"),
-                443 => format!("https://{host}"),
-                port => format!("http://{host}:{port}"),
-            }
-        }
-        Err(_) => "https://www.google.com".to_string(),
+fn proxy_env_command(endpoint: &str) -> String {
+    proxy_env_command_for_os(std::env::consts::OS, endpoint)
+}
+
+fn proxy_env_command_for_os(os: &str, endpoint: &str) -> String {
+    match os {
+        "windows" => format!("set all_proxy={endpoint}\nset ALL_PROXY={endpoint}"),
+        _ => format!("export all_proxy={endpoint}\nexport ALL_PROXY={endpoint}"),
     }
 }
 
@@ -1429,16 +1351,14 @@ fn edit_test_target(ui: &mut egui::Ui, value: &Arc<Mutex<String>>, enabled: bool
 fn render_connections(
     ui: &mut egui::Ui,
     streams: &Arc<Mutex<HashMap<u64, ProxyStreamState>>>,
-    selected_stream: &Arc<Mutex<Option<u64>>>,
     clear_closed_requested: &Arc<AtomicBool>,
-    kill_selected_requested: &Arc<AtomicBool>,
 ) {
     crate::theme::panel_frame_with_margin(PANEL_MARGIN).show(ui, |ui| {
         ui.set_max_height(ui.available_height());
         ui.horizontal(|ui| {
             ui.spacing_mut().interact_size.y = COMPACT_CONTROL_HEIGHT;
             let spacing = ui.spacing().item_spacing.x;
-            let action_width = action_area_width(ui, &["Kill Selected", "Clear Closed"]);
+            let action_width = action_area_width(ui, &["Clear Closed"]);
             let left_width = (ui.available_width() - action_width - spacing).max(120.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(left_width, COMPACT_CONTROL_HEIGHT),
@@ -1450,6 +1370,12 @@ fn render_connections(
                             .color(crate::theme::palette().text)
                             .strong(),
                     );
+                    let limit = MAX_CLOSED_STREAMS.to_string();
+                    ui.label(crate::theme::muted_text(tf(
+                        "History limit {limit}",
+                        &[("limit", limit.as_str())],
+                    )))
+                    .on_hover_text(t("Closed and failed connections are capped"));
                 },
             );
             ui.allocate_ui_with_layout(
@@ -1458,9 +1384,6 @@ fn render_connections(
                 |ui| {
                     if ui.button(t("Clear Closed")).clicked() {
                         clear_closed_requested.store(true, Ordering::Relaxed);
-                    }
-                    if ui.button(t("Kill Selected")).clicked() {
-                        kill_selected_requested.store(true, Ordering::Relaxed);
                     }
                 },
             );
@@ -1472,7 +1395,7 @@ fn render_connections(
             .max_height(available_height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                render_connection_table(ui, streams, selected_stream);
+                render_connection_table(ui, streams);
             });
     });
 }
@@ -1500,7 +1423,6 @@ fn render_status_bar(
 fn render_connection_table(
     ui: &mut egui::Ui,
     streams: &Arc<Mutex<HashMap<u64, ProxyStreamState>>>,
-    selected_stream: &Arc<Mutex<Option<u64>>>,
 ) {
     let rows = connection_rows(streams);
     if rows.is_empty() {
@@ -1517,7 +1439,6 @@ fn render_connection_table(
     let target_width =
         (available_width - state_width - rx_width - tx_width - time_width - detail_width - 30.0)
             .max(160.0);
-    let selected = selected_stream.lock().ok().and_then(|value| *value);
 
     crate::theme::clickable_table(ui, "reverse_proxy_connections_table", true)
         .column(Column::initial(target_width).at_least(150.0).clip(true))
@@ -1537,23 +1458,12 @@ fn render_connection_table(
         .body(|body| {
             body.rows(TABLE_ROW_HEIGHT, rows.len(), |mut row| {
                 let row_data = &rows[row.index()];
-                let is_selected = selected == Some(row_data.stream_id);
-                row.set_selected(is_selected);
                 row.col(|ui| table_text(ui, &compact_text(&row_data.target, 34)));
                 row.col(|ui| table_text(ui, t(row_data.status_label)));
                 row.col(|ui| table_text(ui, &format_bytes(row_data.rx_bytes)));
                 row.col(|ui| table_text(ui, &format_bytes(row_data.tx_bytes)));
                 row.col(|ui| table_text(ui, &format_duration(row_data.duration)));
                 row.col(|ui| table_text(ui, &compact_text(&row_data.detail, 42)));
-                let response = row.response();
-                if response.hovered() {
-                    response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if response.clicked() {
-                    if let Ok(mut selected) = selected_stream.lock() {
-                        *selected = Some(row_data.stream_id);
-                    }
-                }
             });
         });
 }
@@ -1668,7 +1578,6 @@ fn stream_status_label(status: ProxyStreamStatus) -> &'static str {
     match status {
         ProxyStreamStatus::Opening => "Opening",
         ProxyStreamStatus::Open => "Open",
-        ProxyStreamStatus::Closing => "Closing",
         ProxyStreamStatus::Closed => "Closed",
         ProxyStreamStatus::Failed => "Failed",
     }
@@ -1696,6 +1605,32 @@ fn edit_locked_text(
     }
 }
 
+fn is_terminal_stream_status(status: ProxyStreamStatus) -> bool {
+    matches!(
+        status,
+        ProxyStreamStatus::Closed | ProxyStreamStatus::Failed
+    )
+}
+
+fn prune_closed_streams_locked(streams: &mut HashMap<u64, ProxyStreamState>) {
+    let mut terminal = streams
+        .iter()
+        .filter_map(|(stream_id, stream)| {
+            is_terminal_stream_status(stream.status)
+                .then_some((*stream_id, stream.closed_at.unwrap_or(stream.started_at)))
+        })
+        .collect::<Vec<_>>();
+    let remove_count = terminal.len().saturating_sub(MAX_CLOSED_STREAMS);
+    if remove_count == 0 {
+        return;
+    }
+
+    terminal.sort_by_key(|(stream_id, closed_at)| (*closed_at, *stream_id));
+    for (stream_id, _) in terminal.into_iter().take(remove_count) {
+        streams.remove(&stream_id);
+    }
+}
+
 fn mark_stream_closed(
     streams: &Arc<Mutex<HashMap<u64, ProxyStreamState>>>,
     stream_id: u64,
@@ -1711,6 +1646,7 @@ fn mark_stream_closed(
                 .inbound_tx
                 .send(ProxyInbound::Close(detail.to_string()));
         }
+        prune_closed_streams_locked(&mut streams);
     }
 }
 
@@ -1849,26 +1785,83 @@ mod tests {
     }
 
     #[test]
-    fn curl_example_tracks_listen_endpoint() {
+    fn closed_stream_history_is_capped_without_removing_active_streams() {
+        let mut streams = HashMap::new();
+        let base = Instant::now();
+
+        streams.insert(1, test_stream_state(ProxyStreamStatus::Open, base, None));
+        for index in 0..(MAX_CLOSED_STREAMS + 3) {
+            let stream_id = (index + 2) as u64;
+            let closed_at = base + Duration::from_millis(index as u64);
+            streams.insert(
+                stream_id,
+                test_stream_state(ProxyStreamStatus::Closed, closed_at, Some(closed_at)),
+            );
+        }
+
+        prune_closed_streams_locked(&mut streams);
+
+        assert!(streams.contains_key(&1));
         assert_eq!(
-            curl_example_command("127.0.0.1", "5269", "www.google.com:443"),
-            "curl.exe --socks5-hostname 127.0.0.1:5269 https://www.google.com"
+            streams
+                .values()
+                .filter(|stream| is_terminal_stream_status(stream.status))
+                .count(),
+            MAX_CLOSED_STREAMS
         );
-        assert_eq!(
-            curl_example_command("0.0.0.0", "7000", "example.com:80"),
-            "curl.exe --socks5-hostname 127.0.0.1:7000 http://example.com"
-        );
+        assert_eq!(streams.len(), MAX_CLOSED_STREAMS + 1);
+        assert!(!streams.contains_key(&2));
+        assert!(!streams.contains_key(&3));
+        assert!(!streams.contains_key(&4));
+        assert!(streams.contains_key(&((MAX_CLOSED_STREAMS + 4) as u64)));
     }
 
     #[test]
-    fn curl_example_tracks_target() {
+    fn proxy_endpoint_uri_uses_socks5_scheme_and_connectable_host() {
         assert_eq!(
-            curl_example_command("127.0.0.1", "5269", "127.0.0.1:5169"),
-            "curl.exe --socks5-hostname 127.0.0.1:5269 http://127.0.0.1:5169"
+            proxy_endpoint_uri("127.0.0.1", "5269"),
+            "socks5://127.0.0.1:5269"
         );
         assert_eq!(
-            curl_example_command("127.0.0.1", "5269", "[::1]:8080"),
-            "curl.exe --socks5-hostname 127.0.0.1:5269 http://[::1]:8080"
+            proxy_endpoint_uri("0.0.0.0", "7000"),
+            "socks5://127.0.0.1:7000"
         );
+        assert_eq!(proxy_endpoint_uri("::1", "10808"), "socks5://[::1]:10808");
+    }
+
+    #[test]
+    fn proxy_env_command_uses_platform_shell() {
+        let endpoint = "socks5://127.0.0.1:10808";
+
+        assert_eq!(
+            proxy_env_command_for_os("windows", endpoint),
+            "set all_proxy=socks5://127.0.0.1:10808\nset ALL_PROXY=socks5://127.0.0.1:10808"
+        );
+        assert_eq!(
+            proxy_env_command_for_os("linux", endpoint),
+            "export all_proxy=socks5://127.0.0.1:10808\nexport ALL_PROXY=socks5://127.0.0.1:10808"
+        );
+        assert_eq!(
+            proxy_env_command_for_os("macos", endpoint),
+            "export all_proxy=socks5://127.0.0.1:10808\nexport ALL_PROXY=socks5://127.0.0.1:10808"
+        );
+    }
+
+    fn test_stream_state(
+        status: ProxyStreamStatus,
+        started_at: Instant,
+        closed_at: Option<Instant>,
+    ) -> ProxyStreamState {
+        let (inbound_tx, _inbound_rx) = mpsc::channel();
+        ProxyStreamState {
+            target: "example.com:80".to_string(),
+            status,
+            tx_bytes: 0,
+            rx_bytes: 0,
+            started_at,
+            closed_at,
+            detail: String::new(),
+            inbound_tx,
+        }
     }
 }

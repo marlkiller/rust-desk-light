@@ -1216,7 +1216,7 @@ impl AdminApp {
                         ctx.request_repaint();
                     }
                 }
-                self.settings.set_notice(t("Theme and language saved."));
+                self.settings.set_notice(t("Settings saved."));
                 self.push_log(format!(
                     "saved admin preferences theme={theme} language={language}"
                 ));

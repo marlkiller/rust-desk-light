@@ -19,7 +19,7 @@
 - Remote terminal supports cwd, history, streaming output, cancellation, copy, and safe close.
 - Remote desktop supports screen selection, TCP video frames, mouse move/click, and text input.
 - Camera, audio listen, and voice chat are working.
-- Admin supports saved theme and language preferences, with English and Chinese UI resources.
+- Admin supports saved settings preferences, currently including theme and language, with English and Chinese UI resources.
 - Runtime config files are initialized automatically and can be overridden by startup args.
 - Admin can update client server config remotely.
 - Client has a single-instance process lock.
@@ -55,9 +55,11 @@
 
 ### Reverse Proxy
 
-- [ ] Add a Quasar-style reverse proxy for the three-part architecture: Admin opens a local SOCKS5 listener, Server only routes framed proxy messages, and the selected Client opens outbound TCP connections to target hosts.
-- [ ] Support per-connection proxy streams with open, data, and close messages so browser/tool traffic can flow through a chosen remote Client.
-- [ ] Keep this separate from client/server outbound network proxy settings; this feature is a remote network egress tunnel, not an HTTP/SOCKS proxy used to reach the RDL server.
+- [x] Add reverse proxy support for the three-part architecture: Admin opens a local SOCKS5 listener, Server only routes framed proxy messages, and the selected Client opens outbound TCP connections to target hosts.
+- [x] Support per-connection proxy streams with open, data, and close messages so browser/tool traffic can flow through a chosen remote Client.
+- [x] Add the Admin reverse proxy window with start/stop, default `127.0.0.1:5269`, editable test target, built-in SOCKS5 test, per-OS proxy environment command copy, and a connection table.
+- [x] Cap closed/failed connection history at 500 rows while keeping active proxy streams visible.
+- [x] Keep this separate from client/server outbound network proxy settings; this feature is a remote network egress tunnel, not an HTTP/SOCKS proxy used to reach the RDL server.
 
 ### Menu TODOs
 
