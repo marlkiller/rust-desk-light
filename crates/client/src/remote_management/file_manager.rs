@@ -1,4 +1,4 @@
-use rdl_protocol::{FileTransferAction, FileTransferDirection, Message};
+use rdl_protocol::{FileTransferAction, FileTransferDirection, Message, TEMP_UPDATE_PATH_PREFIX};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -311,6 +311,9 @@ fn resolve_path(path: &str) -> PathBuf {
     if path.is_empty() {
         return std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     }
+    if let Some(path) = resolve_temp_update_path(path) {
+        return path;
+    }
     if let Some(path) = expand_home_path(path) {
         return path;
     }
@@ -322,6 +325,27 @@ fn resolve_path(path: &str) -> PathBuf {
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
     }
+}
+
+fn resolve_temp_update_path(path: &str) -> Option<PathBuf> {
+    let rest = path.strip_prefix(TEMP_UPDATE_PATH_PREFIX)?;
+    let mut target = std::env::temp_dir();
+    let mut has_part = false;
+    for part in rest
+        .trim_start_matches(['/', '\\'])
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+    {
+        if part == "." || part == ".." || part.contains('\0') {
+            return None;
+        }
+        target.push(part);
+        has_part = true;
+    }
+    if !has_part {
+        target.push("rdl-client-update");
+    }
+    Some(target)
 }
 
 fn expand_home_path(path: &str) -> Option<PathBuf> {

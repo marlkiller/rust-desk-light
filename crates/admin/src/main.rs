@@ -17,6 +17,7 @@ macro_rules! debug_log {
 }
 
 mod app;
+mod client_binary;
 mod command_menu;
 mod execute;
 mod i18n;

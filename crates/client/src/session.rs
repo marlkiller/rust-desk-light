@@ -1,4 +1,4 @@
-use rdl_protocol::CommandKind;
+use rdl_protocol::{CommandKind, TEMP_UPDATE_PATH_PREFIX};
 #[cfg(not(target_os = "windows"))]
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -52,7 +52,7 @@ impl SessionRequest {
                 .and_then(|value| value.parse::<u64>().ok()),
             update_path: payload_field(payload, "update_path")
                 .filter(|value| !value.trim().is_empty())
-                .map(PathBuf::from),
+                .map(resolve_update_path),
             remove_binary: bool_field(payload, "remove_binary"),
         }
     }
@@ -287,6 +287,82 @@ fn current_args() -> Vec<OsString> {
     std::env::args_os().skip(1).collect()
 }
 
+fn resolve_update_path(path: String) -> PathBuf {
+    let path = path.trim();
+    if let Some(path) = resolve_temp_update_path(path) {
+        return path;
+    }
+    if let Some(path) = expand_home_path(path) {
+        return path;
+    }
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn resolve_temp_update_path(path: &str) -> Option<PathBuf> {
+    let rest = path.strip_prefix(TEMP_UPDATE_PATH_PREFIX)?;
+    let mut target = std::env::temp_dir();
+    let mut has_part = false;
+    for part in rest
+        .trim_start_matches(['/', '\\'])
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+    {
+        if part == "." || part == ".." || part.contains('\0') {
+            return None;
+        }
+        target.push(part);
+        has_part = true;
+    }
+    if !has_part {
+        target.push("rdl-client-update");
+    }
+    Some(target)
+}
+
+fn expand_home_path(path: &str) -> Option<PathBuf> {
+    if path != "~" && !path.starts_with("~/") && !path.starts_with("~\\") {
+        return None;
+    }
+    let mut home = user_home_dir()?;
+    let rest = path
+        .strip_prefix("~/")
+        .or_else(|| path.strip_prefix("~\\"))
+        .unwrap_or("");
+    for part in rest.split(['/', '\\']).filter(|part| !part.is_empty()) {
+        home.push(part);
+    }
+    Some(home)
+}
+
+fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                let drive = std::env::var_os("HOMEDRIVE")?;
+                let path = std::env::var_os("HOMEPATH")?;
+                let mut home = PathBuf::from(drive);
+                home.push(path);
+                Some(home)
+            })
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+}
+
 fn config_file_restart_args(config_path: &Path) -> Vec<OsString> {
     vec![
         OsString::from("--config"),
@@ -324,7 +400,7 @@ fn schedule_replace_and_restart(
 ) -> io::Result<()> {
     let start_process = powershell_start_process(current_exe, args);
     let script = format!(
-        "$pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; Copy-Item -LiteralPath {} -Destination {} -Force; {}",
+        "$ErrorActionPreference='Stop'; $pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; $copied=$false; for ($i=0; $i -lt 60; $i++) {{ try {{ Copy-Item -LiteralPath {} -Destination {} -Force; $copied=$true; break }} catch {{ Start-Sleep -Milliseconds 250 }} }}; {}",
         std::process::id(),
         powershell_string(&update_path.display().to_string()),
         powershell_string(&current_exe.display().to_string()),
@@ -340,7 +416,7 @@ fn schedule_replace_and_restart(
     args: &[OsString],
 ) -> io::Result<()> {
     let script = format!(
-        "while kill -0 {} 2>/dev/null; do sleep 0.2; done; cp {} {}; chmod +x {}; exec {} {}",
+        "while kill -0 {} 2>/dev/null; do sleep 0.2; done; i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; exec {} {}",
         std::process::id(),
         sh_quote(update_path.as_os_str()),
         sh_quote(current_exe.as_os_str()),
