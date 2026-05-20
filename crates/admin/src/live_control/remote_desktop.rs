@@ -142,6 +142,8 @@ fn handle_frame(
     window.stats.last_frame_at = Some(now);
     window.stats.screen_width = frame.screen_width;
     window.stats.screen_height = frame.screen_height;
+    window.stats.image_width = frame.image_width;
+    window.stats.image_height = frame.image_height;
     window.frame = Some(frame);
     window.status = DesktopStatus::Live;
     window.notice = t("Frame received").to_string();
@@ -180,6 +182,8 @@ struct DesktopStats {
     last_frame_at: Option<Instant>,
     screen_width: u32,
     screen_height: u32,
+    image_width: usize,
+    image_height: usize,
 }
 
 #[derive(Clone)]
@@ -1332,10 +1336,22 @@ fn render_status_bar(ui: &mut egui::Ui, status: DesktopStatus, notice: &str, sta
                 stats.frame_count
             )));
             if stats.screen_width > 0 && stats.screen_height > 0 {
-                ui.label(crate::theme::muted_text(format!(
-                    "{}x{}",
-                    stats.screen_width, stats.screen_height
-                )));
+                let size = if stats.image_width > 0
+                    && stats.image_height > 0
+                    && (stats.image_width as u32 != stats.screen_width
+                        || stats.image_height as u32 != stats.screen_height)
+                {
+                    format!(
+                        "{}x{} -> {}x{}",
+                        stats.screen_width,
+                        stats.screen_height,
+                        stats.image_width,
+                        stats.image_height
+                    )
+                } else {
+                    format!("{}x{}", stats.screen_width, stats.screen_height)
+                };
+                ui.label(crate::theme::muted_text(size));
             }
             if stats.encoded_bytes > 0 {
                 ui.label(crate::theme::muted_text(format!(

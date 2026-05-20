@@ -33,7 +33,7 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> C
         | CommandKind::Shutdown
         | CommandKind::Reboot
         | CommandKind::DeleteClient => crate::session::handle(command, payload),
-        CommandKind::ComputerInfo | CommandKind::Clipboard | CommandKind::Proxy => {
+        CommandKind::ComputerInfo | CommandKind::Clipboard => {
             crate::system_info::handle(command, payload)
         }
         CommandKind::FileManager
@@ -67,12 +67,16 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> C
                     .to_string(),
             )
         }
-        _ => format!(
-            "TODO: {} accepted as planned stub; payload='{}'",
-            command.as_str(),
-            payload
-        ),
+        // Interactive stream commands, including reverse proxy, use dedicated Message variants.
+        _ => return CommandReply::rejected(unsupported_command_detail(command)),
     })
+}
+
+fn unsupported_command_detail(command: &CommandKind) -> String {
+    format!(
+        "{}_error\nstatus=unsupported\nmessage=command is not supported by this client",
+        command.as_str()
+    )
 }
 
 pub(crate) fn gui_disabled_detail(command: &CommandKind) -> String {

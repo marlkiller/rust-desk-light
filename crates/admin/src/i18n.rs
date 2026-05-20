@@ -176,6 +176,8 @@ fn zh(key: &'static str) -> &'static str {
         "Client Config" => "客户端配置",
         "Client config loaded." => "客户端配置已加载。",
         "Client config saved. Restarting client." => "客户端配置已保存，正在重启客户端。",
+        "Client Program Path" => "客户端程序路径",
+        "Client restart/update scheduled." => "客户端重启/更新已安排。",
         "Clone Client Settings" => "克隆客户端设置",
         "Clone local socket failed: {error}" => "克隆本地套接字失败：{error}",
         "Clone target stream failed: {error}" => "克隆目标连接失败：{error}",
@@ -355,7 +357,9 @@ fn zh(key: &'static str) -> &'static str {
         "Loading languages..." => "正在加载语言...",
         "Loading..." => "加载中...",
         "Local" => "本地",
+        "Local Replacement Binary" => "本地替换二进制文件",
         "Local read failed: {error}" => "读取本地连接失败：{error}",
+        "Local replacement binary must be a file." => "本地替换二进制必须是文件。",
         "Local side closed" => "本地侧已关闭",
         "Local SOCKS client disconnected" => "本地 SOCKS 客户端已断开",
         "Local socket closed" => "本地连接已关闭",
@@ -468,6 +472,7 @@ fn zh(key: &'static str) -> &'static str {
             "客户端重新连接后远程命令将可用"
         }
         "Remote path" => "远程路径",
+        "Read local replacement binary failed" => "读取本地替换二进制失败",
         "Remove client binary after exit" => "退出后删除客户端二进制文件",
         "Removes local client identity and stops the client." => "移除本地客户端身份并停止客户端。",
         "Removes this client identity and stops the client." => "移除此客户端身份并停止客户端。",
@@ -477,6 +482,19 @@ fn zh(key: &'static str) -> &'static str {
         "Rename local item" => "重命名本地项目",
         "Rename remote item" => "重命名远程项目",
         "Replacement Binary Path" => "替换二进制路径",
+        "Replacement binary is not a rust-desk-light client build." => {
+            "替换二进制不是 rust-desk-light 客户端构建。"
+        }
+        "Replacement binary is not a supported executable format." => {
+            "替换二进制不是支持的可执行文件格式。"
+        }
+        "Replacement binary architecture does not match the selected client." => {
+            "替换二进制架构与所选客户端不匹配。"
+        }
+        "Replacement binary platform does not match the selected client." => {
+            "替换二进制平台与所选客户端不匹配。"
+        }
+        "Replacement binary validation failed" => "替换二进制校验失败",
         "Restarts the remote client process." => "重启远程客户端进程。",
         "Restarts the remote computer." => "重启远程计算机。",
         "Repository" => "仓库",
@@ -512,6 +530,7 @@ fn zh(key: &'static str) -> &'static str {
         "Schedule" => "计划",
         "Scanning" => "扫描中",
         "Screen" => "屏幕",
+        "Select a local replacement binary." => "请选择本地替换二进制文件。",
         "Select a client for actions" => "选择客户端后执行操作",
         "Select a client template binary" => "选择客户端模板二进制文件",
         "Select a client template binary." => "请选择客户端模板二进制文件。",
@@ -519,7 +538,13 @@ fn zh(key: &'static str) -> &'static str {
         "Select a remote file or folder" => "选择远程文件或文件夹",
         "Select an output path." => "请选择输出路径。",
         "Select client template" => "选择客户端模板",
+        "Select replacement binary" => "选择替换二进制文件",
+        "Select replacement binary with Browse to validate." => {
+            "请通过浏览选择替换二进制以完成校验。"
+        }
         "Selected" => "已选择",
+        "Selected replacement binary is invalid." => "所选替换二进制校验失败。",
+        "Selected replacement binary passed validation." => "所选替换二进制已通过校验。",
         "Send" => "发送",
         "Send this command to the client?" => "发送此命令到客户端？",
         "Search by id, fingerprint, host, user, OS, or location" => {
@@ -637,9 +662,21 @@ fn zh(key: &'static str) -> &'static str {
         "Update Client" => "更新客户端",
         "Up" => "上级",
         "Upload" => "上传",
+        "Upload cancelled" => "上传已取消",
+        "Upload complete. Update command sent; client may disconnect." => {
+            "上传完成，已发送更新命令；客户端可能会断开连接。"
+        }
+        "Upload failed" => "上传失败",
         "Upload File..." => "上传文件...",
         "Upload Folder..." => "上传文件夹...",
+        "Upload local replacement binary first" => "先上传本地替换二进制文件",
+        "Upload queued" => "上传已排队",
         "Upload selected local file or folder" => "上传选中的本地文件或文件夹",
+        "Uploading" => "正在上传",
+        "Upload uses the client's temporary directory before restart." => {
+            "上传会先使用客户端的临时目录，然后再重启。"
+        }
+        "Update command sent; client may disconnect." => "更新命令已发送；客户端可能会断开连接。",
         "Use admin token" => "使用管理员令牌",
         "Use current" => "使用当前",
         "Use brackets for IPv6 test targets" => "IPv6 测试目标请使用方括号",
@@ -647,6 +684,7 @@ fn zh(key: &'static str) -> &'static str {
         "User Interaction" => "用户交互",
         "Version" => "版本",
         "Voice Chat" => "语音聊天",
+        "Wait for the current upload to finish." => "请等待当前上传完成。",
         "Waiting for client audio" => "等待客户端音频",
         "Waiting for client result" => "等待客户端结果",
         "Waiting for client result..." => "等待客户端结果...",

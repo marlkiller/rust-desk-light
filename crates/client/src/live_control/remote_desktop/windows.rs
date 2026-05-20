@@ -1,7 +1,5 @@
 pub(crate) mod capture {
-    use super::super::RemoteDesktopVideoFrame;
-    use image::codecs::jpeg::JpegEncoder;
-    use image::ExtendedColorType;
+    use super::super::{FrameChangeDetector, RemoteDesktopVideoFrame};
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
     use std::ptr::{null, null_mut};
@@ -53,6 +51,8 @@ pub(crate) mod capture {
         image_height: u32,
         bgra_buffer: Vec<u8>,
         rgb_buffer: Vec<u8>,
+        resources: CaptureResources,
+        change_detector: FrameChangeDetector,
     }
 
     impl CaptureStream {
@@ -69,6 +69,7 @@ pub(crate) mod capture {
             let quality = quality_profile(quality);
             let (image_width, image_height) =
                 scaled_size(screen.width, screen.height, quality.max_width);
+            let resources = CaptureResources::new(image_width, image_height)?;
             Ok(Self {
                 screen,
                 quality,
@@ -76,47 +77,187 @@ pub(crate) mod capture {
                 image_height,
                 bgra_buffer: Vec::new(),
                 rgb_buffer: Vec::new(),
+                resources,
+                change_detector: FrameChangeDetector::default(),
             })
         }
 
-        pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
-            capture_bgra(
-                self.screen.x,
-                self.screen.y,
-                self.screen.width,
-                self.screen.height,
-                self.image_width,
-                self.image_height,
-                &mut self.bgra_buffer,
-            )
-            .map_err(|error| {
-                format!(
-                    "{error} screen={} origin={},{} size={}x{}",
-                    self.screen.index,
+        pub(crate) fn capture_frame(&mut self) -> Result<Option<RemoteDesktopVideoFrame>, String> {
+            self.resources
+                .capture_bgra(
                     self.screen.x,
                     self.screen.y,
                     self.screen.width,
-                    self.screen.height
+                    self.screen.height,
+                    &mut self.bgra_buffer,
                 )
-            })?;
+                .map_err(|error| {
+                    format!(
+                        "{error} screen={} origin={},{} size={}x{}",
+                        self.screen.index,
+                        self.screen.x,
+                        self.screen.y,
+                        self.screen.width,
+                        self.screen.height
+                    )
+                })?;
+            if !self.change_detector.should_send(&self.bgra_buffer) {
+                return Ok(None);
+            }
             write_rgb_from_bgra(&self.bgra_buffer, &mut self.rgb_buffer)?;
-            let mut encoded = Vec::new();
-            JpegEncoder::new_with_quality(&mut encoded, self.quality.jpeg_quality)
-                .encode(
-                    &self.rgb_buffer,
-                    self.image_width,
-                    self.image_height,
-                    ExtendedColorType::Rgb8,
-                )
-                .map_err(|error| format!("jpeg encode failed: {error}"))?;
-            Ok(RemoteDesktopVideoFrame {
+            let encoded = encode_rgb_jpeg(
+                &self.rgb_buffer,
+                self.image_width,
+                self.image_height,
+                self.quality.jpeg_quality,
+            )?;
+            Ok(Some(RemoteDesktopVideoFrame {
                 source_width: self.screen.width,
                 source_height: self.screen.height,
                 image_width: self.image_width,
                 image_height: self.image_height,
                 format: "jpeg".to_string(),
                 bytes: encoded,
-            })
+            }))
+        }
+    }
+
+    struct CaptureResources {
+        screen_dc: HDC,
+        memory_dc: HDC,
+        bitmap: HBITMAP,
+        old_object: HGDIOBJ,
+        info: BITMAPINFO,
+        image_width: u32,
+        image_height: u32,
+    }
+
+    impl CaptureResources {
+        fn new(image_width: u32, image_height: u32) -> Result<Self, String> {
+            unsafe {
+                let screen_dc = GetDC(null_mut());
+                if screen_dc.is_null() {
+                    return Err(format!("GetDC failed: error={}", last_error_code()));
+                }
+                let memory_dc = CreateCompatibleDC(screen_dc);
+                if memory_dc.is_null() {
+                    ReleaseDC(null_mut(), screen_dc);
+                    return Err(format!(
+                        "CreateCompatibleDC failed: error={}",
+                        last_error_code()
+                    ));
+                }
+                let bitmap =
+                    CreateCompatibleBitmap(screen_dc, image_width as i32, image_height as i32);
+                if bitmap.is_null() {
+                    DeleteDC(memory_dc);
+                    ReleaseDC(null_mut(), screen_dc);
+                    return Err(format!(
+                        "CreateCompatibleBitmap failed: error={}",
+                        last_error_code()
+                    ));
+                }
+                let old_object = SelectObject(memory_dc, bitmap as HGDIOBJ);
+                if old_object.is_null() {
+                    DeleteObject(bitmap as HGDIOBJ);
+                    DeleteDC(memory_dc);
+                    ReleaseDC(null_mut(), screen_dc);
+                    return Err(format!("SelectObject failed: error={}", last_error_code()));
+                }
+                let info = BITMAPINFO {
+                    bmiHeader: BITMAPINFOHEADER {
+                        biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                        biWidth: image_width as i32,
+                        biHeight: -(image_height as i32),
+                        biPlanes: 1,
+                        biBitCount: 32,
+                        biCompression: BI_RGB,
+                        biSizeImage: 0,
+                        biXPelsPerMeter: 0,
+                        biYPelsPerMeter: 0,
+                        biClrUsed: 0,
+                        biClrImportant: 0,
+                    },
+                    bmiColors: [zeroed()],
+                };
+                Ok(Self {
+                    screen_dc,
+                    memory_dc,
+                    bitmap: bitmap as HBITMAP,
+                    old_object,
+                    info,
+                    image_width,
+                    image_height,
+                })
+            }
+        }
+
+        fn capture_bgra(
+            &mut self,
+            x: i32,
+            y: i32,
+            source_width: u32,
+            source_height: u32,
+            buffer: &mut Vec<u8>,
+        ) -> Result<(), String> {
+            let buffer_len = self
+                .image_width
+                .checked_mul(self.image_height)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .ok_or_else(|| "selected screen is too large".to_string())?
+                as usize;
+            let blit_result = blit_to_bitmap(
+                self.memory_dc,
+                self.screen_dc,
+                x,
+                y,
+                source_width,
+                source_height,
+                self.image_width,
+                self.image_height,
+            );
+            buffer.resize(buffer_len, 0);
+            let dib_lines = if blit_result.is_ok() {
+                unsafe {
+                    GetDIBits(
+                        self.memory_dc,
+                        self.bitmap,
+                        0,
+                        self.image_height,
+                        buffer.as_mut_ptr() as *mut c_void,
+                        &mut self.info,
+                        DIB_RGB_COLORS,
+                    )
+                }
+            } else {
+                0
+            };
+            let dib_error = last_error_code();
+
+            blit_result?;
+            if dib_lines == 0 {
+                return Err(format!("GetDIBits failed: error={dib_error}"));
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for CaptureResources {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.old_object.is_null() {
+                    SelectObject(self.memory_dc, self.old_object);
+                }
+                if !self.bitmap.is_null() {
+                    DeleteObject(self.bitmap as HGDIOBJ);
+                }
+                if !self.memory_dc.is_null() {
+                    DeleteDC(self.memory_dc);
+                }
+                if !self.screen_dc.is_null() {
+                    ReleaseDC(null_mut(), self.screen_dc);
+                }
+            }
         }
     }
 
@@ -170,104 +311,6 @@ pub(crate) mod capture {
         let width = ((source_width as f32 * scale).round() as u32).max(1);
         let height = ((source_height as f32 * scale).round() as u32).max(1);
         (width, height)
-    }
-
-    fn capture_bgra(
-        x: i32,
-        y: i32,
-        source_width: u32,
-        source_height: u32,
-        image_width: u32,
-        image_height: u32,
-        buffer: &mut Vec<u8>,
-    ) -> Result<(), String> {
-        let buffer_len = image_width
-            .checked_mul(image_height)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| "selected screen is too large".to_string())?
-            as usize;
-        unsafe {
-            let screen_dc = GetDC(null_mut());
-            if screen_dc.is_null() {
-                return Err(format!("GetDC failed: error={}", last_error_code()));
-            }
-            let memory_dc = CreateCompatibleDC(screen_dc);
-            if memory_dc.is_null() {
-                ReleaseDC(null_mut(), screen_dc);
-                return Err(format!(
-                    "CreateCompatibleDC failed: error={}",
-                    last_error_code()
-                ));
-            }
-            let bitmap = CreateCompatibleBitmap(screen_dc, image_width as i32, image_height as i32);
-            if bitmap.is_null() {
-                DeleteDC(memory_dc);
-                ReleaseDC(null_mut(), screen_dc);
-                return Err(format!(
-                    "CreateCompatibleBitmap failed: error={}",
-                    last_error_code()
-                ));
-            }
-            let old_object = SelectObject(memory_dc, bitmap as HGDIOBJ);
-            if old_object.is_null() {
-                DeleteObject(bitmap as HGDIOBJ);
-                DeleteDC(memory_dc);
-                ReleaseDC(null_mut(), screen_dc);
-                return Err(format!("SelectObject failed: error={}", last_error_code()));
-            }
-
-            let blit_result = blit_to_bitmap(
-                memory_dc,
-                screen_dc,
-                x,
-                y,
-                source_width,
-                source_height,
-                image_width,
-                image_height,
-            );
-            buffer.resize(buffer_len, 0);
-            let mut info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: image_width as i32,
-                    biHeight: -(image_height as i32),
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB,
-                    biSizeImage: 0,
-                    biXPelsPerMeter: 0,
-                    biYPelsPerMeter: 0,
-                    biClrUsed: 0,
-                    biClrImportant: 0,
-                },
-                bmiColors: [zeroed()],
-            };
-            let dib_lines = if blit_result.is_ok() {
-                GetDIBits(
-                    memory_dc,
-                    bitmap as HBITMAP,
-                    0,
-                    image_height,
-                    buffer.as_mut_ptr() as *mut c_void,
-                    &mut info,
-                    DIB_RGB_COLORS,
-                )
-            } else {
-                0
-            };
-            let dib_error = last_error_code();
-            SelectObject(memory_dc, old_object);
-            DeleteObject(bitmap as HGDIOBJ);
-            DeleteDC(memory_dc);
-            ReleaseDC(null_mut(), screen_dc);
-
-            blit_result?;
-            if dib_lines == 0 {
-                return Err(format!("GetDIBits failed: error={dib_error}"));
-            }
-            Ok(())
-        }
     }
 
     fn blit_to_bitmap(
@@ -380,6 +423,31 @@ pub(crate) mod capture {
             target[2] = source[0];
         }
         Ok(())
+    }
+
+    fn encode_rgb_jpeg(
+        rgb: &[u8],
+        width: u32,
+        height: u32,
+        quality: u8,
+    ) -> Result<Vec<u8>, String> {
+        let encode = || -> Result<Vec<u8>, String> {
+            let mut compressor = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+            compressor.set_fastest_defaults();
+            compressor.set_size(width as usize, height as usize);
+            compressor.set_quality(quality as f32);
+            let mut compressor = compressor
+                .start_compress(Vec::new())
+                .map_err(|error| format!("jpeg encode start failed: {error}"))?;
+            compressor
+                .write_scanlines(rgb)
+                .map_err(|error| format!("jpeg encode failed: {error}"))?;
+            compressor
+                .finish()
+                .map_err(|error| format!("jpeg encode finish failed: {error}"))
+        };
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(encode))
+            .map_err(|_| "jpeg encode panicked".to_string())?
     }
 
     unsafe extern "system" fn enum_monitor(

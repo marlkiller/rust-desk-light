@@ -1,5 +1,9 @@
 use super::ui::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, TOOLBAR_CONTROL_HEIGHT};
-use crate::{i18n::t, runtime::Config};
+use crate::{
+    client_binary::detect_binary_format,
+    i18n::{self, t, Language},
+    runtime::Config,
+};
 use chrono::{Local, TimeZone};
 use eframe::egui;
 use rdl_config::{ConfigKind, EndpointConfig};
@@ -22,6 +26,7 @@ pub(super) struct ClientBuilderState {
     build_status: BuildStatus,
     template_status: TemplateStatus,
     last_template_path: String,
+    report_language: Language,
 }
 
 enum TemplateStatus {
@@ -63,6 +68,7 @@ impl ClientBuilderState {
             build_status: BuildStatus::Idle,
             template_status: TemplateStatus::Unknown(t("Template not loaded").to_string()),
             last_template_path: String::new(),
+            report_language: i18n::current_language(),
         };
         state.refresh_template_report();
         state
@@ -80,6 +86,7 @@ impl ClientBuilderState {
 
         let mut log_line = None;
         egui::Window::new(t("Client Builder"))
+            .id(egui::Id::new("admin_client_builder_window"))
             .open(open)
             .default_width(620.0)
             .resizable(true)
@@ -209,14 +216,19 @@ impl ClientBuilderState {
     }
 
     fn refresh_template_report_if_needed(&mut self) {
-        if self.template_path != self.last_template_path {
-            self.build_status = BuildStatus::Idle;
+        let template_changed = self.template_path != self.last_template_path;
+        let language_changed = self.report_language != i18n::current_language();
+        if template_changed || language_changed {
+            if template_changed {
+                self.build_status = BuildStatus::Idle;
+            }
             self.refresh_template_report();
         }
     }
 
     fn refresh_template_report(&mut self) {
         self.last_template_path = self.template_path.clone();
+        self.report_language = i18n::current_language();
         let report = inspect_template(&self.template_path);
         self.template_detail = report.detail;
         self.template_status = report.status;
@@ -528,188 +540,9 @@ fn inspect_template(path_text: &str) -> TemplateReport {
     }
 }
 
-struct BinaryFormat {
-    platform: &'static str,
-    format: &'static str,
-    arch: String,
-}
-
 struct TemplateReport {
     detail: String,
     status: TemplateStatus,
-}
-
-fn detect_binary_format(bytes: &[u8]) -> BinaryFormat {
-    if let Some(format) = detect_pe(bytes) {
-        return format;
-    }
-    if let Some(format) = detect_elf(bytes) {
-        return format;
-    }
-    if let Some(format) = detect_mach_o(bytes) {
-        return format;
-    }
-    BinaryFormat {
-        platform: "Unknown",
-        format: "Unknown binary",
-        arch: "unknown".to_string(),
-    }
-}
-
-fn detect_pe(bytes: &[u8]) -> Option<BinaryFormat> {
-    if !bytes.starts_with(b"MZ") || bytes.len() < 0x40 {
-        return None;
-    }
-    let header_offset = read_u32_le(bytes, 0x3c)? as usize;
-    if header_offset.checked_add(6)? > bytes.len()
-        || bytes.get(header_offset..header_offset + 4)? != b"PE\0\0"
-    {
-        return None;
-    }
-    let machine = read_u16_le(bytes, header_offset + 4)?;
-    Some(BinaryFormat {
-        platform: "Windows",
-        format: "PE",
-        arch: pe_arch(machine).to_string(),
-    })
-}
-
-fn detect_elf(bytes: &[u8]) -> Option<BinaryFormat> {
-    if !bytes.starts_with(b"\x7fELF") || bytes.len() < 20 {
-        return None;
-    }
-    let class = match bytes[4] {
-        1 => "ELF 32-bit",
-        2 => "ELF 64-bit",
-        _ => "ELF",
-    };
-    let machine = match bytes[5] {
-        1 => read_u16_le(bytes, 18)?,
-        2 => read_u16_be(bytes, 18)?,
-        _ => return None,
-    };
-    Some(BinaryFormat {
-        platform: "Linux/Unix",
-        format: class,
-        arch: elf_arch(machine).to_string(),
-    })
-}
-
-fn detect_mach_o(bytes: &[u8]) -> Option<BinaryFormat> {
-    if bytes.len() < 8 {
-        return None;
-    }
-    let magic = &bytes[..4];
-    match magic {
-        [0xca, 0xfe, 0xba, 0xbe] | [0xca, 0xfe, 0xba, 0xbf] => detect_mach_o_fat(bytes, true),
-        [0xbe, 0xba, 0xfe, 0xca] | [0xbf, 0xba, 0xfe, 0xca] => detect_mach_o_fat(bytes, false),
-        [0xfe, 0xed, 0xfa, 0xce] | [0xfe, 0xed, 0xfa, 0xcf] => detect_mach_o_single(bytes, true),
-        [0xce, 0xfa, 0xed, 0xfe] | [0xcf, 0xfa, 0xed, 0xfe] => detect_mach_o_single(bytes, false),
-        _ => None,
-    }
-}
-
-fn detect_mach_o_single(bytes: &[u8], big_endian: bool) -> Option<BinaryFormat> {
-    let cputype = if big_endian {
-        read_u32_be(bytes, 4)?
-    } else {
-        read_u32_le(bytes, 4)?
-    };
-    let format = match &bytes[..4] {
-        [0xfe, 0xed, 0xfa, 0xcf] | [0xcf, 0xfa, 0xed, 0xfe] => "Mach-O 64-bit",
-        _ => "Mach-O 32-bit",
-    };
-    Some(BinaryFormat {
-        platform: "macOS",
-        format,
-        arch: mach_arch(cputype).to_string(),
-    })
-}
-
-fn detect_mach_o_fat(bytes: &[u8], big_endian: bool) -> Option<BinaryFormat> {
-    let count = if big_endian {
-        read_u32_be(bytes, 4)?
-    } else {
-        read_u32_le(bytes, 4)?
-    }
-    .min(16);
-    let mut archs = Vec::new();
-    for index in 0..count as usize {
-        let offset = 8 + index * 20;
-        if offset + 4 > bytes.len() {
-            break;
-        }
-        let cputype = if big_endian {
-            read_u32_be(bytes, offset)?
-        } else {
-            read_u32_le(bytes, offset)?
-        };
-        archs.push(mach_arch(cputype).to_string());
-    }
-    Some(BinaryFormat {
-        platform: "macOS",
-        format: "Mach-O universal",
-        arch: if archs.is_empty() {
-            "unknown".to_string()
-        } else {
-            archs.join(", ")
-        },
-    })
-}
-
-fn pe_arch(machine: u16) -> &'static str {
-    match machine {
-        0x014c => "x86",
-        0x8664 => "x86_64",
-        0xaa64 => "arm64",
-        0x01c0 | 0x01c4 => "arm",
-        _ => "unknown",
-    }
-}
-
-fn elf_arch(machine: u16) -> &'static str {
-    match machine {
-        0x0003 => "x86",
-        0x003e => "x86_64",
-        0x0028 => "arm",
-        0x00b7 => "arm64",
-        0x00f3 => "riscv",
-        _ => "unknown",
-    }
-}
-
-fn mach_arch(cputype: u32) -> &'static str {
-    match cputype {
-        0x0000_0007 => "x86",
-        0x0100_0007 => "x86_64",
-        0x0000_000c => "arm",
-        0x0100_000c => "arm64",
-        _ => "unknown",
-    }
-}
-
-fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(
-        bytes.get(offset..offset + 2)?.try_into().ok()?,
-    ))
-}
-
-fn read_u16_be(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(
-        bytes.get(offset..offset + 2)?.try_into().ok()?,
-    ))
-}
-
-fn read_u32_le(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        bytes.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-fn read_u32_be(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(
-        bytes.get(offset..offset + 4)?.try_into().ok()?,
-    ))
 }
 
 fn human_size(bytes: u64) -> String {

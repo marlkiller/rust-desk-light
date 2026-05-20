@@ -8,6 +8,7 @@ pub const PROTOCOL_VERSION: u16 = 2;
 pub const FRAME_MAGIC: [u8; 4] = *b"RDL1";
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 pub const REMOTE_TERMINAL_CANCEL: &str = "__rdl_terminal_cancel";
+pub const TEMP_UPDATE_PATH_PREFIX: &str = "rdl-temp://";
 
 const HEADER_LEN: usize = 10;
 const ENVELOPE_FIXED_LEN: usize = 27;

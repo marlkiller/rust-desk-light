@@ -9,7 +9,6 @@ pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {
         CommandKind::ComputerInfo => computer_info(),
         CommandKind::Clipboard => clipboard_command(payload),
-        CommandKind::Proxy => format!("TODO: {} accepted as planned stub", command.as_str()),
         _ => unreachable!("system_info received non-system command"),
     }
 }

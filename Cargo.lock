@@ -3464,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-admin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "chrono",
@@ -3483,7 +3483,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-assets"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "egui",
  "image",
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-client"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "core-foundation 0.9.4",
@@ -3500,6 +3500,7 @@ dependencies = [
  "eframe",
  "fs2",
  "image",
+ "mozjpeg",
  "nokhwa",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -3512,18 +3513,18 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-config"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rust-desk-light-protocol",
 ]
 
 [[package]]
 name = "rust-desk-light-protocol"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "rust-desk-light-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "getrandom 0.3.4",
  "maxminddb",
@@ -3534,7 +3535,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-version"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "rustc-hash"

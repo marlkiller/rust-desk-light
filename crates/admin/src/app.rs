@@ -551,6 +551,18 @@ impl AdminApp {
                             }
                             continue;
                         }
+                        if let Some(result) = crate::session::handle_update_upload_transfer(
+                            &mut self.session_command_windows,
+                            &message,
+                        ) {
+                            if let crate::session::SessionFileTransferResult::SendCommand(
+                                outbound,
+                            ) = result
+                            {
+                                self.send_session_command(outbound);
+                            }
+                            continue;
+                        }
                         let client_id = target_id.clone();
                         let (hostname, username) = self.client_window_identity(&client_id);
                         remote_management::file_manager::handle_transfer(
@@ -962,11 +974,13 @@ impl AdminApp {
 
     fn open_session_command_window(&mut self, client_id: &str, command: CommandKind) {
         let (hostname, username) = self.client_window_identity(client_id);
+        let client_os = self.client_os(client_id);
         crate::session::open_window(
             &mut self.session_command_windows,
             client_id,
             hostname,
             username,
+            client_os,
             command,
             &self.config.ip,
             self.config.port,
@@ -1089,6 +1103,14 @@ impl AdminApp {
             .unwrap_or_else(|| ("unknown-host".to_string(), "unknown-user".to_string()))
     }
 
+    fn client_os(&self, client_id: &str) -> String {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| row.info.os.clone())
+            .unwrap_or_default()
+    }
+
     fn client_group(&self, client_id: &str) -> &str {
         self.client_groups
             .get(client_id)
@@ -1195,6 +1217,22 @@ impl AdminApp {
             )
         {
             self.push_log(format!("client config snapshot received from {client_id}"));
+            return;
+        }
+        if command == CommandKind::UpdateClient
+            && crate::session::handle_update_client_ack(
+                &mut self.session_command_windows,
+                &client_id,
+                accepted,
+                &detail,
+            )
+        {
+            self.push_log(format!(
+                "update client result client={} accepted={} detail={}",
+                client_id,
+                accepted,
+                sanitize_log_value(&detail)
+            ));
             return;
         }
         if session_command_requires_confirmation(&command) {
@@ -1881,18 +1919,85 @@ impl AdminApp {
     }
 
     fn render_session_command_windows(&mut self, ctx: &egui::Context) {
-        for outbound in crate::session::render_windows(ctx, &mut self.session_command_windows) {
-            let _ = self.input_tx.send(AdminInput::Command {
-                target_id: outbound.client_id.clone(),
-                command: outbound.command.clone(),
-                payload: outbound.payload,
-            });
-            self.push_log(format!(
-                "sent command={} to {}",
-                outbound.command.as_str(),
-                outbound.client_id
-            ));
+        for action in crate::session::render_windows(ctx, &mut self.session_command_windows) {
+            match action {
+                crate::session::OutboundSessionAction::Command(outbound) => {
+                    self.send_session_command(outbound);
+                }
+                crate::session::OutboundSessionAction::UpdateUpload(request) => {
+                    self.handle_session_update_upload(request);
+                }
+            }
         }
+    }
+
+    fn send_session_command(&mut self, outbound: crate::session::OutboundSessionCommand) {
+        let _ = self.input_tx.send(AdminInput::Command {
+            target_id: outbound.client_id.clone(),
+            command: outbound.command.clone(),
+            payload: outbound.payload,
+        });
+        self.push_log(format!(
+            "sent command={} to {}",
+            outbound.command.as_str(),
+            outbound.client_id
+        ));
+    }
+
+    fn handle_session_update_upload(&mut self, request: crate::session::UpdateUploadRequest) {
+        self.unignore_file_transfer(&request.client_id, request.transfer_id);
+        debug_log!(
+            "debug event=admin_update_upload_request client={} id={} local_path={} remote_path={}",
+            request.client_id,
+            request.transfer_id,
+            request.local_path,
+            request.remote_path
+        );
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let input_tx = self.input_tx.clone();
+        let sink = AdminEventSink::new(
+            self.event_tx.clone(),
+            Some(self.repaint_handle.clone()),
+            None,
+        );
+        let client_id = request.client_id.clone();
+        let transfer_id = request.transfer_id;
+        let local_path = request.local_path.clone();
+        let remote_path = request.remote_path.clone();
+        thread::spawn(move || {
+            let result = run_file_upload_transfer(
+                &input_tx,
+                &client_id,
+                transfer_id,
+                &local_path,
+                &remote_path,
+                cancel_flag,
+            );
+            if let Err(error) = result {
+                let _ = send_upload_cancel(&input_tx, &client_id, transfer_id, &remote_path);
+                if error.kind() == io::ErrorKind::Interrupted {
+                    return;
+                }
+                sink.send(AdminEvent::FileTransfer(file_transfer_message(
+                    client_id,
+                    transfer_id,
+                    FileTransferDirection::Upload,
+                    FileTransferAction::Error,
+                    remote_path.clone(),
+                    String::new(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    Vec::new(),
+                    format!("upload failed: {error}"),
+                )));
+            }
+        });
+        self.push_log(format!(
+            "queued update upload id={} to {}",
+            request.transfer_id, request.client_id
+        ));
     }
 
     fn render_execute_windows(&mut self, ctx: &egui::Context) {
