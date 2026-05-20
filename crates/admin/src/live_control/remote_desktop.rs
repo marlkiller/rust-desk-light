@@ -16,7 +16,6 @@ const DEFAULT_TARGET_FPS: u32 = 5;
 const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 const FPS_DROPDOWN_WIDTH: f32 = 74.0;
-const MOUSE_DROPDOWN_WIDTH: f32 = 132.0;
 const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
 pub(crate) struct RemoteDesktopWindow {
@@ -33,7 +32,8 @@ pub(crate) struct RemoteDesktopWindow {
     selected_screen: Arc<Mutex<usize>>,
     quality: Arc<Mutex<String>>,
     target_fps: Arc<Mutex<u32>>,
-    mouse_mode: Arc<Mutex<MouseControlMode>>,
+    mouse_control: Arc<AtomicBool>,
+    mouse_drag: Arc<Mutex<MouseDragState>>,
     keyboard_control: Arc<AtomicBool>,
     last_mouse_move: Arc<Mutex<Instant>>,
     last_mouse_target: Arc<Mutex<Option<(i32, i32)>>>,
@@ -152,6 +152,9 @@ fn stop_capture(window: &mut RemoteDesktopWindow, notice: &str) {
     if let Ok(mut target) = window.last_mouse_target.lock() {
         *target = None;
     }
+    if let Ok(mut drag) = window.mouse_drag.lock() {
+        *drag = MouseDragState::default();
+    }
     window.pending_since = None;
     window.stats.fps = 0.0;
     window.stats.latency_ms = None;
@@ -194,39 +197,30 @@ enum DesktopStatus {
     Failed,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum MouseControlMode {
-    Off,
-    Move,
-    Click,
-    MoveAndClick,
+#[derive(Clone, Copy, Default)]
+struct MouseDragState {
+    active: bool,
+    last_point: Option<(i32, i32)>,
 }
 
-impl MouseControlMode {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Off => t("Off"),
-            Self::Move => t("Mouse Move"),
-            Self::Click => t("Mouse Click"),
-            Self::MoveAndClick => t("Mouse Move + Click"),
+impl MouseDragState {
+    fn start(&mut self, point: (i32, i32)) {
+        self.active = true;
+        self.last_point = Some(point);
+    }
+
+    fn update(&mut self, point: (i32, i32)) {
+        self.last_point = Some(point);
+    }
+
+    fn stop(&mut self) -> Option<(i32, i32)> {
+        if !self.active {
+            return None;
         }
-    }
-
-    fn moves(self) -> bool {
-        matches!(self, Self::Move | Self::MoveAndClick)
-    }
-
-    fn clicks(self) -> bool {
-        matches!(self, Self::Click | Self::MoveAndClick)
+        self.active = false;
+        self.last_point
     }
 }
-
-const MOUSE_CONTROL_MODES: [MouseControlMode; 4] = [
-    MouseControlMode::Off,
-    MouseControlMode::Move,
-    MouseControlMode::Click,
-    MouseControlMode::MoveAndClick,
-];
 
 pub(crate) struct OutboundCommand {
     pub(crate) client_id: String,
@@ -266,7 +260,8 @@ pub(crate) fn open_window(
         selected_screen: Arc::new(Mutex::new(0)),
         quality: Arc::new(Mutex::new(DEFAULT_QUALITY.to_string())),
         target_fps: Arc::new(Mutex::new(DEFAULT_TARGET_FPS)),
-        mouse_mode: Arc::new(Mutex::new(MouseControlMode::Off)),
+        mouse_control: Arc::new(AtomicBool::new(false)),
+        mouse_drag: Arc::new(Mutex::new(MouseDragState::default())),
         keyboard_control: Arc::new(AtomicBool::new(false)),
         last_mouse_move: Arc::new(Mutex::new(Instant::now())),
         last_mouse_target: Arc::new(Mutex::new(None)),
@@ -331,6 +326,13 @@ pub(crate) fn render_windows(
     let mut outbound = Vec::new();
     for window in windows.iter_mut() {
         if window.close_requested.load(Ordering::Relaxed) {
+            if let Some(payload) = take_drag_release_payload(window) {
+                outbound.push(OutboundCommand {
+                    client_id: window.client_id.clone(),
+                    payload,
+                    input: true,
+                });
+            }
             if window.running.load(Ordering::Relaxed) || window.pending_since.is_some() {
                 outbound.push(OutboundCommand {
                     client_id: window.client_id.clone(),
@@ -410,7 +412,8 @@ pub(crate) fn render_windows(
         let selected_screen = window.selected_screen.clone();
         let quality = window.quality.clone();
         let target_fps = window.target_fps.clone();
-        let mouse_mode = window.mouse_mode.clone();
+        let mouse_control = window.mouse_control.clone();
+        let mouse_drag = window.mouse_drag.clone();
         let keyboard_control = window.keyboard_control.clone();
         let last_mouse_move = window.last_mouse_move.clone();
         let last_mouse_target = window.last_mouse_target.clone();
@@ -434,7 +437,7 @@ pub(crate) fn render_windows(
                         &selected_screen,
                         &quality,
                         &target_fps,
-                        &mouse_mode,
+                        &mouse_control,
                         &keyboard_control,
                         &running,
                         &queued_for_ui,
@@ -452,7 +455,8 @@ pub(crate) fn render_windows(
                                 texture.as_ref(),
                                 frame_info,
                                 screen_origin,
-                                &mouse_mode,
+                                &mouse_control,
+                                &mouse_drag,
                                 &keyboard_control,
                                 &last_mouse_move,
                                 &last_mouse_target,
@@ -477,7 +481,11 @@ pub(crate) fn render_windows(
         if let Ok(mut queued) = queued.lock() {
             for payload in queued.drain(..) {
                 if payload.trim() == "action=stop" {
+                    let release_payload = take_drag_release_payload(window);
                     stop_capture(window, t("Stopped"));
+                    if let Some(release_payload) = release_payload {
+                        window.queue_payload(release_payload);
+                    }
                 }
                 window.queue_payload(payload);
             }
@@ -518,13 +526,22 @@ impl RemoteDesktopWindow {
     }
 }
 
+fn take_drag_release_payload(window: &RemoteDesktopWindow) -> Option<String> {
+    window
+        .mouse_drag
+        .lock()
+        .ok()
+        .and_then(|mut drag| drag.stop())
+        .map(|(x, y)| format!("action=mouse_up\nbutton=left\nx={x}\ny={y}"))
+}
+
 fn render_toolbar(
     ui: &mut egui::Ui,
     screens: &[RemoteScreen],
     selected_screen: &Arc<Mutex<usize>>,
     quality: &Arc<Mutex<String>>,
     target_fps: &Arc<Mutex<u32>>,
-    mouse_mode: &Arc<Mutex<MouseControlMode>>,
+    mouse_control: &Arc<AtomicBool>,
     keyboard_control: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
     queued: &Arc<Mutex<Vec<String>>>,
@@ -671,35 +688,12 @@ fn render_toolbar(
                     );
                 }
             }
-            ui.label(
-                egui::RichText::new(t("Mouse Control"))
-                    .size(12.0)
-                    .color(crate::theme::palette().muted),
-            );
-            let mut selected_mouse_mode = mouse_mode
-                .lock()
-                .map(|value| *value)
-                .unwrap_or(MouseControlMode::Off);
-            toolbar_dropdown(
-                ui,
-                "remote_desktop_mouse_control",
-                selected_mouse_mode.label(),
-                MOUSE_DROPDOWN_WIDTH,
-                is_running,
-                |ui| {
-                    ui.set_min_width(MOUSE_DROPDOWN_WIDTH);
-                    for option in MOUSE_CONTROL_MODES {
-                        if ui
-                            .selectable_value(&mut selected_mouse_mode, option, option.label())
-                            .clicked()
-                        {
-                            ui.close();
-                        }
-                    }
-                },
-            );
-            if let Ok(mut value) = mouse_mode.lock() {
-                *value = selected_mouse_mode;
+            let mut mouse = mouse_control.load(Ordering::Relaxed);
+            if ui
+                .add_enabled(is_running, egui::Checkbox::new(&mut mouse, t("Mouse")))
+                .changed()
+            {
+                mouse_control.store(mouse, Ordering::Relaxed);
             }
             let mut keyboard = keyboard_control.load(Ordering::Relaxed);
             if ui
@@ -793,7 +787,8 @@ fn render_frame(
     texture: Option<&egui::TextureHandle>,
     frame_info: Option<(u32, u32, usize, usize)>,
     screen_origin: (i32, i32),
-    mouse_mode: &Arc<Mutex<MouseControlMode>>,
+    mouse_control: &Arc<AtomicBool>,
+    mouse_drag: &Arc<Mutex<MouseDragState>>,
     keyboard_control: &Arc<AtomicBool>,
     last_mouse_move: &Arc<Mutex<Instant>>,
     last_mouse_target: &Arc<Mutex<Option<(i32, i32)>>>,
@@ -819,42 +814,128 @@ fn render_frame(
             .fit_to_exact_size(size)
             .sense(egui::Sense::click_and_drag());
         let response = ui.add(image);
-        let mode = mouse_mode
-            .lock()
-            .map(|value| *value)
-            .unwrap_or(MouseControlMode::Off);
         if response.clicked() && keyboard_control.load(Ordering::Relaxed) {
             response.request_focus();
         }
         queue_keyboard_events(ui, &response, keyboard_control, queued);
-        if mode.moves() && response.hovered() {
-            if let Some((x, y)) = hovered_remote_point(&response, screen_origin, screen_w, screen_h)
-            {
+        queue_mouse_events(
+            ui,
+            &response,
+            screen_origin,
+            screen_w,
+            screen_h,
+            mouse_control,
+            mouse_drag,
+            last_mouse_move,
+            last_mouse_target,
+            queued,
+        );
+    });
+}
+
+fn queue_mouse_events(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    screen_origin: (i32, i32),
+    screen_w: u32,
+    screen_h: u32,
+    mouse_control: &Arc<AtomicBool>,
+    mouse_drag: &Arc<Mutex<MouseDragState>>,
+    last_mouse_move: &Arc<Mutex<Instant>>,
+    last_mouse_target: &Arc<Mutex<Option<(i32, i32)>>>,
+    queued: &Arc<Mutex<Vec<String>>>,
+) {
+    let mouse_enabled = mouse_control.load(Ordering::Relaxed);
+    if !mouse_enabled {
+        release_mouse_drag(mouse_drag, queued);
+        set_last_mouse_target(last_mouse_target, None);
+        return;
+    }
+
+    let pointer_pos = ui.input(|input| input.pointer.interact_pos());
+    let primary_down = ui.input(|input| input.pointer.button_down(egui::PointerButton::Primary));
+    let primary_started_here = primary_down && response.is_pointer_button_down_on();
+
+    if primary_started_here {
+        if let Some(pos) = pointer_pos {
+            let (x, y) = pointer_remote_point(response, pos, screen_origin, screen_w, screen_h);
+            let mut start_drag = false;
+            if let Ok(mut drag) = mouse_drag.lock() {
+                if !drag.active {
+                    drag.start((x, y));
+                    start_drag = true;
+                }
+            }
+            if start_drag {
+                set_last_mouse_target(last_mouse_target, Some((x, y)));
+                queue_ui_payload(
+                    queued,
+                    format!("action=mouse_down\nbutton=left\nx={x}\ny={y}"),
+                );
+            }
+        }
+    }
+
+    let dragging = mouse_drag.lock().map(|drag| drag.active).unwrap_or(false);
+    if dragging {
+        if primary_down {
+            if let Some(pos) = pointer_pos {
+                let (x, y) = pointer_remote_point(response, pos, screen_origin, screen_w, screen_h);
                 if mouse_target_changed(last_mouse_target, (x, y))
                     && mouse_move_due(last_mouse_move)
                 {
+                    if let Ok(mut drag) = mouse_drag.lock() {
+                        drag.update((x, y));
+                    }
                     set_last_mouse_target(last_mouse_target, Some((x, y)));
                     queue_ui_payload(queued, format!("action=move\nx={x}\ny={y}"));
                 }
             }
         } else {
-            set_last_mouse_target(last_mouse_target, None);
+            if let Some(pos) = pointer_pos {
+                let (x, y) = pointer_remote_point(response, pos, screen_origin, screen_w, screen_h);
+                if let Ok(mut drag) = mouse_drag.lock() {
+                    drag.update((x, y));
+                }
+            }
+            release_mouse_drag(mouse_drag, queued);
         }
-        if mode.clicks() && response.clicked_by(egui::PointerButton::Primary) {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let (x, y) =
-                    pointer_remote_point(&response, pos, screen_origin, screen_w, screen_h);
-                queue_ui_payload(queued, format!("action=click\nbutton=left\nx={x}\ny={y}"));
+        return;
+    }
+
+    if response.hovered() {
+        if let Some((x, y)) = hovered_remote_point(response, screen_origin, screen_w, screen_h) {
+            if mouse_target_changed(last_mouse_target, (x, y)) && mouse_move_due(last_mouse_move) {
+                set_last_mouse_target(last_mouse_target, Some((x, y)));
+                queue_ui_payload(queued, format!("action=move\nx={x}\ny={y}"));
             }
         }
-        if mode.clicks() && response.clicked_by(egui::PointerButton::Secondary) {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let (x, y) =
-                    pointer_remote_point(&response, pos, screen_origin, screen_w, screen_h);
-                queue_ui_payload(queued, format!("action=click\nbutton=right\nx={x}\ny={y}"));
-            }
+    } else {
+        set_last_mouse_target(last_mouse_target, None);
+    }
+
+    if response.clicked_by(egui::PointerButton::Primary) {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let (x, y) = pointer_remote_point(response, pos, screen_origin, screen_w, screen_h);
+            queue_ui_payload(queued, format!("action=click\nbutton=left\nx={x}\ny={y}"));
         }
-    });
+    }
+    if response.clicked_by(egui::PointerButton::Secondary) {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let (x, y) = pointer_remote_point(response, pos, screen_origin, screen_w, screen_h);
+            queue_ui_payload(queued, format!("action=click\nbutton=right\nx={x}\ny={y}"));
+        }
+    }
+}
+
+fn release_mouse_drag(mouse_drag: &Arc<Mutex<MouseDragState>>, queued: &Arc<Mutex<Vec<String>>>) {
+    let point = mouse_drag.lock().ok().and_then(|mut drag| drag.stop());
+    if let Some((x, y)) = point {
+        queue_ui_payload(
+            queued,
+            format!("action=mouse_up\nbutton=left\nx={x}\ny={y}"),
+        );
+    }
 }
 
 fn hovered_remote_point(
@@ -1243,7 +1324,12 @@ fn remote_desktop_payload_is_input(payload: &str) -> bool {
     payload
         .lines()
         .find_map(|line| line.strip_prefix("action="))
-        .map(|action| matches!(action.trim(), "click" | "move" | "text" | "key"))
+        .map(|action| {
+            matches!(
+                action.trim(),
+                "click" | "move" | "mouse_down" | "mouse_up" | "text" | "key"
+            )
+        })
         .unwrap_or(false)
 }
 

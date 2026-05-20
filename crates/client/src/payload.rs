@@ -8,7 +8,12 @@ pub(crate) fn desktop_payload_is_transient_input(payload: &str) -> bool {
     payload
         .lines()
         .find_map(|line| line.strip_prefix("action="))
-        .map(|action| matches!(action.trim(), "move" | "key" | "text"))
+        .map(|action| {
+            matches!(
+                action.trim(),
+                "move" | "click" | "mouse_down" | "mouse_up" | "key" | "text"
+            )
+        })
         .unwrap_or(false)
 }
 

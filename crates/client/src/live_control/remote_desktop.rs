@@ -91,6 +91,18 @@ pub fn handle(payload: &str) -> String {
             request.y,
             request.button.as_deref().unwrap_or("left"),
         ),
+        "mouse_down" => mouse_button(
+            request.x,
+            request.y,
+            request.button.as_deref().unwrap_or("left"),
+            true,
+        ),
+        "mouse_up" => mouse_button(
+            request.x,
+            request.y,
+            request.button.as_deref().unwrap_or("left"),
+            false,
+        ),
         "key" => send_key(
             request.key.as_deref(),
             request.pressed.unwrap_or(true),
@@ -217,6 +229,32 @@ fn click(x: Option<i32>, y: Option<i32>, button: &str) -> String {
     #[allow(unreachable_code)]
     {
         "remote_desktop_error\nmessage=click is not implemented for this platform".to_string()
+    }
+}
+
+fn mouse_button(x: Option<i32>, y: Option<i32>, button: &str, down: bool) -> String {
+    let Some(x) = x else {
+        return "remote_desktop_error\nmessage=missing x".to_string();
+    };
+    let Some(y) = y else {
+        return "remote_desktop_error\nmessage=missing y".to_string();
+    };
+    #[cfg(target_os = "windows")]
+    {
+        return windows::input::mouse_button(x, y, button, down);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux::input::mouse_button(x, y, button, down);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::input::mouse_button(x, y, button, down);
+    }
+    #[allow(unreachable_code)]
+    {
+        "remote_desktop_error\nmessage=mouse button is not implemented for this platform"
+            .to_string()
     }
 }
 

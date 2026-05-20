@@ -338,6 +338,20 @@ pub(crate) mod input {
         }
     }
 
+    pub(crate) fn mouse_button(x: i32, y: i32, button: &str, down: bool) -> String {
+        let button_id = if button == "right" { "3" } else { "1" };
+        let action = if down { "mousedown" } else { "mouseup" };
+        let x = x.to_string();
+        let y = y.to_string();
+        match run_xdotool(&["mousemove", &x, &y, action, button_id]) {
+            Ok(()) => {
+                let state = if down { "down" } else { "up" };
+                format!("remote_desktop_input\nmessage=mouse {button} {state} {x} {y}")
+            }
+            Err(error) => format!("remote_desktop_error\nmessage={error}"),
+        }
+    }
+
     pub(crate) fn key(name: &str, modifiers: KeyModifiers) -> String {
         let Some(key_name) = xdotool_key(name) else {
             return format!("remote_desktop_error\nmessage=unsupported key {name}");

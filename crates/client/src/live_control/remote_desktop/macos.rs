@@ -231,10 +231,14 @@ pub(crate) mod input {
     use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use core_graphics::geometry::CGPoint;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
     use std::time::Duration;
 
     use super::super::KeyModifiers;
+
+    static LEFT_BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
+    static RIGHT_BUTTON_DOWN: AtomicBool = AtomicBool::new(false);
 
     pub(crate) fn move_mouse(x: i32, y: i32) -> String {
         match post_move(x, y) {
@@ -246,6 +250,16 @@ pub(crate) mod input {
     pub(crate) fn click(x: i32, y: i32, button: &str) -> String {
         match post_click(x, y, button) {
             Ok(()) => format!("remote_desktop_input\nmessage=click {button} {x} {y}"),
+            Err(error) => format!("remote_desktop_error\nmessage={error}"),
+        }
+    }
+
+    pub(crate) fn mouse_button(x: i32, y: i32, button: &str, down: bool) -> String {
+        match post_mouse_button(x, y, button, down) {
+            Ok(()) => {
+                let state = if down { "down" } else { "up" };
+                format!("remote_desktop_input\nmessage=mouse {button} {state} {x} {y}")
+            }
             Err(error) => format!("remote_desktop_error\nmessage={error}"),
         }
     }
@@ -267,7 +281,14 @@ pub(crate) mod input {
     fn post_move(x: i32, y: i32) -> Result<(), String> {
         ensure_accessibility_permission()?;
         let source = event_source()?;
-        post_mouse_event(&source, CGEventType::MouseMoved, CGMouseButton::Left, x, y)
+        let (event_type, button) = if LEFT_BUTTON_DOWN.load(Ordering::Relaxed) {
+            (CGEventType::LeftMouseDragged, CGMouseButton::Left)
+        } else if RIGHT_BUTTON_DOWN.load(Ordering::Relaxed) {
+            (CGEventType::RightMouseDragged, CGMouseButton::Right)
+        } else {
+            (CGEventType::MouseMoved, CGMouseButton::Left)
+        };
+        post_mouse_event(&source, event_type, button, x, y)
     }
 
     fn post_click(x: i32, y: i32, button: &str) -> Result<(), String> {
@@ -289,6 +310,37 @@ pub(crate) mod input {
         post_mouse_event(&source, down, mouse_button, x, y)?;
         thread::sleep(Duration::from_millis(20));
         post_mouse_event(&source, up, mouse_button, x, y)
+    }
+
+    fn post_mouse_button(x: i32, y: i32, button: &str, down: bool) -> Result<(), String> {
+        ensure_accessibility_permission()?;
+        let source = event_source()?;
+        let (event_type, mouse_button, state) = match (button, down) {
+            ("right", true) => (
+                CGEventType::RightMouseDown,
+                CGMouseButton::Right,
+                &RIGHT_BUTTON_DOWN,
+            ),
+            ("right", false) => (
+                CGEventType::RightMouseUp,
+                CGMouseButton::Right,
+                &RIGHT_BUTTON_DOWN,
+            ),
+            (_, true) => (
+                CGEventType::LeftMouseDown,
+                CGMouseButton::Left,
+                &LEFT_BUTTON_DOWN,
+            ),
+            (_, false) => (
+                CGEventType::LeftMouseUp,
+                CGMouseButton::Left,
+                &LEFT_BUTTON_DOWN,
+            ),
+        };
+        post_mouse_event(&source, CGEventType::MouseMoved, mouse_button, x, y)?;
+        post_mouse_event(&source, event_type, mouse_button, x, y)?;
+        state.store(down, Ordering::Relaxed);
+        Ok(())
     }
 
     fn post_key(name: &str, modifiers: KeyModifiers) -> Result<(), String> {

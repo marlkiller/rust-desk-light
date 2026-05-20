@@ -476,6 +476,20 @@ pub(crate) mod input {
         format!("remote_desktop_input\nmessage=click {button} {x} {y}")
     }
 
+    pub(crate) fn mouse_button(x: i32, y: i32, button: &str, down: bool) -> String {
+        let flag = match (button, down) {
+            ("right", true) => MOUSEEVENTF_RIGHTDOWN,
+            ("right", false) => MOUSEEVENTF_RIGHTUP,
+            (_, true) => MOUSEEVENTF_LEFTDOWN,
+            (_, false) => MOUSEEVENTF_LEFTUP,
+        };
+        if let Err(error) = send_mouse_inputs(&[move_input(x, y), button_input(flag)]) {
+            return format!("remote_desktop_error\nmessage={error}");
+        }
+        let state = if down { "down" } else { "up" };
+        format!("remote_desktop_input\nmessage=mouse {button} {state} {x} {y}")
+    }
+
     pub(crate) fn key(name: &str, modifiers: KeyModifiers) -> String {
         let Some(vk) = key_vk(name) else {
             return format!("remote_desktop_error\nmessage=unsupported key {name}");
