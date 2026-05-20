@@ -68,15 +68,9 @@ pub(super) fn render(
         .map(|value| value.clone())
         .unwrap_or_default();
     let rows = parse_task_rows(&detail);
-    render_manager_toolbar(
-        ui,
-        &state.selected,
-        &state.action,
-        send_requested,
-        !rows.is_empty(),
-    );
+    render_manager_toolbar(ui, state, send_requested, !rows.is_empty());
     ui.add_space(crate::theme::SECTION_GAP);
-    render_task_table(ui, &rows, state);
+    render_task_table(ui, &rows, state, send_requested);
     ui.add_space(crate::theme::SECTION_GAP);
     ui.separator();
     ui.add_space(crate::theme::SECTION_GAP);
@@ -85,48 +79,32 @@ pub(super) fn render(
 
 fn render_manager_toolbar(
     ui: &mut egui::Ui,
-    task_selected: &Arc<Mutex<String>>,
-    task_action: &Arc<Mutex<String>>,
+    state: &TaskManagerState,
     send_requested: &Arc<AtomicBool>,
     has_rows: bool,
 ) {
-    let selected = selected_task(task_selected);
+    let selected = selected_task(&state.selected);
     let has_selected = !selected.is_empty();
+    let create_disabled_message = create_disabled_message(state);
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = crate::theme::COMPACT_CONTROL_HEIGHT;
         if ui.button(t("Refresh")).clicked() {
-            queue_action(task_action, send_requested, ACTION_LIST);
-        }
-        ui.separator();
-        if ui
-            .add_enabled(has_selected, egui::Button::new(t("Run Task")))
-            .clicked()
-        {
-            queue_action(task_action, send_requested, ACTION_RUN);
+            state.queue_refresh(send_requested);
         }
         if ui
-            .add_enabled(has_selected, egui::Button::new(t("Enable")))
+            .add_enabled(
+                create_disabled_message.is_empty(),
+                egui::Button::new(t("Create Task")),
+            )
             .clicked()
         {
-            queue_action(task_action, send_requested, ACTION_ENABLE);
-        }
-        if ui
-            .add_enabled(has_selected, egui::Button::new(t("Disable")))
-            .clicked()
-        {
-            queue_action(task_action, send_requested, ACTION_DISABLE);
-        }
-        if ui
-            .add_enabled(has_selected, egui::Button::new(t("Delete")))
-            .clicked()
-        {
-            queue_action(task_action, send_requested, ACTION_DELETE);
+            queue_action(&state.action, send_requested, ACTION_CREATE);
         }
         ui.separator();
         let label = if has_selected {
             format!("{}: {selected}", t("Selected"))
         } else if has_rows {
-            t("not selected").to_string()
+            t("Right click a row for commands").to_string()
         } else {
             t("No managed tasks").to_string()
         };
@@ -134,7 +112,12 @@ fn render_manager_toolbar(
     });
 }
 
-fn render_task_table(ui: &mut egui::Ui, rows: &[TaskRow], state: &TaskManagerState) {
+fn render_task_table(
+    ui: &mut egui::Ui,
+    rows: &[TaskRow],
+    state: &TaskManagerState,
+    send_requested: &Arc<AtomicBool>,
+) {
     let selected = selected_task(&state.selected);
     let table_height = (ui.available_height() * 0.48).clamp(150.0, 260.0);
     egui::Frame::default()
@@ -170,12 +153,61 @@ fn render_task_table(ui: &mut egui::Ui, rows: &[TaskRow], state: &TaskManagerSta
                         let is_selected = selected == row.name;
                         body.row(crate::theme::TABLE_ROW_HEIGHT, |mut table_row| {
                             table_row.set_selected(is_selected);
-                            table_row.col(|ui| table_cell(ui, &row.name));
-                            table_row.col(|ui| table_cell(ui, &trigger_label(&row.trigger)));
-                            table_row.col(|ui| table_cell(ui, &row.schedule));
-                            table_row.col(|ui| table_cell(ui, &task_status_label(&row.status)));
-                            table_row.col(|ui| table_cell(ui, &row.command));
-                            if table_row.response().clicked() {
+                            let row_text = task_row_text(row);
+                            let trigger = trigger_label(&row.trigger);
+                            let status = task_status_label(&row.status);
+
+                            let (_, response) = table_row.col(|ui| table_cell(ui, &row.name));
+                            row_context_menu(
+                                &response,
+                                row,
+                                state,
+                                send_requested,
+                                &row_text,
+                                row.name.clone(),
+                            );
+                            let (_, response) = table_row.col(|ui| table_cell(ui, &trigger));
+                            row_context_menu(
+                                &response,
+                                row,
+                                state,
+                                send_requested,
+                                &row_text,
+                                trigger,
+                            );
+                            let (_, response) = table_row.col(|ui| table_cell(ui, &row.schedule));
+                            row_context_menu(
+                                &response,
+                                row,
+                                state,
+                                send_requested,
+                                &row_text,
+                                row.schedule.clone(),
+                            );
+                            let (_, response) = table_row.col(|ui| table_cell(ui, &status));
+                            row_context_menu(
+                                &response,
+                                row,
+                                state,
+                                send_requested,
+                                &row_text,
+                                status,
+                            );
+                            let (_, response) = table_row.col(|ui| table_cell(ui, &row.command));
+                            row_context_menu(
+                                &response,
+                                row,
+                                state,
+                                send_requested,
+                                &row_text,
+                                row.command.clone(),
+                            );
+
+                            let response = table_row.response();
+                            if response.hovered() {
+                                response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if response.clicked() || response.secondary_clicked() {
                                 select_task(row, state);
                             }
                         });
@@ -210,7 +242,7 @@ fn render_create_form(
             if ui
                 .add_enabled(
                     disabled_message.is_empty(),
-                    egui::Button::new(t("Save Task")),
+                    egui::Button::new(t("Create Task")),
                 )
                 .clicked()
             {
@@ -351,6 +383,53 @@ fn queue_action(
     send_requested.store(true, Ordering::Relaxed);
 }
 
+fn row_context_menu(
+    response: &egui::Response,
+    row: &TaskRow,
+    state: &TaskManagerState,
+    send_requested: &Arc<AtomicBool>,
+    row_text: &str,
+    cell_text: String,
+) {
+    response.context_menu(|ui| {
+        if ui.button(t("Copy Cell")).clicked() {
+            ui.ctx().copy_text(cell_text.clone());
+            ui.close();
+        }
+        if ui.button(t("Copy Row")).clicked() {
+            ui.ctx().copy_text(row_text.to_string());
+            ui.close();
+        }
+        ui.separator();
+        if ui.button(t("Run Task")).clicked() {
+            queue_row_action(row, state, send_requested, ACTION_RUN);
+            ui.close();
+        }
+        if ui.button(t("Enable")).clicked() {
+            queue_row_action(row, state, send_requested, ACTION_ENABLE);
+            ui.close();
+        }
+        if ui.button(t("Disable")).clicked() {
+            queue_row_action(row, state, send_requested, ACTION_DISABLE);
+            ui.close();
+        }
+        if ui.button(t("Delete")).clicked() {
+            queue_row_action(row, state, send_requested, ACTION_DELETE);
+            ui.close();
+        }
+    });
+}
+
+fn queue_row_action(
+    row: &TaskRow,
+    state: &TaskManagerState,
+    send_requested: &Arc<AtomicBool>,
+    action: &'static str,
+) {
+    select_task(row, state);
+    queue_action(&state.action, send_requested, action);
+}
+
 fn select_task(row: &TaskRow, state: &TaskManagerState) {
     if let Ok(mut target) = state.selected.lock() {
         *target = row.name.clone();
@@ -405,6 +484,17 @@ fn parse_task_row(line: &str) -> Option<TaskRow> {
         status: parts[3].trim().to_string(),
         command: parts[4..].join("\t").trim().to_string(),
     })
+}
+
+fn task_row_text(row: &TaskRow) -> String {
+    [
+        row.name.as_str(),
+        row.trigger.as_str(),
+        row.schedule.as_str(),
+        row.status.as_str(),
+        row.command.as_str(),
+    ]
+    .join("\t")
 }
 
 fn selected_task(task_selected: &Arc<Mutex<String>>) -> String {

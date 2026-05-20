@@ -479,7 +479,6 @@ fn zh(key: &'static str) -> &'static str {
         "Save failed: {error}" => "保存失败：{error}",
         "Save preferences failed: {error}" => "保存偏好失败：{error}",
         "Save" => "保存",
-        "Save Task" => "保存任务",
         "Save theme" => "保存主题",
         "Save settings" => "保存设置",
         "Schedule" => "计划",
