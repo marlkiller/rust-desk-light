@@ -317,6 +317,8 @@ pub(crate) mod capture {
 pub(crate) mod input {
     use std::process::Command;
 
+    use super::super::KeyModifiers;
+
     pub(crate) fn move_mouse(x: i32, y: i32) -> String {
         let x = x.to_string();
         let y = y.to_string();
@@ -334,6 +336,101 @@ pub(crate) mod input {
             Ok(()) => format!("remote_desktop_input\nmessage=click {button} {x} {y}"),
             Err(error) => format!("remote_desktop_error\nmessage={error}"),
         }
+    }
+
+    pub(crate) fn key(name: &str, modifiers: KeyModifiers) -> String {
+        let Some(key_name) = xdotool_key(name) else {
+            return format!("remote_desktop_error\nmessage=unsupported key {name}");
+        };
+        let modifiers = modifier_key_names(modifiers);
+        let mut args = Vec::new();
+        for modifier in &modifiers {
+            args.push("keydown".to_string());
+            args.push((*modifier).to_string());
+        }
+        args.push("key".to_string());
+        args.push(key_name);
+        for modifier in modifiers.iter().rev() {
+            args.push("keyup".to_string());
+            args.push((*modifier).to_string());
+        }
+        match run_xdotool_owned(&args) {
+            Ok(()) => format!("remote_desktop_input\nmessage=key {name}"),
+            Err(error) => format!("remote_desktop_error\nmessage={error}"),
+        }
+    }
+
+    pub(crate) fn text(text: &str) -> String {
+        match run_xdotool(&["type", "--clearmodifiers", "--delay", "0", text]) {
+            Ok(()) => "remote_desktop_input\nmessage=text sent".to_string(),
+            Err(error) => format!("remote_desktop_error\nmessage={error}"),
+        }
+    }
+
+    fn xdotool_key(name: &str) -> Option<String> {
+        let value = match name {
+            "arrow_down" => "Down",
+            "arrow_left" => "Left",
+            "arrow_right" => "Right",
+            "arrow_up" => "Up",
+            "escape" => "Escape",
+            "tab" => "Tab",
+            "backspace" => "BackSpace",
+            "enter" => "Return",
+            "space" => "space",
+            "insert" => "Insert",
+            "delete" => "Delete",
+            "home" => "Home",
+            "end" => "End",
+            "page_up" => "Page_Up",
+            "page_down" => "Page_Down",
+            "colon" => "colon",
+            "comma" => "comma",
+            "backslash" => "backslash",
+            "slash" => "slash",
+            "pipe" => "bar",
+            "questionmark" => "question",
+            "exclamationmark" => "exclam",
+            "open_bracket" => "bracketleft",
+            "close_bracket" => "bracketright",
+            "open_curly_bracket" => "braceleft",
+            "close_curly_bracket" => "braceright",
+            "backtick" => "grave",
+            "minus" => "minus",
+            "period" => "period",
+            "plus" => "plus",
+            "equals" => "equal",
+            "semicolon" => "semicolon",
+            "quote" => "apostrophe",
+            "browser_back" => "XF86Back",
+            key if key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric() => {
+                return Some(key.to_string());
+            }
+            key if key.starts_with('f') => {
+                let number = key.strip_prefix('f')?.parse::<u8>().ok()?;
+                if (1..=35).contains(&number) {
+                    return Some(format!("F{number}"));
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        Some(value.to_string())
+    }
+
+    fn modifier_key_names(modifiers: KeyModifiers) -> Vec<&'static str> {
+        let mut keys = Vec::new();
+        if modifiers.shift {
+            keys.push("Shift_L");
+        }
+        if modifiers.ctrl || modifiers.command {
+            keys.push("Control_L");
+        }
+        if modifiers.alt {
+            keys.push("Alt_L");
+        }
+        keys
     }
 
     fn run_xdotool(args: &[&str]) -> Result<(), String> {
@@ -355,5 +452,10 @@ pub(crate) mod input {
                 String::from_utf8_lossy(&output.stderr).trim()
             ))
         }
+    }
+
+    fn run_xdotool_owned(args: &[String]) -> Result<(), String> {
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        run_xdotool(&refs)
     }
 }

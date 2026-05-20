@@ -16,6 +16,7 @@ const DEFAULT_TARGET_FPS: u32 = 5;
 const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 const FPS_DROPDOWN_WIDTH: f32 = 74.0;
+const MOUSE_DROPDOWN_WIDTH: f32 = 132.0;
 const MOUSE_MOVE_INTERVAL: Duration = Duration::from_millis(33);
 
 pub(crate) struct RemoteDesktopWindow {
@@ -32,8 +33,8 @@ pub(crate) struct RemoteDesktopWindow {
     selected_screen: Arc<Mutex<usize>>,
     quality: Arc<Mutex<String>>,
     target_fps: Arc<Mutex<u32>>,
-    mouse_follow: Arc<AtomicBool>,
-    mouse_click: Arc<AtomicBool>,
+    mouse_mode: Arc<Mutex<MouseControlMode>>,
+    keyboard_control: Arc<AtomicBool>,
     last_mouse_move: Arc<Mutex<Instant>>,
     last_mouse_target: Arc<Mutex<Option<(i32, i32)>>>,
     running: Arc<AtomicBool>,
@@ -193,6 +194,40 @@ enum DesktopStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MouseControlMode {
+    Off,
+    Move,
+    Click,
+    MoveAndClick,
+}
+
+impl MouseControlMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Off => t("Off"),
+            Self::Move => t("Mouse Move"),
+            Self::Click => t("Mouse Click"),
+            Self::MoveAndClick => t("Mouse Move + Click"),
+        }
+    }
+
+    fn moves(self) -> bool {
+        matches!(self, Self::Move | Self::MoveAndClick)
+    }
+
+    fn clicks(self) -> bool {
+        matches!(self, Self::Click | Self::MoveAndClick)
+    }
+}
+
+const MOUSE_CONTROL_MODES: [MouseControlMode; 4] = [
+    MouseControlMode::Off,
+    MouseControlMode::Move,
+    MouseControlMode::Click,
+    MouseControlMode::MoveAndClick,
+];
+
 pub(crate) struct OutboundCommand {
     pub(crate) client_id: String,
     pub(crate) payload: String,
@@ -231,8 +266,8 @@ pub(crate) fn open_window(
         selected_screen: Arc::new(Mutex::new(0)),
         quality: Arc::new(Mutex::new(DEFAULT_QUALITY.to_string())),
         target_fps: Arc::new(Mutex::new(DEFAULT_TARGET_FPS)),
-        mouse_follow: Arc::new(AtomicBool::new(false)),
-        mouse_click: Arc::new(AtomicBool::new(false)),
+        mouse_mode: Arc::new(Mutex::new(MouseControlMode::Off)),
+        keyboard_control: Arc::new(AtomicBool::new(false)),
         last_mouse_move: Arc::new(Mutex::new(Instant::now())),
         last_mouse_target: Arc::new(Mutex::new(None)),
         running: Arc::new(AtomicBool::new(false)),
@@ -375,8 +410,8 @@ pub(crate) fn render_windows(
         let selected_screen = window.selected_screen.clone();
         let quality = window.quality.clone();
         let target_fps = window.target_fps.clone();
-        let mouse_follow = window.mouse_follow.clone();
-        let mouse_click = window.mouse_click.clone();
+        let mouse_mode = window.mouse_mode.clone();
+        let keyboard_control = window.keyboard_control.clone();
         let last_mouse_move = window.last_mouse_move.clone();
         let last_mouse_target = window.last_mouse_target.clone();
         let running = window.running.clone();
@@ -399,8 +434,8 @@ pub(crate) fn render_windows(
                         &selected_screen,
                         &quality,
                         &target_fps,
-                        &mouse_follow,
-                        &mouse_click,
+                        &mouse_mode,
+                        &keyboard_control,
                         &running,
                         &queued_for_ui,
                         frame_for_save.as_ref(),
@@ -417,8 +452,8 @@ pub(crate) fn render_windows(
                                 texture.as_ref(),
                                 frame_info,
                                 screen_origin,
-                                &mouse_follow,
-                                &mouse_click,
+                                &mouse_mode,
+                                &keyboard_control,
                                 &last_mouse_move,
                                 &last_mouse_target,
                                 &notice,
@@ -489,8 +524,8 @@ fn render_toolbar(
     selected_screen: &Arc<Mutex<usize>>,
     quality: &Arc<Mutex<String>>,
     target_fps: &Arc<Mutex<u32>>,
-    mouse_follow: &Arc<AtomicBool>,
-    mouse_click: &Arc<AtomicBool>,
+    mouse_mode: &Arc<Mutex<MouseControlMode>>,
+    keyboard_control: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
     queued: &Arc<Mutex<Vec<String>>>,
     latest_frame: Option<&DesktopFrame>,
@@ -636,25 +671,45 @@ fn render_toolbar(
                     );
                 }
             }
-            let mut follow = mouse_follow.load(Ordering::Relaxed);
-            if ui
-                .add_enabled(
-                    is_running,
-                    egui::Checkbox::new(&mut follow, t("Mouse Move")),
-                )
-                .changed()
-            {
-                mouse_follow.store(follow, Ordering::Relaxed);
+            ui.label(
+                egui::RichText::new(t("Mouse Control"))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+            );
+            let mut selected_mouse_mode = mouse_mode
+                .lock()
+                .map(|value| *value)
+                .unwrap_or(MouseControlMode::Off);
+            toolbar_dropdown(
+                ui,
+                "remote_desktop_mouse_control",
+                selected_mouse_mode.label(),
+                MOUSE_DROPDOWN_WIDTH,
+                is_running,
+                |ui| {
+                    ui.set_min_width(MOUSE_DROPDOWN_WIDTH);
+                    for option in MOUSE_CONTROL_MODES {
+                        if ui
+                            .selectable_value(&mut selected_mouse_mode, option, option.label())
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
+                },
+            );
+            if let Ok(mut value) = mouse_mode.lock() {
+                *value = selected_mouse_mode;
             }
-            let mut click = mouse_click.load(Ordering::Relaxed);
+            let mut keyboard = keyboard_control.load(Ordering::Relaxed);
             if ui
                 .add_enabled(
                     is_running,
-                    egui::Checkbox::new(&mut click, t("Mouse Click")),
+                    egui::Checkbox::new(&mut keyboard, t("Keyboard Control")),
                 )
                 .changed()
             {
-                mouse_click.store(click, Ordering::Relaxed);
+                keyboard_control.store(keyboard, Ordering::Relaxed);
             }
         });
     });
@@ -738,8 +793,8 @@ fn render_frame(
     texture: Option<&egui::TextureHandle>,
     frame_info: Option<(u32, u32, usize, usize)>,
     screen_origin: (i32, i32),
-    mouse_follow: &Arc<AtomicBool>,
-    mouse_click: &Arc<AtomicBool>,
+    mouse_mode: &Arc<Mutex<MouseControlMode>>,
+    keyboard_control: &Arc<AtomicBool>,
     last_mouse_move: &Arc<Mutex<Instant>>,
     last_mouse_target: &Arc<Mutex<Option<(i32, i32)>>>,
     placeholder: &str,
@@ -764,7 +819,15 @@ fn render_frame(
             .fit_to_exact_size(size)
             .sense(egui::Sense::click_and_drag());
         let response = ui.add(image);
-        if mouse_follow.load(Ordering::Relaxed) && response.hovered() {
+        let mode = mouse_mode
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(MouseControlMode::Off);
+        if response.clicked() && keyboard_control.load(Ordering::Relaxed) {
+            response.request_focus();
+        }
+        queue_keyboard_events(ui, &response, keyboard_control, queued);
+        if mode.moves() && response.hovered() {
             if let Some((x, y)) = hovered_remote_point(&response, screen_origin, screen_w, screen_h)
             {
                 if mouse_target_changed(last_mouse_target, (x, y))
@@ -777,28 +840,17 @@ fn render_frame(
         } else {
             set_last_mouse_target(last_mouse_target, None);
         }
-        if mouse_click.load(Ordering::Relaxed) && response.clicked_by(egui::PointerButton::Primary)
-        {
+        if mode.clicks() && response.clicked_by(egui::PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
-                let rel_x =
-                    ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
-                let rel_y =
-                    ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
-                let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
-                let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+                let (x, y) =
+                    pointer_remote_point(&response, pos, screen_origin, screen_w, screen_h);
                 queue_ui_payload(queued, format!("action=click\nbutton=left\nx={x}\ny={y}"));
             }
         }
-        if mouse_click.load(Ordering::Relaxed)
-            && response.clicked_by(egui::PointerButton::Secondary)
-        {
+        if mode.clicks() && response.clicked_by(egui::PointerButton::Secondary) {
             if let Some(pos) = response.interact_pointer_pos() {
-                let rel_x =
-                    ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
-                let rel_y =
-                    ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
-                let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
-                let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
+                let (x, y) =
+                    pointer_remote_point(&response, pos, screen_origin, screen_w, screen_h);
                 queue_ui_payload(queued, format!("action=click\nbutton=right\nx={x}\ny={y}"));
             }
         }
@@ -812,11 +864,269 @@ fn hovered_remote_point(
     screen_h: u32,
 ) -> Option<(i32, i32)> {
     let pos = response.hover_pos()?;
+    Some(pointer_remote_point(
+        response,
+        pos,
+        screen_origin,
+        screen_w,
+        screen_h,
+    ))
+}
+
+fn pointer_remote_point(
+    response: &egui::Response,
+    pos: egui::Pos2,
+    screen_origin: (i32, i32),
+    screen_w: u32,
+    screen_h: u32,
+) -> (i32, i32) {
     let rel_x = ((pos.x - response.rect.left()) / response.rect.width()).clamp(0.0, 1.0);
     let rel_y = ((pos.y - response.rect.top()) / response.rect.height()).clamp(0.0, 1.0);
     let x = screen_origin.0 + (rel_x * screen_w as f32).round() as i32;
     let y = screen_origin.1 + (rel_y * screen_h as f32).round() as i32;
-    Some((x, y))
+    (x, y)
+}
+
+fn queue_keyboard_events(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    keyboard_control: &Arc<AtomicBool>,
+    queued: &Arc<Mutex<Vec<String>>>,
+) {
+    if !keyboard_control.load(Ordering::Relaxed) || !response.has_focus() {
+        return;
+    }
+    let events = ui.input(|input| input.events.clone());
+    for event in events {
+        match event {
+            egui::Event::Text(text) | egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                if !text.is_empty() {
+                    queue_ui_payload(queued, keyboard_text_payload(&text));
+                }
+            }
+            egui::Event::Paste(text) => {
+                if !text.is_empty() {
+                    queue_ui_payload(queued, keyboard_text_payload(&text));
+                }
+            }
+            egui::Event::Copy => {
+                queue_ui_payload(
+                    queued,
+                    keyboard_key_payload("c", false, egui::Modifiers::COMMAND),
+                );
+            }
+            egui::Event::Cut => {
+                queue_ui_payload(
+                    queued,
+                    keyboard_key_payload("x", false, egui::Modifiers::COMMAND),
+                );
+            }
+            egui::Event::Key {
+                key,
+                pressed,
+                repeat,
+                modifiers,
+                ..
+            } => {
+                if !pressed || !keyboard_key_should_send(key, modifiers) {
+                    continue;
+                }
+                if let Some(name) = keyboard_key_name(key) {
+                    queue_ui_payload(queued, keyboard_key_payload(name, repeat, modifiers));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn keyboard_text_payload(text: &str) -> String {
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text);
+    format!("action=text\nvalue_b64={encoded}")
+}
+
+fn keyboard_key_payload(name: &str, repeat: bool, modifiers: egui::Modifiers) -> String {
+    let ctrl = modifiers.ctrl && !modifiers.command;
+    format!(
+        "action=key\nkey={name}\npressed=true\nrepeat={repeat}\nshift={}\nctrl={ctrl}\nalt={}\ncommand={}",
+        modifiers.shift, modifiers.alt, modifiers.command
+    )
+}
+
+fn keyboard_key_should_send(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    !keyboard_key_is_printable(key) || modifiers.ctrl || modifiers.alt || modifiers.command
+}
+
+fn keyboard_key_is_printable(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::Space
+            | egui::Key::Colon
+            | egui::Key::Comma
+            | egui::Key::Backslash
+            | egui::Key::Slash
+            | egui::Key::Pipe
+            | egui::Key::Questionmark
+            | egui::Key::Exclamationmark
+            | egui::Key::OpenBracket
+            | egui::Key::CloseBracket
+            | egui::Key::OpenCurlyBracket
+            | egui::Key::CloseCurlyBracket
+            | egui::Key::Backtick
+            | egui::Key::Minus
+            | egui::Key::Period
+            | egui::Key::Plus
+            | egui::Key::Equals
+            | egui::Key::Semicolon
+            | egui::Key::Quote
+            | egui::Key::Num0
+            | egui::Key::Num1
+            | egui::Key::Num2
+            | egui::Key::Num3
+            | egui::Key::Num4
+            | egui::Key::Num5
+            | egui::Key::Num6
+            | egui::Key::Num7
+            | egui::Key::Num8
+            | egui::Key::Num9
+            | egui::Key::A
+            | egui::Key::B
+            | egui::Key::C
+            | egui::Key::D
+            | egui::Key::E
+            | egui::Key::F
+            | egui::Key::G
+            | egui::Key::H
+            | egui::Key::I
+            | egui::Key::J
+            | egui::Key::K
+            | egui::Key::L
+            | egui::Key::M
+            | egui::Key::N
+            | egui::Key::O
+            | egui::Key::P
+            | egui::Key::Q
+            | egui::Key::R
+            | egui::Key::S
+            | egui::Key::T
+            | egui::Key::U
+            | egui::Key::V
+            | egui::Key::W
+            | egui::Key::X
+            | egui::Key::Y
+            | egui::Key::Z
+    )
+}
+
+fn keyboard_key_name(key: egui::Key) -> Option<&'static str> {
+    Some(match key {
+        egui::Key::ArrowDown => "arrow_down",
+        egui::Key::ArrowLeft => "arrow_left",
+        egui::Key::ArrowRight => "arrow_right",
+        egui::Key::ArrowUp => "arrow_up",
+        egui::Key::Escape => "escape",
+        egui::Key::Tab => "tab",
+        egui::Key::Backspace => "backspace",
+        egui::Key::Enter => "enter",
+        egui::Key::Space => "space",
+        egui::Key::Insert => "insert",
+        egui::Key::Delete => "delete",
+        egui::Key::Home => "home",
+        egui::Key::End => "end",
+        egui::Key::PageUp => "page_up",
+        egui::Key::PageDown => "page_down",
+        egui::Key::Colon => "colon",
+        egui::Key::Comma => "comma",
+        egui::Key::Backslash => "backslash",
+        egui::Key::Slash => "slash",
+        egui::Key::Pipe => "pipe",
+        egui::Key::Questionmark => "questionmark",
+        egui::Key::Exclamationmark => "exclamationmark",
+        egui::Key::OpenBracket => "open_bracket",
+        egui::Key::CloseBracket => "close_bracket",
+        egui::Key::OpenCurlyBracket => "open_curly_bracket",
+        egui::Key::CloseCurlyBracket => "close_curly_bracket",
+        egui::Key::Backtick => "backtick",
+        egui::Key::Minus => "minus",
+        egui::Key::Period => "period",
+        egui::Key::Plus => "plus",
+        egui::Key::Equals => "equals",
+        egui::Key::Semicolon => "semicolon",
+        egui::Key::Quote => "quote",
+        egui::Key::Num0 => "0",
+        egui::Key::Num1 => "1",
+        egui::Key::Num2 => "2",
+        egui::Key::Num3 => "3",
+        egui::Key::Num4 => "4",
+        egui::Key::Num5 => "5",
+        egui::Key::Num6 => "6",
+        egui::Key::Num7 => "7",
+        egui::Key::Num8 => "8",
+        egui::Key::Num9 => "9",
+        egui::Key::A => "a",
+        egui::Key::B => "b",
+        egui::Key::C => "c",
+        egui::Key::D => "d",
+        egui::Key::E => "e",
+        egui::Key::F => "f",
+        egui::Key::G => "g",
+        egui::Key::H => "h",
+        egui::Key::I => "i",
+        egui::Key::J => "j",
+        egui::Key::K => "k",
+        egui::Key::L => "l",
+        egui::Key::M => "m",
+        egui::Key::N => "n",
+        egui::Key::O => "o",
+        egui::Key::P => "p",
+        egui::Key::Q => "q",
+        egui::Key::R => "r",
+        egui::Key::S => "s",
+        egui::Key::T => "t",
+        egui::Key::U => "u",
+        egui::Key::V => "v",
+        egui::Key::W => "w",
+        egui::Key::X => "x",
+        egui::Key::Y => "y",
+        egui::Key::Z => "z",
+        egui::Key::F1 => "f1",
+        egui::Key::F2 => "f2",
+        egui::Key::F3 => "f3",
+        egui::Key::F4 => "f4",
+        egui::Key::F5 => "f5",
+        egui::Key::F6 => "f6",
+        egui::Key::F7 => "f7",
+        egui::Key::F8 => "f8",
+        egui::Key::F9 => "f9",
+        egui::Key::F10 => "f10",
+        egui::Key::F11 => "f11",
+        egui::Key::F12 => "f12",
+        egui::Key::F13 => "f13",
+        egui::Key::F14 => "f14",
+        egui::Key::F15 => "f15",
+        egui::Key::F16 => "f16",
+        egui::Key::F17 => "f17",
+        egui::Key::F18 => "f18",
+        egui::Key::F19 => "f19",
+        egui::Key::F20 => "f20",
+        egui::Key::F21 => "f21",
+        egui::Key::F22 => "f22",
+        egui::Key::F23 => "f23",
+        egui::Key::F24 => "f24",
+        egui::Key::F25 => "f25",
+        egui::Key::F26 => "f26",
+        egui::Key::F27 => "f27",
+        egui::Key::F28 => "f28",
+        egui::Key::F29 => "f29",
+        egui::Key::F30 => "f30",
+        egui::Key::F31 => "f31",
+        egui::Key::F32 => "f32",
+        egui::Key::F33 => "f33",
+        egui::Key::F34 => "f34",
+        egui::Key::F35 => "f35",
+        egui::Key::BrowserBack => "browser_back",
+        egui::Key::Copy | egui::Key::Cut | egui::Key::Paste => return None,
+    })
 }
 
 fn mouse_target_changed(
@@ -933,7 +1243,7 @@ fn remote_desktop_payload_is_input(payload: &str) -> bool {
     payload
         .lines()
         .find_map(|line| line.strip_prefix("action="))
-        .map(|action| matches!(action.trim(), "click" | "move" | "text"))
+        .map(|action| matches!(action.trim(), "click" | "move" | "text" | "key"))
         .unwrap_or(false)
 }
 

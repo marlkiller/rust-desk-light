@@ -4,11 +4,11 @@ pub(crate) fn detail_value(value: &str) -> String {
     value.replace(['\t', '\r', '\n'], " ").trim().to_string()
 }
 
-pub(crate) fn desktop_payload_is_move(payload: &str) -> bool {
+pub(crate) fn desktop_payload_is_transient_input(payload: &str) -> bool {
     payload
         .lines()
         .find_map(|line| line.strip_prefix("action="))
-        .map(|action| action.trim() == "move")
+        .map(|action| matches!(action.trim(), "move" | "key" | "text"))
         .unwrap_or(false)
 }
 

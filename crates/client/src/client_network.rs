@@ -7,8 +7,8 @@ use crate::live_control::realtime_video::latest_video_channel;
 use crate::live_video_stream::video_stream_loop;
 use crate::outbound::{self, queue_file_transfer_reply, queue_message};
 use crate::payload::{
-    desktop_input_reply_payload, desktop_payload_is_move, detail_value, remote_desktop_action,
-    video_control_action, video_source_command,
+    desktop_input_reply_payload, desktop_payload_is_transient_input, detail_value,
+    remote_desktop_action, video_control_action, video_source_command,
 };
 use crate::reverse_proxy::{client_proxy_stream_loop, ClientProxyStream};
 use crate::stream_state::DesktopStreamState;
@@ -638,7 +638,7 @@ fn client_connection_once(
                         Ok(guard) => guard,
                         Err(poisoned) => poisoned.into_inner(),
                     };
-                    let should_reply = !desktop_payload_is_move(&payload);
+                    let should_reply = !desktop_payload_is_transient_input(&payload);
                     let result = crate::live_control::handle(&CommandKind::RemoteDesktop, &payload);
                     let input_failed = result.starts_with("remote_desktop_error\n");
                     if should_reply || input_failed {

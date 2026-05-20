@@ -430,11 +430,17 @@ pub(crate) mod capture {
 pub(crate) mod input {
     use std::{mem::size_of, thread, time::Duration};
 
+    use super::super::KeyModifiers;
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-        MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
+        SendInput, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+        KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+        MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+        MOUSEINPUT, VIRTUAL_KEY, VK_0, VK_A, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END,
+        VK_ESCAPE, VK_F1, VK_HOME, VK_INSERT, VK_LEFT, VK_MENU, VK_NEXT, VK_OEM_1, VK_OEM_2,
+        VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA, VK_OEM_MINUS,
+        VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB,
+        VK_UP,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -470,6 +476,38 @@ pub(crate) mod input {
         format!("remote_desktop_input\nmessage=click {button} {x} {y}")
     }
 
+    pub(crate) fn key(name: &str, modifiers: KeyModifiers) -> String {
+        let Some(vk) = key_vk(name) else {
+            return format!("remote_desktop_error\nmessage=unsupported key {name}");
+        };
+        let mut inputs = Vec::new();
+        let modifiers = modifier_vks(modifiers);
+        for modifier in &modifiers {
+            inputs.push(key_input(*modifier, 0));
+        }
+        inputs.push(key_input(vk, 0));
+        inputs.push(key_input(vk, KEYEVENTF_KEYUP));
+        for modifier in modifiers.iter().rev() {
+            inputs.push(key_input(*modifier, KEYEVENTF_KEYUP));
+        }
+        if let Err(error) = send_inputs(&inputs) {
+            return format!("remote_desktop_error\nmessage={error}");
+        }
+        format!("remote_desktop_input\nmessage=key {name}")
+    }
+
+    pub(crate) fn text(text: &str) -> String {
+        let mut inputs = Vec::new();
+        for unit in text.encode_utf16() {
+            inputs.push(unicode_input(unit, 0));
+            inputs.push(unicode_input(unit, KEYEVENTF_KEYUP));
+        }
+        if let Err(error) = send_inputs(&inputs) {
+            return format!("remote_desktop_error\nmessage={error}");
+        }
+        "remote_desktop_input\nmessage=text sent".to_string()
+    }
+
     fn move_input(x: i32, y: i32) -> INPUT {
         let (dx, dy) = absolute_virtual_desktop_point(x, y);
         mouse_input(
@@ -481,6 +519,36 @@ pub(crate) mod input {
 
     fn button_input(flags: u32) -> INPUT {
         mouse_input(0, 0, flags)
+    }
+
+    fn key_input(vk: VIRTUAL_KEY, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn unicode_input(unit: u16, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: 0,
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE | flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
     }
 
     fn mouse_input(dx: i32, dy: i32, flags: u32) -> INPUT {
@@ -515,7 +583,76 @@ pub(crate) mod input {
         (dx, dy)
     }
 
+    fn key_vk(name: &str) -> Option<VIRTUAL_KEY> {
+        match name {
+            "arrow_down" => Some(VK_DOWN),
+            "arrow_left" => Some(VK_LEFT),
+            "arrow_right" => Some(VK_RIGHT),
+            "arrow_up" => Some(VK_UP),
+            "escape" => Some(VK_ESCAPE),
+            "tab" => Some(VK_TAB),
+            "backspace" => Some(VK_BACK),
+            "enter" => Some(VK_RETURN),
+            "space" => Some(VK_SPACE),
+            "insert" => Some(VK_INSERT),
+            "delete" => Some(VK_DELETE),
+            "home" => Some(VK_HOME),
+            "end" => Some(VK_END),
+            "page_up" => Some(VK_PRIOR),
+            "page_down" => Some(VK_NEXT),
+            "colon" | "semicolon" => Some(VK_OEM_1),
+            "comma" => Some(VK_OEM_COMMA),
+            "backslash" | "pipe" => Some(VK_OEM_5),
+            "slash" | "questionmark" => Some(VK_OEM_2),
+            "open_bracket" | "open_curly_bracket" => Some(VK_OEM_4),
+            "close_bracket" | "close_curly_bracket" => Some(VK_OEM_6),
+            "backtick" => Some(VK_OEM_3),
+            "minus" => Some(VK_OEM_MINUS),
+            "period" => Some(VK_OEM_PERIOD),
+            "plus" | "equals" => Some(VK_OEM_PLUS),
+            "quote" => Some(VK_OEM_7),
+            "exclamationmark" => Some(VK_0 + 1),
+            "browser_back" => {
+                Some(windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_BROWSER_BACK)
+            }
+            key if key.len() == 1 => {
+                let byte = key.as_bytes()[0];
+                if byte.is_ascii_digit() {
+                    Some(VK_0 + (byte - b'0') as u16)
+                } else if byte.is_ascii_lowercase() {
+                    Some(VK_A + (byte - b'a') as u16)
+                } else {
+                    None
+                }
+            }
+            key if key.starts_with('f') => key
+                .strip_prefix('f')
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|value| (1..=24).contains(value))
+                .map(|value| VK_F1 + value - 1),
+            _ => None,
+        }
+    }
+
+    fn modifier_vks(modifiers: KeyModifiers) -> Vec<VIRTUAL_KEY> {
+        let mut keys = Vec::new();
+        if modifiers.shift {
+            keys.push(VK_SHIFT);
+        }
+        if modifiers.ctrl || modifiers.command {
+            keys.push(VK_CONTROL);
+        }
+        if modifiers.alt {
+            keys.push(VK_MENU);
+        }
+        keys
+    }
+
     fn send_mouse_inputs(inputs: &[INPUT]) -> Result<(), String> {
+        send_inputs(inputs)
+    }
+
+    fn send_inputs(inputs: &[INPUT]) -> Result<(), String> {
         let sent = unsafe {
             SendInput(
                 inputs.len() as u32,

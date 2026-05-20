@@ -16,6 +16,14 @@ pub(crate) struct RemoteDesktopVideoFrame {
     pub(crate) bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct KeyModifiers {
+    pub(crate) shift: bool,
+    pub(crate) ctrl: bool,
+    pub(crate) alt: bool,
+    pub(crate) command: bool,
+}
+
 pub(crate) struct RemoteDesktopCapture {
     #[cfg(target_os = "windows")]
     inner: windows::capture::CaptureStream,
@@ -83,7 +91,12 @@ pub fn handle(payload: &str) -> String {
             request.y,
             request.button.as_deref().unwrap_or("left"),
         ),
-        "text" => send_text(request.value.as_deref().unwrap_or("")),
+        "key" => send_key(
+            request.key.as_deref(),
+            request.pressed.unwrap_or(true),
+            request.modifiers,
+        ),
+        "text" => send_text(&request),
         _ => format!(
             "remote_desktop_error\nmessage=unsupported action {}",
             request.action
@@ -121,7 +134,11 @@ struct RemoteDesktopRequest {
     x: Option<i32>,
     y: Option<i32>,
     button: Option<String>,
+    key: Option<String>,
+    pressed: Option<bool>,
+    modifiers: KeyModifiers,
     value: Option<String>,
+    value_b64: Option<String>,
 }
 
 impl RemoteDesktopRequest {
@@ -139,12 +156,43 @@ impl RemoteDesktopRequest {
                 request.y = rest.trim().parse().ok();
             } else if let Some(rest) = line.strip_prefix("button=") {
                 request.button = Some(rest.trim().to_ascii_lowercase());
+            } else if let Some(rest) = line.strip_prefix("key=") {
+                request.key = Some(rest.trim().to_ascii_lowercase());
+            } else if let Some(rest) = line.strip_prefix("pressed=") {
+                request.pressed = Some(parse_bool(rest));
+            } else if let Some(rest) = line.strip_prefix("shift=") {
+                request.modifiers.shift = parse_bool(rest);
+            } else if let Some(rest) = line.strip_prefix("ctrl=") {
+                request.modifiers.ctrl = parse_bool(rest);
+            } else if let Some(rest) = line.strip_prefix("alt=") {
+                request.modifiers.alt = parse_bool(rest);
+            } else if let Some(rest) = line.strip_prefix("command=") {
+                request.modifiers.command = parse_bool(rest);
+            } else if let Some(rest) = line.strip_prefix("value_b64=") {
+                request.value_b64 = Some(rest.trim().to_string());
             } else if let Some(rest) = line.strip_prefix("value=") {
                 request.value = Some(rest.to_string());
             }
         }
         request
     }
+
+    fn text_value(&self) -> Result<String, String> {
+        if let Some(value_b64) = &self.value_b64 {
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value_b64)
+                    .map_err(|error| format!("invalid text payload: {error}"))?;
+            return String::from_utf8(bytes).map_err(|error| format!("invalid text utf8: {error}"));
+        }
+        Ok(self.value.clone().unwrap_or_default())
+    }
+}
+
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn click(x: Option<i32>, y: Option<i32>, button: &str) -> String {
@@ -242,14 +290,60 @@ Write-Output "message=mouse moved {x} {y}"
     run_powershell(&script, Duration::from_secs(2))
 }
 
-fn send_text(text: &str) -> String {
-    if !cfg!(target_os = "windows") {
-        return "remote_desktop_error\nmessage=text input is currently implemented for windows only"
-            .to_string();
+fn send_key(key: Option<&str>, pressed: bool, modifiers: KeyModifiers) -> String {
+    let Some(key) = key.filter(|value| !value.trim().is_empty()) else {
+        return "remote_desktop_error\nmessage=missing key".to_string();
+    };
+    if !pressed {
+        return format!("remote_desktop_input\nmessage=key released {key}");
     }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::input::key(key, modifiers);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux::input::key(key, modifiers);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::input::key(key, modifiers);
+    }
+    #[allow(unreachable_code)]
+    {
+        "remote_desktop_error\nmessage=keyboard input is not implemented for this platform"
+            .to_string()
+    }
+}
+
+fn send_text(request: &RemoteDesktopRequest) -> String {
+    let text = match request.text_value() {
+        Ok(text) => text,
+        Err(error) => return format!("remote_desktop_error\nmessage={error}"),
+    };
     if text.is_empty() {
         return "remote_desktop_error\nmessage=text is empty".to_string();
     }
+    #[cfg(target_os = "windows")]
+    {
+        return windows::input::text(&text);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return linux::input::text(&text);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::input::text(&text);
+    }
+    #[allow(unreachable_code)]
+    {
+        "remote_desktop_error\nmessage=text input is not implemented for this platform".to_string()
+    }
+}
+
+#[allow(dead_code)]
+fn send_text_powershell(text: &str) -> String {
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text);
     let script = format!(
         r#"
