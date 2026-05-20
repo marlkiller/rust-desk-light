@@ -1,5 +1,8 @@
 use crate::{
-    client_binary::{binary_platform_matches_client_os, detect_binary_format, BinaryFormat},
+    client_binary::{
+        binary_arch_matches_client_os, binary_platform_matches_client_os, detect_binary_format,
+        BinaryFormat,
+    },
     i18n::{self, t},
     windowing,
 };
@@ -1561,6 +1564,11 @@ fn validate_local_update_binary(local_path: &str, client_os: &str) -> Result<Bin
     if !binary_platform_matches_client_os(binary.platform, client_os) {
         return Err(
             t("Replacement binary platform does not match the selected client.").to_string(),
+        );
+    }
+    if !binary_arch_matches_client_os(&binary.arch, client_os) {
+        return Err(
+            t("Replacement binary architecture does not match the selected client.").to_string(),
         );
     }
 

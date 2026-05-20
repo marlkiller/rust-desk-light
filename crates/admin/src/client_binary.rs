@@ -48,6 +48,48 @@ pub(crate) fn binary_platform_matches_client_os(platform: &str, client_os: &str)
     }
 }
 
+pub(crate) fn binary_arch_matches_client_os(binary_arch: &str, client_os: &str) -> bool {
+    let client_arches = known_arches(client_os);
+    if client_arches.is_empty() {
+        return true;
+    }
+
+    let binary_arches = known_arches(binary_arch);
+    if binary_arches.is_empty() {
+        return false;
+    }
+
+    binary_arches
+        .iter()
+        .any(|binary_arch| client_arches.contains(binary_arch))
+}
+
+fn known_arches(value: &str) -> Vec<&'static str> {
+    let mut arches = Vec::new();
+    for token in value
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+    {
+        if let Some(arch) = normalize_arch_token(token) {
+            if !arches.contains(&arch) {
+                arches.push(arch);
+            }
+        }
+    }
+    arches
+}
+
+fn normalize_arch_token(token: &str) -> Option<&'static str> {
+    match token {
+        "x86_64" | "amd64" | "x64" => Some("x86_64"),
+        "aarch64" | "arm64" => Some("arm64"),
+        "x86" | "i386" | "i486" | "i586" | "i686" => Some("x86"),
+        "arm" | "armv6" | "armv7" | "armv7l" | "armhf" | "armel" => Some("arm"),
+        "riscv" | "riscv64" => Some("riscv"),
+        _ => None,
+    }
+}
+
 fn detect_pe(bytes: &[u8]) -> Option<BinaryFormat> {
     if !bytes.starts_with(b"MZ") || bytes.len() < 0x40 {
         return None;

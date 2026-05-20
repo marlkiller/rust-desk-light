@@ -488,6 +488,9 @@ fn zh(key: &'static str) -> &'static str {
         "Replacement binary is not a supported executable format." => {
             "替换二进制不是支持的可执行文件格式。"
         }
+        "Replacement binary architecture does not match the selected client." => {
+            "替换二进制架构与所选客户端不匹配。"
+        }
         "Replacement binary platform does not match the selected client." => {
             "替换二进制平台与所选客户端不匹配。"
         }
