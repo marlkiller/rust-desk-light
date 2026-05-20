@@ -177,6 +177,7 @@ fn zh(key: &'static str) -> &'static str {
         "Client Config" => "客户端配置",
         "Client config loaded." => "客户端配置已加载。",
         "Client config saved. Restarting client." => "客户端配置已保存，正在重启客户端。",
+        "Client Program Path" => "客户端程序路径",
         "Client restart/update scheduled." => "客户端重启/更新已安排。",
         "Clone Client Settings" => "克隆客户端设置",
         "Clone local socket failed: {error}" => "克隆本地套接字失败：{error}",

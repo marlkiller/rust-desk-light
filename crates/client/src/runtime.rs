@@ -511,6 +511,10 @@ fn client_config_detail(
             clean_value(&runtime_config_path(current, &snapshot.config_path))
         ),
         format!(
+            "client_program_path={}",
+            clean_value(&snapshot.client_program_path)
+        ),
+        format!(
             "startup_config_path={}",
             clean_value(&snapshot.config_path.display().to_string())
         ),
@@ -604,6 +608,7 @@ struct ClientConfigSnapshot {
     config_path: PathBuf,
     save_config_path: PathBuf,
     config_path_source: &'static str,
+    client_program_path: String,
     startup_command: String,
     startup_args: String,
     config_file: String,
@@ -635,6 +640,7 @@ fn client_config_snapshot(
         config_path,
         save_config_path,
         config_path_source,
+        client_program_path: client_program_path(),
         startup_command: startup_command_line(),
         startup_args: startup_args_line(),
         config_file,
@@ -655,6 +661,13 @@ fn startup_config_file_path() -> (PathBuf, &'static str) {
 
 fn default_client_config_path() -> PathBuf {
     absolute_path(rdl_config::default_config_path(ConfigKind::Client))
+}
+
+fn client_program_path() -> String {
+    std::env::current_exe()
+        .map(absolute_path)
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|error| format!("current_exe unavailable: {error}"))
 }
 
 fn startup_config_path_from_args() -> Option<PathBuf> {

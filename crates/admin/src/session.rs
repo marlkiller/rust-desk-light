@@ -892,6 +892,11 @@ fn render_client_config_detail(
             t("Runtime Config Path"),
             payload_field(detail, "runtime_config_path").unwrap_or_default(),
         );
+        if let Some(client_program_path) =
+            payload_field(detail, "client_program_path").filter(|value| !value.trim().is_empty())
+        {
+            config_summary_row(ui, t("Client Program Path"), client_program_path);
+        }
     });
     ui.add_space(crate::theme::SECTION_GAP);
 
