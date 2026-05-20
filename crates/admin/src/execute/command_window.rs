@@ -30,10 +30,7 @@ pub(crate) struct ExecuteWindow {
     static_preset: Arc<Mutex<String>>,
     static_custom_mode: Arc<AtomicBool>,
     static_custom_command: Arc<Mutex<String>>,
-    task_name: Arc<Mutex<String>>,
-    task_command: Arc<Mutex<String>>,
-    task_trigger: Arc<Mutex<String>>,
-    task_time: Arc<Mutex<String>>,
+    task_manager: create_task::TaskManagerState,
     result_status: Arc<Mutex<String>>,
     result_detail: Arc<Mutex<String>>,
     open: bool,
@@ -72,6 +69,9 @@ pub(crate) fn open_window(
                 .language_probe_requested
                 .store(true, Ordering::Relaxed);
         }
+        if command == CommandKind::CreateTask {
+            window.task_manager.queue_refresh(&window.send_requested);
+        }
         return;
     }
 
@@ -95,15 +95,12 @@ pub(crate) fn open_window(
         static_preset: Arc::new(Mutex::new(default_static_command_preset_id().to_string())),
         static_custom_mode: Arc::new(AtomicBool::new(false)),
         static_custom_command: Arc::new(Mutex::new(String::new())),
-        task_name: Arc::new(Mutex::new("rdl-task".to_string())),
-        task_command: Arc::new(Mutex::new(String::new())),
-        task_trigger: Arc::new(Mutex::new("startup".to_string())),
-        task_time: Arc::new(Mutex::new("09:00".to_string())),
+        task_manager: create_task::TaskManagerState::default(),
         result_status: Arc::new(Mutex::new(String::new())),
         result_detail: Arc::new(Mutex::new(String::new())),
         open: true,
         close_requested: Arc::new(AtomicBool::new(false)),
-        send_requested: Arc::new(AtomicBool::new(false)),
+        send_requested: Arc::new(AtomicBool::new(command == CommandKind::CreateTask)),
     });
 }
 
@@ -128,7 +125,12 @@ pub(crate) fn render_windows(
         );
         let viewport_id =
             egui::ViewportId::from_hash_of(("admin_execute", &client_id, window.command.as_str()));
-        let builder = windowing::child_viewport_builder(title, [640.0, 520.0], [480.0, 360.0]);
+        let (default_size, min_size) = if window.command == CommandKind::CreateTask {
+            ([820.0, 620.0], [620.0, 460.0])
+        } else {
+            ([640.0, 520.0], [480.0, 360.0])
+        };
+        let builder = windowing::child_viewport_builder(title, default_size, min_size);
 
         let command = window.command.clone();
         let file_path = window.file_path.clone();
@@ -142,10 +144,7 @@ pub(crate) fn render_windows(
         let static_preset = window.static_preset.clone();
         let static_custom_mode = window.static_custom_mode.clone();
         let static_custom_command = window.static_custom_command.clone();
-        let task_name = window.task_name.clone();
-        let task_command = window.task_command.clone();
-        let task_trigger = window.task_trigger.clone();
-        let task_time = window.task_time.clone();
+        let task_manager = window.task_manager.clone();
         let result_status = window.result_status.clone();
         let result_detail = window.result_detail.clone();
         let close_requested = window.close_requested.clone();
@@ -173,10 +172,7 @@ pub(crate) fn render_windows(
                         &static_preset,
                         &static_custom_mode,
                         &static_custom_command,
-                        &task_name,
-                        &task_command,
-                        &task_trigger,
-                        &task_time,
+                        &task_manager,
                         &result_status,
                         &result_detail,
                         &send_requested,
@@ -295,10 +291,7 @@ fn render_form(
     static_preset: &Arc<Mutex<String>>,
     static_custom_mode: &Arc<AtomicBool>,
     static_custom_command: &Arc<Mutex<String>>,
-    task_name: &Arc<Mutex<String>>,
-    task_command: &Arc<Mutex<String>>,
-    task_trigger: &Arc<Mutex<String>>,
-    task_time: &Arc<Mutex<String>>,
+    task_manager: &create_task::TaskManagerState,
     result_status: &Arc<Mutex<String>>,
     result_detail: &Arc<Mutex<String>>,
     send_requested: &Arc<AtomicBool>,
@@ -332,17 +325,14 @@ fn render_form(
                     static_custom_command,
                     send_requested,
                 ),
-                CommandKind::CreateTask => create_task::render(
-                    ui,
-                    task_name,
-                    task_command,
-                    task_trigger,
-                    task_time,
-                    send_requested,
-                ),
+                CommandKind::CreateTask => {
+                    create_task::render(ui, task_manager, result_detail, send_requested)
+                }
                 _ => {}
             });
-        result::render(ui, result_detail);
+        if command != &CommandKind::CreateTask {
+            result::render(ui, result_detail);
+        }
     });
 }
 
@@ -362,12 +352,7 @@ fn payload_for_window(window: &ExecuteWindow) -> String {
             window.static_custom_mode.load(Ordering::Relaxed),
             &lock_string(&window.static_custom_command),
         ),
-        CommandKind::CreateTask => create_task::payload_for(
-            &lock_string(&window.task_name),
-            &lock_string(&window.task_command),
-            &lock_string(&window.task_trigger),
-            &lock_string(&window.task_time),
-        ),
+        CommandKind::CreateTask => window.task_manager.payload(),
         _ => String::new(),
     }
 }

@@ -15,7 +15,7 @@
 - Admin, server, client, shared protocol, shared config, and release build wiring are in place.
 - Admin can list clients, run commands, view results, and open live/file/terminal tools.
 - Client supports system info, clipboard, process/window/startup/driver/registry views, event log, and performance snapshot.
-- Client supports scheduled task creation for startup and daily command execution.
+- Client supports managed scheduled tasks for startup and daily command execution, including list, create, run, enable, disable, and delete.
 - File manager supports local/remote navigation, upload/download, directory transfer, native file pickers, transfer status, cancel, delete, rename, and new folder.
 - Remote terminal supports cwd, history, streaming output, cancellation, copy, and safe close.
 - Remote desktop supports screen selection, TCP video frames, mouse move/click, text input, and raw keyboard events for shortcuts, arrows, function keys, and modifiers.

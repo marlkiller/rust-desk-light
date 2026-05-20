@@ -128,7 +128,7 @@ Useful environment variables:
 | Remote management | File manager, directory transfer, remote terminal, process/window/startup/driver managers, registry snapshot, event log, active connections, performance monitor. |
 | Live control | Remote desktop, mouse/keyboard input, camera preview, audio listen, duplex voice chat. |
 | User interaction | Message box, system notification, text chat, open text in the platform editor. |
-| System tools | Computer information, clipboard read/write, execute file, execute code, static commands, and task creation. |
+| System tools | Computer information, clipboard read/write, execute file, execute code, static commands, and managed scheduled tasks. |
 
 ## Architecture
 

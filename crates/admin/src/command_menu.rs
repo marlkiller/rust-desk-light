@@ -390,7 +390,7 @@ fn render_execute(
         menu_command(
             ui,
             client_id,
-            "Create Task",
+            "Task Manager",
             CommandKind::CreateTask,
             send_command,
         );

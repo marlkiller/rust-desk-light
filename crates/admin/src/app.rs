@@ -834,7 +834,10 @@ impl AdminApp {
         }
         if matches!(
             command,
-            CommandKind::ExecuteFile | CommandKind::ExecuteCode | CommandKind::ExecuteStaticCommand
+            CommandKind::ExecuteFile
+                | CommandKind::ExecuteCode
+                | CommandKind::ExecuteStaticCommand
+                | CommandKind::CreateTask
         ) {
             self.open_execute_window(client_id, command);
             return;
