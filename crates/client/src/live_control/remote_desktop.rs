@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -14,6 +14,41 @@ pub(crate) struct RemoteDesktopVideoFrame {
     pub(crate) image_height: u32,
     pub(crate) format: String,
     pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Default)]
+pub(super) struct FrameChangeDetector {
+    last_hash: Option<u64>,
+    last_sent_at: Option<Instant>,
+}
+
+impl FrameChangeDetector {
+    pub(super) fn should_send(&mut self, bytes: &[u8]) -> bool {
+        const UNCHANGED_KEEPALIVE: Duration = Duration::from_secs(1);
+
+        let hash = fast_hash(bytes);
+        let changed = self.last_hash.map(|last| last != hash).unwrap_or(true);
+        let due = self
+            .last_sent_at
+            .map(|last| last.elapsed() >= UNCHANGED_KEEPALIVE)
+            .unwrap_or(true);
+        if changed || due {
+            self.last_hash = Some(hash);
+            self.last_sent_at = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn fast_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 #[derive(Clone, Copy, Default)]
@@ -60,7 +95,7 @@ impl RemoteDesktopCapture {
         }
     }
 
-    pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
+    pub(crate) fn capture_frame(&mut self) -> Result<Option<RemoteDesktopVideoFrame>, String> {
         #[cfg(target_os = "windows")]
         {
             return self.inner.capture_frame();

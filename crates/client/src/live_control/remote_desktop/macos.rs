@@ -1,5 +1,5 @@
 pub(crate) mod capture {
-    use super::super::RemoteDesktopVideoFrame;
+    use super::super::{FrameChangeDetector, RemoteDesktopVideoFrame};
     use core_graphics::display::{CGDirectDisplayID, CGDisplay};
     use core_graphics::image::CGImage;
     use image::codecs::jpeg::JpegEncoder;
@@ -29,6 +29,7 @@ pub(crate) mod capture {
         quality: QualityProfile,
         display: CGDisplay,
         rgba: Vec<u8>,
+        change_detector: FrameChangeDetector,
     }
 
     impl CaptureStream {
@@ -45,15 +46,22 @@ pub(crate) mod capture {
                 quality: quality_profile(quality),
                 display,
                 rgba: Vec::new(),
+                change_detector: FrameChangeDetector::default(),
             })
         }
 
-        pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
+        pub(crate) fn capture_frame(&mut self) -> Result<Option<RemoteDesktopVideoFrame>, String> {
             let capture = self.display.image().ok_or_else(|| {
                 "CoreGraphics capture failed; grant Screen Recording permission to the client"
                     .to_string()
             })?;
-            encode_capture(&self.screen, &capture, self.quality, &mut self.rgba)
+            encode_capture(
+                &self.screen,
+                &capture,
+                self.quality,
+                &mut self.rgba,
+                &mut self.change_detector,
+            )
         }
     }
 
@@ -120,8 +128,12 @@ pub(crate) mod capture {
         capture: &CGImage,
         quality: QualityProfile,
         rgba: &mut Vec<u8>,
-    ) -> Result<RemoteDesktopVideoFrame, String> {
+        change_detector: &mut FrameChangeDetector,
+    ) -> Result<Option<RemoteDesktopVideoFrame>, String> {
         let (width, height) = cg_image_to_rgba_buffer(capture, rgba)?;
+        if !change_detector.should_send(rgba) {
+            return Ok(None);
+        }
         let rgba_buffer = std::mem::take(rgba);
         let image = RgbaImage::from_raw(width, height, rgba_buffer)
             .ok_or_else(|| "captured display buffer has invalid size".to_string())?;
@@ -149,14 +161,14 @@ pub(crate) mod capture {
                 *rgba = image.into_raw();
             }
         }
-        Ok(RemoteDesktopVideoFrame {
+        Ok(Some(RemoteDesktopVideoFrame {
             source_width: screen.width,
             source_height: screen.height,
             image_width,
             image_height,
             format: "jpeg".to_string(),
             bytes: encoded,
-        })
+        }))
     }
 
     fn cg_image_to_rgba_buffer(image: &CGImage, rgba: &mut Vec<u8>) -> Result<(u32, u32), String> {

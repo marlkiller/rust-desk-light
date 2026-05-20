@@ -1,5 +1,5 @@
 pub(crate) mod capture {
-    use super::super::RemoteDesktopVideoFrame;
+    use super::super::{FrameChangeDetector, RemoteDesktopVideoFrame};
     use image::codecs::jpeg::JpegEncoder;
     use image::{imageops::FilterType, DynamicImage};
     use std::env;
@@ -31,6 +31,7 @@ pub(crate) mod capture {
         geometry: String,
         backends: Vec<CaptureBackend>,
         active_backend: usize,
+        change_detector: FrameChangeDetector,
     }
 
     impl CaptureStream {
@@ -48,20 +49,26 @@ pub(crate) mod capture {
                 geometry,
                 backends: capture_backends()?,
                 active_backend: 0,
+                change_detector: FrameChangeDetector::default(),
             })
         }
 
-        pub(crate) fn capture_frame(&mut self) -> Result<RemoteDesktopVideoFrame, String> {
+        pub(crate) fn capture_frame(&mut self) -> Result<Option<RemoteDesktopVideoFrame>, String> {
             let mut last_error = String::new();
             for offset in 0..self.backends.len() {
                 let index = (self.active_backend + offset) % self.backends.len();
-                match self.backends[index]
-                    .capture(&self.geometry)
-                    .and_then(|bytes| encode_frame(self.screen.clone(), bytes, self.quality))
-                {
-                    Ok(frame) => {
+                match self.backends[index].capture(&self.geometry) {
+                    Ok(bytes) => {
                         self.active_backend = index;
-                        return Ok(frame);
+                        if !self.change_detector.should_send(&bytes) {
+                            return Ok(None);
+                        }
+                        match encode_frame(self.screen.clone(), bytes, self.quality) {
+                            Ok(frame) => return Ok(Some(frame)),
+                            Err(error) => {
+                                last_error = error;
+                            }
+                        }
                     }
                     Err(error) => {
                         last_error = error;

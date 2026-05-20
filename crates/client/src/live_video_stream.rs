@@ -96,7 +96,7 @@ pub(crate) fn video_stream_loop(
                     .ok_or_else(|| "remote desktop capture is not open".to_string());
                 capture.and_then(|capture| {
                     crate::live_control::capture_remote_desktop_stream_frame(capture).map(|frame| {
-                        Message::VideoFrame {
+                        frame.map(|frame| Message::VideoFrame {
                             client_id: client_id.clone(),
                             source: VideoSource::RemoteDesktop,
                             seq,
@@ -106,7 +106,7 @@ pub(crate) fn video_stream_loop(
                             image_height: frame.image_height,
                             format: frame.format,
                             bytes: frame.bytes,
-                        }
+                        })
                     })
                 })
             }
@@ -116,7 +116,7 @@ pub(crate) fn video_stream_loop(
                     .ok_or_else(|| "camera capture is not open".to_string());
                 capture.and_then(|capture| {
                     crate::live_control::capture_camera_stream_frame(capture).map(|frame| {
-                        Message::VideoFrame {
+                        Some(Message::VideoFrame {
                             client_id: client_id.clone(),
                             source: VideoSource::Camera,
                             seq,
@@ -126,13 +126,13 @@ pub(crate) fn video_stream_loop(
                             image_height: frame.height,
                             format: frame.format,
                             bytes: frame.bytes,
-                        }
+                        })
                     })
                 })
             }
         };
         match frame {
-            Ok(message) => {
+            Ok(Some(message)) => {
                 consecutive_frame_errors = 0;
                 if try_queue_realtime_message(&realtime_tx, &session_token, message).is_err() {
                     stream_state.running.store(false, Ordering::Relaxed);
@@ -140,10 +140,13 @@ pub(crate) fn video_stream_loop(
                 }
                 seq = seq.saturating_add(1);
             }
+            Ok(None) => {
+                consecutive_frame_errors = 0;
+            }
             Err(error) => {
                 consecutive_frame_errors = consecutive_frame_errors.saturating_add(1);
                 if consecutive_frame_errors < MAX_CONSECUTIVE_FRAME_ERRORS {
-                    sleep_remaining(started, interval);
+                    sleep_until_next_frame(started, interval);
                     continue;
                 }
                 let _ = queue_message(
@@ -162,14 +165,16 @@ pub(crate) fn video_stream_loop(
                 break;
             }
         }
-        sleep_remaining(started, interval);
+        sleep_until_next_frame(started, interval);
     }
 }
 
-fn sleep_remaining(started: Instant, interval: Duration) {
+fn sleep_until_next_frame(started: Instant, interval: Duration) {
     let elapsed = started.elapsed();
     if elapsed < interval {
         thread::sleep(interval - elapsed);
+    } else {
+        thread::sleep(Duration::from_millis(1));
     }
 }
 

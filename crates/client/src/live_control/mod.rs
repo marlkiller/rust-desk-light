@@ -141,14 +141,14 @@ pub(crate) fn open_remote_desktop_capture(
 #[cfg(feature = "gui")]
 pub(crate) fn capture_remote_desktop_stream_frame(
     capture: &mut RemoteDesktopCapture,
-) -> Result<RemoteDesktopVideoFrame, String> {
+) -> Result<Option<RemoteDesktopVideoFrame>, String> {
     capture.capture_frame()
 }
 
 #[cfg(not(feature = "gui"))]
 pub(crate) fn capture_remote_desktop_stream_frame(
     _capture: &mut RemoteDesktopCapture,
-) -> Result<RemoteDesktopVideoFrame, String> {
+) -> Result<Option<RemoteDesktopVideoFrame>, String> {
     Err(gui_unavailable_message())
 }
 
