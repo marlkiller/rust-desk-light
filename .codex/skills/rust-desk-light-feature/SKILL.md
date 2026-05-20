@@ -15,6 +15,17 @@ Work from the existing architecture instead of inventing a parallel path.
 - Prefer small, focused helpers and clear manual validation over broad refactors.
 - Keep product/docs language neutral. Do not mention external reference projects in user-facing docs or roadmap entries.
 
+## Code Organization
+
+Choose the owning feature and layer before editing, then keep code close to that owner.
+
+- Put feature-specific parsing, state, UI, workers, commands, and helpers in the feature's own module instead of growing broad generic files.
+- Keep generic modules thin. They should coordinate flow, dispatch events, render common scaffolding, or expose truly reusable utilities; they should not accumulate feature-specific business logic.
+- Split a feature into child modules when a file grows multiple actions, substantial parsing/rendering, long-running worker state, or several helper groups.
+- When operating-system implementations differ beyond small labels or command arguments, use a small cross-platform facade plus OS-specific implementation modules. The facade owns common request parsing, result shape, and dispatch; OS modules own platform APIs, shell commands, fallbacks, and quirks.
+- Keep platform-specific code out of unrelated platform branches. A short `cfg` dispatch is fine; substantial Windows, macOS, or Linux behavior belongs behind the feature's platform boundary.
+- Promote helpers upward only after unrelated features need them. Otherwise keep helpers private and local to the feature.
+
 ## Repository Map
 
 Use these files as anchors:
@@ -72,7 +83,7 @@ Follow `crates/admin/src/theme.rs`; do not invent one-off dimensions or colors.
 - Use `COMPACT_CONTROL_HEIGHT` (`24.0`) for compact toolbars and table controls.
 - Use `PANEL_MARGIN` (`8.0`) and `SECTION_GAP` (`6.0`) for panel spacing.
 - Use `TABLE_HEADER_HEIGHT` and `TABLE_ROW_HEIGHT` for tables.
-- Use `panel_frame_with_margin`, `page_frame`, `status_frame`, `footer_frame`, and `clickable_table`.
+- Use `panel_frame_with_margin`, `page_frame`, `status_frame`, and `clickable_table`.
 - Use `palette().text`, `palette().muted`, `COLOR_GOOD`, `COLOR_BAD`, and `COLOR_WARN`; avoid hardcoded ad hoc colors.
 - Size action areas from text (`action_area_width`-style helpers) when labels can be translated.
 - Reuse existing buttons, table styles, context-menu style, and status-line components.

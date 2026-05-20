@@ -313,14 +313,6 @@ pub(crate) fn status_frame() -> egui::Frame {
     panel_frame().inner_margin(egui::Margin::symmetric(12, 8))
 }
 
-pub(crate) fn footer_frame() -> egui::Frame {
-    let palette = palette();
-    egui::Frame::default()
-        .fill(palette.bg)
-        .stroke(egui::Stroke::new(1.0, palette.border))
-        .inner_margin(egui::Margin::symmetric(8, 6))
-}
-
 pub(crate) fn clickable_table<'a>(
     ui: &'a mut egui::Ui,
     id_salt: impl std::hash::Hash,
