@@ -223,16 +223,16 @@ fn list_windows_tasks() -> Result<Vec<ManagedTask>, String> {
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("powershell failed to start: {error}"))?;
+    let stdout = decode_output(&output.stdout);
+    let stderr = decode_output(&output.stderr);
     if !output.status.success() {
         return Err(format!(
-            "list scheduled tasks failed: {}",
-            clean_value(&decode_output(&output.stderr))
+            "list scheduled tasks failed ({}): {}",
+            exit_status_label(output.status),
+            clean_value(&combined_process_output(&stdout, &stderr))
         ));
     }
-    Ok(decode_output(&output.stdout)
-        .lines()
-        .filter_map(parse_task_row)
-        .collect())
+    Ok(stdout.lines().filter_map(parse_task_row).collect())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -247,12 +247,15 @@ fn run_schtasks(args: &[&str]) -> Result<String, String> {
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("schtasks failed to start: {error}"))?;
+    let stdout = decode_output(&output.stdout);
+    let stderr = decode_output(&output.stderr);
     if output.status.success() {
-        Ok(decode_output(&output.stdout))
+        Ok(combined_process_output(&stdout, &stderr))
     } else {
         Err(format!(
-            "schtasks failed: {}",
-            clean_value(&decode_output(&output.stderr))
+            "schtasks failed ({}): {}",
+            exit_status_label(output.status),
+            clean_value(&combined_process_output(&stdout, &stderr))
         ))
     }
 }
@@ -541,6 +544,24 @@ fn valid_hhmm(value: &str) -> bool {
 
 fn decode_output(bytes: &[u8]) -> String {
     crate::text_decode::command_output(bytes)
+}
+
+fn combined_process_output(stdout: &str, stderr: &str) -> String {
+    let stderr = stderr.trim();
+    let stdout = stdout.trim();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, false) => format!("{stderr} | {stdout}"),
+        (false, true) => stderr.to_string(),
+        (true, false) => stdout.to_string(),
+        (true, true) => "no output".to_string(),
+    }
+}
+
+fn exit_status_label(status: std::process::ExitStatus) -> String {
+    status
+        .code()
+        .map(|code| format!("exit code {code}"))
+        .unwrap_or_else(|| "terminated".to_string())
 }
 
 #[cfg(test)]

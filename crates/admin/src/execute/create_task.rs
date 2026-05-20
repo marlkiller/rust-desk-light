@@ -25,6 +25,8 @@ pub(super) struct TaskManagerState {
     time: Arc<Mutex<String>>,
     selected: Arc<Mutex<String>>,
     action: Arc<Mutex<String>>,
+    ready: Arc<AtomicBool>,
+    form_open: Arc<AtomicBool>,
 }
 
 impl Default for TaskManagerState {
@@ -36,6 +38,8 @@ impl Default for TaskManagerState {
             time: Arc::new(Mutex::new("09:00".to_string())),
             selected: Arc::new(Mutex::new(String::new())),
             action: Arc::new(Mutex::new(ACTION_LIST.to_string())),
+            ready: Arc::new(AtomicBool::new(false)),
+            form_open: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -43,6 +47,16 @@ impl Default for TaskManagerState {
 impl TaskManagerState {
     pub(super) fn queue_refresh(&self, send_requested: &Arc<AtomicBool>) {
         queue_action(&self.action, send_requested, ACTION_LIST);
+    }
+
+    fn start_new_task(&self) {
+        set_string(&self.name, "rdl-task");
+        set_string(&self.command, "");
+        set_string(&self.trigger, TRIGGER_STARTUP);
+        set_string(&self.time, "09:00");
+        set_string(&self.selected, "");
+        set_string(&self.action, ACTION_LIST);
+        self.form_open.store(true, Ordering::Relaxed);
     }
 
     pub(super) fn payload(&self) -> String {
@@ -68,43 +82,50 @@ pub(super) fn render(
         .map(|value| value.clone())
         .unwrap_or_default();
     let rows = parse_task_rows(&detail);
-    render_manager_toolbar(ui, state, send_requested, !rows.is_empty());
+    if task_manager_ready(&detail) {
+        state.ready.store(true, Ordering::Relaxed);
+    }
+    let ready = state.ready.load(Ordering::Relaxed);
+    render_manager_toolbar(ui, state, send_requested, ready, !rows.is_empty());
     ui.add_space(crate::theme::SECTION_GAP);
+    if let Some(message) = task_manager_message(&detail) {
+        render_task_message(ui, message);
+        ui.add_space(crate::theme::SECTION_GAP);
+    }
     render_task_table(ui, &rows, state, send_requested);
-    ui.add_space(crate::theme::SECTION_GAP);
-    ui.separator();
-    ui.add_space(crate::theme::SECTION_GAP);
-    render_create_form(ui, state, send_requested);
+    render_create_window(ui.ctx(), state, send_requested, ready);
 }
 
 fn render_manager_toolbar(
     ui: &mut egui::Ui,
     state: &TaskManagerState,
     send_requested: &Arc<AtomicBool>,
+    ready: bool,
     has_rows: bool,
 ) {
     let selected = selected_task(&state.selected);
     let has_selected = !selected.is_empty();
-    let create_disabled_message = create_disabled_message(state);
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = crate::theme::COMPACT_CONTROL_HEIGHT;
         if ui.button(t("Refresh")).clicked() {
             state.queue_refresh(send_requested);
         }
-        if ui
-            .add_enabled(
-                create_disabled_message.is_empty(),
-                egui::Button::new(t("Create Task")),
-            )
-            .clicked()
-        {
-            queue_action(&state.action, send_requested, ACTION_CREATE);
+        let new_task = ui.add_enabled(ready, egui::Button::new(t("New Task")));
+        if !ready {
+            new_task
+                .clone()
+                .on_hover_text(t("Waiting for client result..."));
+        }
+        if new_task.clicked() {
+            state.start_new_task();
         }
         ui.separator();
         let label = if has_selected {
             format!("{}: {selected}", t("Selected"))
         } else if has_rows {
             t("Right click a row for commands").to_string()
+        } else if !ready {
+            t("Waiting for client result...").to_string()
         } else {
             t("No managed tasks").to_string()
         };
@@ -120,107 +141,94 @@ fn render_task_table(
 ) {
     let selected = selected_task(&state.selected);
     let table_height = (ui.available_height() * 0.48).clamp(150.0, 260.0);
-    egui::Frame::default()
-        .fill(crate::theme::palette().panel)
-        .stroke(egui::Stroke::new(1.0, crate::theme::palette().border))
-        .corner_radius(6.0)
-        .inner_margin(crate::theme::PANEL_MARGIN)
-        .show(ui, |ui| {
-            if rows.is_empty() {
-                ui.set_min_height(table_height);
-                ui.centered_and_justified(|ui| {
-                    ui.label(crate::theme::muted_text(t("No managed tasks")));
-                });
-                return;
-            }
+    crate::theme::panel_frame_with_margin(crate::theme::PANEL_MARGIN).show(ui, |ui| {
+        if rows.is_empty() {
+            ui.set_min_height(table_height);
+            ui.centered_and_justified(|ui| {
+                ui.label(crate::theme::muted_text(t("No managed tasks")));
+            });
+            return;
+        }
 
-            crate::theme::clickable_table(ui, "task_manager_table", true)
-                .max_scroll_height(table_height)
-                .column(Column::initial(150.0).at_least(110.0))
-                .column(Column::initial(90.0).at_least(72.0))
-                .column(Column::initial(92.0).at_least(72.0))
-                .column(Column::initial(92.0).at_least(72.0))
-                .column(Column::remainder().at_least(220.0))
-                .header(crate::theme::TABLE_HEADER_HEIGHT, |mut header| {
-                    header.col(|ui| table_header(ui, t("Name")));
-                    header.col(|ui| table_header(ui, t("Trigger")));
-                    header.col(|ui| table_header(ui, t("Schedule")));
-                    header.col(|ui| table_header(ui, t("Status")));
-                    header.col(|ui| table_header(ui, t("Command")));
-                })
-                .body(|mut body| {
-                    for row in rows {
+        crate::theme::clickable_table(ui, "task_manager_table", true)
+            .max_scroll_height(table_height)
+            .column(Column::initial(150.0).at_least(110.0).clip(true))
+            .column(Column::initial(90.0).at_least(72.0).clip(true))
+            .column(Column::initial(92.0).at_least(72.0).clip(true))
+            .column(Column::initial(92.0).at_least(72.0).clip(true))
+            .column(Column::remainder().at_least(220.0).clip(true))
+            .header(crate::theme::TABLE_HEADER_HEIGHT, |mut header| {
+                header.col(|ui| table_header(ui, t("Name")));
+                header.col(|ui| table_header(ui, t("Trigger")));
+                header.col(|ui| table_header(ui, t("Schedule")));
+                header.col(|ui| table_header(ui, t("Status")));
+                header.col(|ui| table_header(ui, t("Command")));
+            })
+            .body(|body| {
+                body.rows(
+                    crate::theme::TABLE_ROW_HEIGHT,
+                    rows.len(),
+                    |mut table_row| {
+                        let row = &rows[table_row.index()];
                         let is_selected = selected == row.name;
-                        body.row(crate::theme::TABLE_ROW_HEIGHT, |mut table_row| {
-                            table_row.set_selected(is_selected);
-                            let row_text = task_row_text(row);
-                            let trigger = trigger_label(&row.trigger);
-                            let status = task_status_label(&row.status);
+                        table_row.set_selected(is_selected);
+                        let row_text = task_row_text(row);
+                        let trigger = trigger_label(&row.trigger);
+                        let status = task_status_label(&row.status);
 
-                            let (_, response) = table_row.col(|ui| table_cell(ui, &row.name));
-                            row_context_menu(
-                                &response,
-                                row,
-                                state,
-                                send_requested,
-                                &row_text,
-                                row.name.clone(),
-                            );
-                            let (_, response) = table_row.col(|ui| table_cell(ui, &trigger));
-                            row_context_menu(
-                                &response,
-                                row,
-                                state,
-                                send_requested,
-                                &row_text,
-                                trigger,
-                            );
-                            let (_, response) = table_row.col(|ui| table_cell(ui, &row.schedule));
-                            row_context_menu(
-                                &response,
-                                row,
-                                state,
-                                send_requested,
-                                &row_text,
-                                row.schedule.clone(),
-                            );
-                            let (_, response) = table_row.col(|ui| table_cell(ui, &status));
-                            row_context_menu(
-                                &response,
-                                row,
-                                state,
-                                send_requested,
-                                &row_text,
-                                status,
-                            );
-                            let (_, response) = table_row.col(|ui| table_cell(ui, &row.command));
-                            row_context_menu(
-                                &response,
-                                row,
-                                state,
-                                send_requested,
-                                &row_text,
-                                row.command.clone(),
-                            );
+                        let (_, response) = table_row.col(|ui| table_cell(ui, &row.name));
+                        row_context_menu(
+                            &response,
+                            row,
+                            state,
+                            send_requested,
+                            &row_text,
+                            row.name.clone(),
+                        );
+                        let (_, response) = table_row.col(|ui| table_cell(ui, &trigger));
+                        row_context_menu(&response, row, state, send_requested, &row_text, trigger);
+                        let (_, response) = table_row.col(|ui| table_cell(ui, &row.schedule));
+                        row_context_menu(
+                            &response,
+                            row,
+                            state,
+                            send_requested,
+                            &row_text,
+                            row.schedule.clone(),
+                        );
+                        let (_, response) = table_row.col(|ui| table_cell(ui, &status));
+                        row_context_menu(&response, row, state, send_requested, &row_text, status);
+                        let (_, response) = table_row.col(|ui| table_cell(ui, &row.command));
+                        row_context_menu(
+                            &response,
+                            row,
+                            state,
+                            send_requested,
+                            &row_text,
+                            row.command.clone(),
+                        );
 
-                            let response = table_row.response();
-                            if response.hovered() {
-                                response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
-                            if response.clicked() || response.secondary_clicked() {
-                                select_task(row, state);
-                            }
-                        });
-                    }
-                });
-        });
+                        let response = table_row.response();
+                        if response.hovered() {
+                            response.ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if response.clicked() {
+                            select_task(row, state);
+                        } else if response.secondary_clicked() {
+                            select_task(row, state);
+                        }
+                    },
+                );
+            });
+    });
 }
 
 fn render_create_form(
     ui: &mut egui::Ui,
     state: &TaskManagerState,
     send_requested: &Arc<AtomicBool>,
-) {
+    ready: bool,
+) -> bool {
     ui.label(crate::theme::strong_body_text(t("Create or update task")));
     ui.add_space(crate::theme::SECTION_GAP);
     ui::render_text_field(ui, t("Task Name"), &state.name, "rdl-task");
@@ -236,26 +244,77 @@ fn render_create_form(
     ui.add_space(crate::theme::PANEL_MARGIN);
 
     let disabled_message = create_disabled_message(state);
+    let mut close_requested = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().interact_size.y = ui::TOOLBAR_CONTROL_HEIGHT;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_enabled(
-                    disabled_message.is_empty(),
-                    egui::Button::new(t("Create Task")),
-                )
-                .clicked()
-            {
+            let response = ui.add_enabled(ready, egui::Button::new(t("Create Task")));
+            if !ready {
+                response
+                    .clone()
+                    .on_hover_text(t("Waiting for client result..."));
+            } else if !disabled_message.is_empty() {
+                response.clone().on_hover_text(disabled_message);
+            }
+            if response.clicked() && disabled_message.is_empty() {
                 queue_action(&state.action, send_requested, ACTION_CREATE);
+                close_requested = true;
+            }
+            if ui.button(t("Cancel")).clicked() {
+                close_requested = true;
             }
             if !disabled_message.is_empty() {
                 ui.label(
                     egui::RichText::new(disabled_message)
                         .size(12.0)
-                        .color(crate::theme::palette().text),
+                        .color(crate::theme::COLOR_WARN),
                 );
             }
         });
+    });
+    close_requested
+}
+
+fn render_create_window(
+    ctx: &egui::Context,
+    state: &TaskManagerState,
+    send_requested: &Arc<AtomicBool>,
+    ready: bool,
+) {
+    let mut open = state.form_open.load(Ordering::Relaxed);
+    if !open {
+        return;
+    }
+
+    let mut close_requested = false;
+    egui::Window::new(t("Create Task"))
+        .id(egui::Id::new((
+            "task_manager_create_window",
+            Arc::as_ptr(&state.name),
+        )))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(420.0)
+        .show(ctx, |ui| {
+            ui.set_min_width(380.0);
+            close_requested = render_create_form(ui, state, send_requested, ready);
+        });
+
+    state
+        .form_open
+        .store(open && !close_requested, Ordering::Relaxed);
+}
+
+fn render_task_message(ui: &mut egui::Ui, message: &str) {
+    crate::theme::panel_frame_with_margin(crate::theme::PANEL_MARGIN).show(ui, |ui| {
+        ui.label(crate::theme::muted_text(t("Message")).strong());
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(message)
+                .size(12.0)
+                .color(crate::theme::COLOR_WARN),
+        );
     });
 }
 
@@ -383,6 +442,12 @@ fn queue_action(
     send_requested.store(true, Ordering::Relaxed);
 }
 
+fn set_string(target: &Arc<Mutex<String>>, value: &str) {
+    if let Ok(mut target) = target.lock() {
+        *target = value.to_string();
+    }
+}
+
 fn row_context_menu(
     response: &egui::Response,
     row: &TaskRow,
@@ -470,6 +535,19 @@ fn parse_task_rows(detail: &str) -> Vec<TaskRow> {
         .skip(1)
         .filter_map(parse_task_row)
         .collect()
+}
+
+fn task_manager_ready(detail: &str) -> bool {
+    detail.lines().any(|line| line.starts_with("Name\t"))
+}
+
+fn task_manager_message(detail: &str) -> Option<&str> {
+    let detail = detail.trim();
+    if detail.is_empty() || task_manager_ready(detail) {
+        None
+    } else {
+        Some(detail)
+    }
 }
 
 fn parse_task_row(line: &str) -> Option<TaskRow> {

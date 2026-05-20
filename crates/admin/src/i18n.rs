@@ -360,6 +360,7 @@ fn zh(key: &'static str) -> &'static str {
         "New Local Folder" => "新建本地文件夹",
         "New Remote Folder" => "新建远程文件夹",
         "New Folder" => "新建文件夹",
+        "New Task" => "新建任务",
         "New name" => "新名称",
         "No camera frame to save" => "没有可保存的摄像头画面",
         "No clients online" => "没有在线客户端",
