@@ -1096,15 +1096,6 @@ impl AdminApp {
             .unwrap_or("")
     }
 
-    fn client_group_label(&self, client_id: &str) -> String {
-        let group = self.client_group(client_id);
-        if group.is_empty() {
-            "-".to_string()
-        } else {
-            group.to_string()
-        }
-    }
-
     fn client_gui_available(&self, client_id: &str) -> bool {
         self.clients
             .iter()

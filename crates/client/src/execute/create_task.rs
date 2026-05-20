@@ -546,6 +546,7 @@ fn decode_output(bytes: &[u8]) -> String {
     crate::text_decode::command_output(bytes)
 }
 
+#[cfg(target_os = "windows")]
 fn combined_process_output(stdout: &str, stderr: &str) -> String {
     let stderr = stderr.trim();
     let stdout = stdout.trim();
@@ -557,6 +558,7 @@ fn combined_process_output(stdout: &str, stderr: &str) -> String {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn exit_status_label(status: std::process::ExitStatus) -> String {
     status
         .code()

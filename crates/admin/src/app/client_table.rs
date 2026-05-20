@@ -1,5 +1,9 @@
 use super::*;
 
+const GROUP_TAG_MAX_WIDTH: f32 = 74.0;
+const GROUP_TAG_HEIGHT: f32 = 18.0;
+const GROUP_TAG_TEXT_SIZE: f32 = 11.0;
+
 fn overview_metric(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     let value = value.into();
     let palette = crate::theme::palette();
@@ -79,16 +83,15 @@ impl AdminApp {
             }
 
             let ctx = ui.ctx().clone();
-            crate::theme::clickable_table(ui, "admin_clients_table_resizable", false)
-                .column(egui_extras::Column::initial(86.0).at_least(72.0).clip(true))
+            crate::theme::clickable_table(ui, "admin_clients_table_group_tag", false)
                 .column(
-                    egui_extras::Column::initial(190.0)
-                        .at_least(140.0)
+                    egui_extras::Column::initial(156.0)
+                        .at_least(118.0)
                         .clip(true),
                 )
                 .column(
-                    egui_extras::Column::initial(120.0)
-                        .at_least(90.0)
+                    egui_extras::Column::initial(190.0)
+                        .at_least(140.0)
                         .clip(true),
                 )
                 .column(
@@ -119,7 +122,6 @@ impl AdminApp {
                 .header(24.0, |mut header| {
                     header.col(|ui| table_header(ui, t("Status")));
                     header.col(|ui| table_header(ui, t("Client ID")));
-                    header.col(|ui| table_header(ui, t("Group")));
                     header.col(|ui| table_header(ui, t("IP")));
                     header.col(|ui| table_header(ui, t("Location")));
                     header.col(|ui| table_header(ui, t("Host")));
@@ -134,14 +136,15 @@ impl AdminApp {
                             self.selected_client_id.as_deref() == Some(client.id.as_str());
                         row.set_selected(selected);
                         row.col(|ui| {
-                            centered_cell(ui, |ui| client_status_text(ui, row_data.status))
-                        });
-                        row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.id)));
-                        row.col(|ui| {
                             centered_cell(ui, |ui| {
-                                cell_label(ui, self.client_group_label(&client.id))
+                                grouped_status_cell(
+                                    ui,
+                                    self.client_group(&client.id),
+                                    row_data.status,
+                                )
                             })
                         });
+                        row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.id)));
                         row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.peer_addr)));
                         row.col(|ui| {
                             centered_cell(ui, |ui| cell_label(ui, client_location_label(client)))
@@ -183,4 +186,63 @@ impl AdminApp {
                 });
         });
     }
+}
+
+fn grouped_status_cell(ui: &mut egui::Ui, group: &str, status: ClientStatus) {
+    let item_spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 6.0;
+    client_status_text(ui, status);
+    let group = group.trim();
+    if !group.is_empty() {
+        group_tag(ui, group);
+    }
+    ui.spacing_mut().item_spacing.x = item_spacing;
+}
+
+fn group_tag(ui: &mut egui::Ui, group: &str) {
+    let palette = crate::theme::palette();
+    let available = ui.available_width().max(0.0);
+    let width = ((group.chars().count() as f32 * 7.0) + 18.0)
+        .clamp(34.0, GROUP_TAG_MAX_WIDTH)
+        .min(available);
+    if width < 24.0 {
+        return;
+    }
+
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, GROUP_TAG_HEIGHT), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 4.0, palette.selection_bg);
+    ui.painter().rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, palette.accent),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        compact_group_tag(group, width),
+        egui::FontId::proportional(GROUP_TAG_TEXT_SIZE),
+        palette.accent,
+    );
+    if response.hovered() {
+        response.on_hover_text(group);
+    }
+}
+
+fn compact_group_tag(group: &str, width: f32) -> String {
+    let max_chars = ((width - 14.0) / 7.0).floor().max(1.0) as usize;
+    if group.chars().count() <= max_chars {
+        return group.to_string();
+    }
+    if max_chars <= 2 {
+        return group.chars().take(max_chars).collect();
+    }
+    format!(
+        "{}..",
+        group
+            .chars()
+            .take(max_chars.saturating_sub(2))
+            .collect::<String>()
+    )
 }
