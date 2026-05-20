@@ -1927,9 +1927,6 @@ impl AdminApp {
                 crate::session::OutboundSessionAction::UpdateUpload(request) => {
                     self.handle_session_update_upload(request);
                 }
-                crate::session::OutboundSessionAction::CancelUpdateUpload(cancel) => {
-                    self.handle_session_update_upload_cancel(cancel);
-                }
             }
         }
     }
@@ -1957,11 +1954,7 @@ impl AdminApp {
             request.remote_path
         );
         let cancel_flag = Arc::new(AtomicBool::new(false));
-        if let Ok(mut flags) = self.file_transfer_cancel_flags.lock() {
-            flags.insert(request.transfer_id, cancel_flag.clone());
-        }
         let input_tx = self.input_tx.clone();
-        let flags = self.file_transfer_cancel_flags.clone();
         let sink = AdminEventSink::new(
             self.event_tx.clone(),
             Some(self.repaint_handle.clone()),
@@ -1980,9 +1973,6 @@ impl AdminApp {
                 &remote_path,
                 cancel_flag,
             );
-            if let Ok(mut flags) = flags.lock() {
-                flags.remove(&transfer_id);
-            }
             if let Err(error) = result {
                 let _ = send_upload_cancel(&input_tx, &client_id, transfer_id, &remote_path);
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -2007,24 +1997,6 @@ impl AdminApp {
         self.push_log(format!(
             "queued update upload id={} to {}",
             request.transfer_id, request.client_id
-        ));
-    }
-
-    fn handle_session_update_upload_cancel(&mut self, cancel: crate::session::UpdateUploadCancel) {
-        if let Ok(flags) = self.file_transfer_cancel_flags.lock() {
-            if let Some(flag) = flags.get(&cancel.transfer_id) {
-                flag.store(true, Ordering::Relaxed);
-            }
-        }
-        let _ = send_upload_cancel(
-            &self.input_tx,
-            &cancel.client_id,
-            cancel.transfer_id,
-            &cancel.remote_path,
-        );
-        self.push_log(format!(
-            "cancel update upload id={} on {}",
-            cancel.transfer_id, cancel.client_id
         ));
     }
 

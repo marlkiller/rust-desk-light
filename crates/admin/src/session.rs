@@ -37,7 +37,6 @@ pub(crate) struct SessionCommandWindow {
     update_local_path: Arc<Mutex<String>>,
     update_binary_validation: Arc<Mutex<UpdateBinaryValidation>>,
     update_upload_status: Arc<Mutex<UpdateUploadStatus>>,
-    update_upload_cancel_requested: Arc<AtomicBool>,
     client_config_ip: Arc<Mutex<String>>,
     client_config_port: Arc<Mutex<String>>,
     client_config_auth_token: Arc<Mutex<String>>,
@@ -62,19 +61,12 @@ pub(crate) struct OutboundSessionCommand {
 pub(crate) enum OutboundSessionAction {
     Command(OutboundSessionCommand),
     UpdateUpload(UpdateUploadRequest),
-    CancelUpdateUpload(UpdateUploadCancel),
 }
 
 pub(crate) struct UpdateUploadRequest {
     pub(crate) client_id: String,
     pub(crate) transfer_id: u64,
     pub(crate) local_path: String,
-    pub(crate) remote_path: String,
-}
-
-pub(crate) struct UpdateUploadCancel {
-    pub(crate) client_id: String,
-    pub(crate) transfer_id: u64,
     pub(crate) remote_path: String,
 }
 
@@ -105,10 +97,8 @@ enum UpdateUploadPhase {
     Idle,
     Queued,
     Running,
-    Cancelling,
     Done,
     Failed,
-    Cancelled,
 }
 
 impl Default for UpdateUploadStatus {
@@ -129,7 +119,7 @@ impl UpdateUploadStatus {
     fn is_active(&self) -> bool {
         matches!(
             self.phase,
-            UpdateUploadPhase::Queued | UpdateUploadPhase::Running | UpdateUploadPhase::Cancelling
+            UpdateUploadPhase::Queued | UpdateUploadPhase::Running
         )
     }
 
@@ -141,13 +131,6 @@ impl UpdateUploadStatus {
         self.total_bytes = 0;
         self.transferred_bytes = 0;
         self.message = t("Upload queued").to_string();
-    }
-
-    fn set_cancel_requested(&mut self) {
-        if self.is_active() {
-            self.phase = UpdateUploadPhase::Cancelling;
-            self.message = t("Cancelling").to_string();
-        }
     }
 
     fn send_command(&mut self, message: String) {
@@ -229,7 +212,6 @@ pub(crate) fn open_window(
         update_local_path: Arc::new(Mutex::new(String::new())),
         update_binary_validation: Arc::new(Mutex::new(UpdateBinaryValidation::default())),
         update_upload_status: Arc::new(Mutex::new(UpdateUploadStatus::default())),
-        update_upload_cancel_requested: Arc::new(AtomicBool::new(false)),
         client_config_ip: Arc::new(Mutex::new(default_ip.to_string())),
         client_config_port: Arc::new(Mutex::new(default_port.to_string())),
         client_config_auth_token: Arc::new(Mutex::new(String::new())),
@@ -286,7 +268,6 @@ pub(crate) fn render_windows(
         let update_local_path = window.update_local_path.clone();
         let update_binary_validation = window.update_binary_validation.clone();
         let update_upload_status = window.update_upload_status.clone();
-        let update_upload_cancel_requested = window.update_upload_cancel_requested.clone();
         let client_config_ip = window.client_config_ip.clone();
         let client_config_port = window.client_config_port.clone();
         let client_config_auth_token = window.client_config_auth_token.clone();
@@ -318,7 +299,6 @@ pub(crate) fn render_windows(
                         &update_local_path,
                         &update_binary_validation,
                         &update_upload_status,
-                        &update_upload_cancel_requested,
                         &client_config_ip,
                         &client_config_port,
                         &client_config_auth_token,
@@ -333,15 +313,6 @@ pub(crate) fn render_windows(
                     );
                 });
         });
-
-        if window
-            .update_upload_cancel_requested
-            .swap(false, Ordering::Relaxed)
-        {
-            if let Some(cancel) = update_upload_cancel_for(window) {
-                outbound.push(OutboundSessionAction::CancelUpdateUpload(cancel));
-            }
-        }
 
         if window.send_requested.swap(false, Ordering::Relaxed) {
             let delay_seconds = window
@@ -443,18 +414,6 @@ pub(crate) fn render_windows(
     outbound
 }
 
-fn update_upload_cancel_for(window: &SessionCommandWindow) -> Option<UpdateUploadCancel> {
-    let status = window.update_upload_status.lock().ok()?.clone();
-    if !status.is_active() {
-        return None;
-    }
-    Some(UpdateUploadCancel {
-        client_id: window.client_id.clone(),
-        transfer_id: status.transfer_id?,
-        remote_path: status.remote_path,
-    })
-}
-
 fn set_update_upload_failed(
     update_upload_status: &Arc<Mutex<UpdateUploadStatus>>,
     message: String,
@@ -509,50 +468,37 @@ pub(crate) fn handle_update_upload_transfer(
         }
         match action {
             FileTransferAction::Progress | FileTransferAction::Start => {
-                if status.phase != UpdateUploadPhase::Cancelling {
-                    status.phase = UpdateUploadPhase::Running;
-                    if status.message.trim().is_empty() {
-                        status.message = t("Uploading").to_string();
-                    }
+                status.phase = UpdateUploadPhase::Running;
+                if status.message.trim().is_empty() {
+                    status.message = t("Uploading").to_string();
                 }
             }
             FileTransferAction::Complete => {
-                let cancelled = status.phase == UpdateUploadPhase::Cancelling
-                    || status_message.to_ascii_lowercase().contains("cancel");
-                if cancelled {
-                    status.phase = UpdateUploadPhase::Cancelled;
-                    status.message = t("Upload cancelled").to_string();
-                } else {
-                    status.send_command(
-                        t("Upload complete. Update command sent; client may disconnect.")
-                            .to_string(),
-                    );
-                    let remote_path = status.remote_path.clone();
-                    send_command = Some(OutboundSessionCommand {
-                        client_id: target_id.clone(),
-                        command: CommandKind::UpdateClient,
-                        payload: payload_for(
-                            &CommandKind::UpdateClient,
-                            "",
-                            &remote_path,
-                            "",
-                            "",
-                            "",
-                            "",
-                            false,
-                            false,
-                        ),
-                    });
-                }
+                status.send_command(
+                    t("Upload complete. Update command sent; client may disconnect.").to_string(),
+                );
+                let remote_path = status.remote_path.clone();
+                send_command = Some(OutboundSessionCommand {
+                    client_id: target_id.clone(),
+                    command: CommandKind::UpdateClient,
+                    payload: payload_for(
+                        &CommandKind::UpdateClient,
+                        "",
+                        &remote_path,
+                        "",
+                        "",
+                        "",
+                        "",
+                        false,
+                        false,
+                    ),
+                });
             }
-            FileTransferAction::Error => {
+            FileTransferAction::Error | FileTransferAction::Cancel => {
                 status.phase = UpdateUploadPhase::Failed;
                 if status.message.trim().is_empty() {
                     status.message = t("Upload failed").to_string();
                 }
-            }
-            FileTransferAction::Cancel => {
-                status.set_cancel_requested();
             }
             FileTransferAction::Directory
             | FileTransferAction::Chunk
@@ -625,7 +571,6 @@ fn render_form(
     update_local_path: &Arc<Mutex<String>>,
     update_binary_validation: &Arc<Mutex<UpdateBinaryValidation>>,
     update_upload_status: &Arc<Mutex<UpdateUploadStatus>>,
-    update_upload_cancel_requested: &Arc<AtomicBool>,
     client_config_ip: &Arc<Mutex<String>>,
     client_config_port: &Arc<Mutex<String>>,
     client_config_auth_token: &Arc<Mutex<String>>,
@@ -666,8 +611,6 @@ fn render_form(
                                     update_use_local_upload,
                                     update_local_path,
                                     update_binary_validation,
-                                    update_upload_status,
-                                    update_upload_cancel_requested,
                                     client_config_ip,
                                     client_config_port,
                                     client_config_auth_token,
@@ -689,8 +632,6 @@ fn render_form(
                             update_use_local_upload,
                             update_local_path,
                             update_binary_validation,
-                            update_upload_status,
-                            update_upload_cancel_requested,
                             client_config_ip,
                             client_config_port,
                             client_config_auth_token,
@@ -740,7 +681,6 @@ fn render_form(
                 client_config_detail,
                 client_config_status,
                 update_upload_status,
-                update_upload_cancel_requested,
             );
             ui.add_space(crate::theme::SECTION_GAP);
             let content_size = egui::vec2(ui.available_width(), ui.available_height().max(0.0));
@@ -770,7 +710,6 @@ fn render_session_status_bar(
     client_config_detail: &Arc<Mutex<String>>,
     client_config_status: &Arc<Mutex<String>>,
     update_upload_status: &Arc<Mutex<UpdateUploadStatus>>,
-    update_upload_cancel_requested: &Arc<AtomicBool>,
 ) {
     if command == &CommandKind::ClientConfig {
         let detail = client_config_detail
@@ -779,7 +718,7 @@ fn render_session_status_bar(
             .unwrap_or_default();
         render_client_config_status_bar(ui, &detail, client_config_status);
     } else if command == &CommandKind::UpdateClient {
-        render_update_status_bar(ui, update_upload_status, update_upload_cancel_requested);
+        render_update_status_bar(ui, update_upload_status);
     }
 }
 
@@ -792,8 +731,6 @@ fn render_command_fields(
     update_use_local_upload: &Arc<AtomicBool>,
     update_local_path: &Arc<Mutex<String>>,
     update_binary_validation: &Arc<Mutex<UpdateBinaryValidation>>,
-    update_upload_status: &Arc<Mutex<UpdateUploadStatus>>,
-    update_upload_cancel_requested: &Arc<AtomicBool>,
     client_config_ip: &Arc<Mutex<String>>,
     client_config_port: &Arc<Mutex<String>>,
     client_config_auth_token: &Arc<Mutex<String>>,
@@ -812,8 +749,6 @@ fn render_command_fields(
                 update_use_local_upload,
                 update_local_path,
                 update_binary_validation,
-                update_upload_status,
-                update_upload_cancel_requested,
                 client_os,
             );
         }
@@ -1008,8 +943,6 @@ fn render_update_client(
     update_use_local_upload: &Arc<AtomicBool>,
     update_local_path: &Arc<Mutex<String>>,
     update_binary_validation: &Arc<Mutex<UpdateBinaryValidation>>,
-    _update_upload_status: &Arc<Mutex<UpdateUploadStatus>>,
-    _update_upload_cancel_requested: &Arc<AtomicBool>,
     client_os: &str,
 ) {
     let mut use_local_upload = update_use_local_upload.load(Ordering::Relaxed);
@@ -1160,7 +1093,6 @@ fn render_update_binary_validation(
 fn render_update_status_bar(
     ui: &mut egui::Ui,
     update_upload_status: &Arc<Mutex<UpdateUploadStatus>>,
-    update_upload_cancel_requested: &Arc<AtomicBool>,
 ) {
     let status = update_upload_status
         .lock()
@@ -1180,13 +1112,6 @@ fn render_update_status_bar(
                         .desired_width(progress_width)
                         .text(update_upload_progress_label(&status)),
                 );
-                ui.add_space(crate::theme::SECTION_GAP);
-                if ui.button(t("Cancel Upload")).clicked() {
-                    update_upload_cancel_requested.store(true, Ordering::Relaxed);
-                    if let Ok(mut status) = update_upload_status.lock() {
-                        status.set_cancel_requested();
-                    }
-                }
             }
         });
     });
@@ -1263,10 +1188,8 @@ fn update_upload_phase_label(phase: UpdateUploadPhase) -> &'static str {
         UpdateUploadPhase::Idle => t("Ready"),
         UpdateUploadPhase::Queued => t("Upload queued"),
         UpdateUploadPhase::Running => t("Uploading"),
-        UpdateUploadPhase::Cancelling => t("Cancelling"),
         UpdateUploadPhase::Done => t("Done"),
         UpdateUploadPhase::Failed => t("Failed"),
-        UpdateUploadPhase::Cancelled => t("Cancelled"),
     }
 }
 
@@ -1275,21 +1198,17 @@ fn update_upload_phase_notice(phase: UpdateUploadPhase) -> &'static str {
         UpdateUploadPhase::Idle => t("Ready"),
         UpdateUploadPhase::Queued => t("Upload queued"),
         UpdateUploadPhase::Running => t("Uploading"),
-        UpdateUploadPhase::Cancelling => t("Cancelling"),
         UpdateUploadPhase::Done => t("Result received"),
         UpdateUploadPhase::Failed => t("Command failed"),
-        UpdateUploadPhase::Cancelled => t("Upload cancelled"),
     }
 }
 
 fn update_upload_phase_color(phase: UpdateUploadPhase) -> egui::Color32 {
     match phase {
-        UpdateUploadPhase::Queued | UpdateUploadPhase::Running | UpdateUploadPhase::Cancelling => {
-            crate::theme::palette().warn
-        }
+        UpdateUploadPhase::Queued | UpdateUploadPhase::Running => crate::theme::palette().warn,
         UpdateUploadPhase::Done => crate::theme::palette().good,
         UpdateUploadPhase::Failed => crate::theme::palette().bad,
-        UpdateUploadPhase::Idle | UpdateUploadPhase::Cancelled => crate::theme::palette().muted,
+        UpdateUploadPhase::Idle => crate::theme::palette().muted,
     }
 }
 

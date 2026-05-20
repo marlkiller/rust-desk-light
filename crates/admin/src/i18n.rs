@@ -153,7 +153,6 @@ fn zh(key: &'static str) -> &'static str {
         "Calling client" => "正在呼叫客户端",
         "Camera" => "摄像头",
         "Cancel" => "取消",
-        "Cancel Upload" => "取消上传",
         "CPU" => "CPU",
         "CPU Load" => "CPU 负载",
         "Cancelled" => "已取消",
