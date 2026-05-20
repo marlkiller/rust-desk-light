@@ -433,6 +433,7 @@ pub(crate) mod capture {
     ) -> Result<Vec<u8>, String> {
         let encode = || -> Result<Vec<u8>, String> {
             let mut compressor = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+            compressor.set_fastest_defaults();
             compressor.set_size(width as usize, height as usize);
             compressor.set_quality(quality as f32);
             let mut compressor = compressor
