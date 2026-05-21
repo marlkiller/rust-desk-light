@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_SERVER_IP: &str = "127.0.0.1";
 pub const DEFAULT_SERVER_PORT: u16 = 5169;
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const FRAME_MAGIC: [u8; 4] = *b"RDL1";
 pub const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
 pub const REMOTE_TERMINAL_CANCEL: &str = "__rdl_terminal_cancel";
@@ -154,6 +154,175 @@ pub mod audio_udp {
             .ok_or("truncated audio udp u64")?;
         Ok(u64::from_be_bytes([
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+        ]))
+    }
+}
+
+pub mod p2p_udp {
+    use super::Role;
+
+    pub const MAGIC: [u8; 4] = *b"RDP1";
+    pub const VERSION: u8 = 1;
+    pub const MAX_PACKET_BYTES: usize = 64;
+
+    const TYPE_REGISTER: u8 = 1;
+    const TYPE_PROBE: u8 = 2;
+    const TYPE_ACK: u8 = 3;
+    const PACKET_LEN: usize = 4 + 1 + 1 + 1 + 8 + 8 + 8 + 16;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub enum Packet {
+        Register {
+            role: Role,
+            session_id: u64,
+            nonce: u64,
+        },
+        Probe {
+            role: Role,
+            session_id: u64,
+            nonce: u64,
+            sequence: u64,
+            sent_epoch_ms: u128,
+        },
+        Ack {
+            role: Role,
+            session_id: u64,
+            nonce: u64,
+            sequence: u64,
+            sent_epoch_ms: u128,
+        },
+    }
+
+    pub fn encode_register(role: Role, session_id: u64, nonce: u64, out: &mut Vec<u8>) {
+        encode(TYPE_REGISTER, role, session_id, nonce, 0, 0, out);
+    }
+
+    pub fn encode_probe(
+        role: Role,
+        session_id: u64,
+        nonce: u64,
+        sequence: u64,
+        sent_epoch_ms: u128,
+        out: &mut Vec<u8>,
+    ) {
+        encode(
+            TYPE_PROBE,
+            role,
+            session_id,
+            nonce,
+            sequence,
+            sent_epoch_ms,
+            out,
+        );
+    }
+
+    pub fn encode_ack(
+        role: Role,
+        session_id: u64,
+        nonce: u64,
+        sequence: u64,
+        sent_epoch_ms: u128,
+        out: &mut Vec<u8>,
+    ) {
+        encode(
+            TYPE_ACK,
+            role,
+            session_id,
+            nonce,
+            sequence,
+            sent_epoch_ms,
+            out,
+        );
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Packet, &'static str> {
+        if bytes.len() != PACKET_LEN || bytes[..4] != MAGIC {
+            return Err("invalid p2p udp packet");
+        }
+        if bytes[4] != VERSION {
+            return Err("unsupported p2p udp version");
+        }
+        let role = role_from_code(bytes[6]).ok_or("invalid p2p udp role")?;
+        let session_id = read_u64(bytes, 7)?;
+        let nonce = read_u64(bytes, 15)?;
+        let sequence = read_u64(bytes, 23)?;
+        let sent_epoch_ms = read_u128(bytes, 31)?;
+        match bytes[5] {
+            TYPE_REGISTER => Ok(Packet::Register {
+                role,
+                session_id,
+                nonce,
+            }),
+            TYPE_PROBE => Ok(Packet::Probe {
+                role,
+                session_id,
+                nonce,
+                sequence,
+                sent_epoch_ms,
+            }),
+            TYPE_ACK => Ok(Packet::Ack {
+                role,
+                session_id,
+                nonce,
+                sequence,
+                sent_epoch_ms,
+            }),
+            _ => Err("unknown p2p udp packet type"),
+        }
+    }
+
+    fn encode(
+        packet_type: u8,
+        role: Role,
+        session_id: u64,
+        nonce: u64,
+        sequence: u64,
+        sent_epoch_ms: u128,
+        out: &mut Vec<u8>,
+    ) {
+        out.clear();
+        out.reserve(PACKET_LEN);
+        out.extend_from_slice(&MAGIC);
+        out.push(VERSION);
+        out.push(packet_type);
+        out.push(role_code(&role));
+        out.extend_from_slice(&session_id.to_be_bytes());
+        out.extend_from_slice(&nonce.to_be_bytes());
+        out.extend_from_slice(&sequence.to_be_bytes());
+        out.extend_from_slice(&sent_epoch_ms.to_be_bytes());
+    }
+
+    fn role_code(role: &Role) -> u8 {
+        match role {
+            Role::Client => 1,
+            Role::Admin => 2,
+            Role::Server => 3,
+        }
+    }
+
+    fn role_from_code(value: u8) -> Option<Role> {
+        match value {
+            1 => Some(Role::Client),
+            2 => Some(Role::Admin),
+            3 => Some(Role::Server),
+            _ => None,
+        }
+    }
+
+    fn read_u64(bytes: &[u8], start: usize) -> Result<u64, &'static str> {
+        let raw = bytes.get(start..start + 8).ok_or("truncated p2p udp u64")?;
+        Ok(u64::from_be_bytes([
+            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+        ]))
+    }
+
+    fn read_u128(bytes: &[u8], start: usize) -> Result<u128, &'static str> {
+        let raw = bytes
+            .get(start..start + 16)
+            .ok_or("truncated p2p udp u128")?;
+        Ok(u128::from_be_bytes([
+            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7], raw[8], raw[9],
+            raw[10], raw[11], raw[12], raw[13], raw[14], raw[15],
         ]))
     }
 }
@@ -352,6 +521,48 @@ pub enum FileTransferAction {
     Progress,
     Complete,
     Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum P2pAction {
+    Start,
+    Stop,
+    ServerReady,
+    PeerReady,
+    Error,
+}
+
+impl P2pAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::ServerReady => "server_ready",
+            Self::PeerReady => "peer_ready",
+            Self::Error => "error",
+        }
+    }
+
+    fn to_code(&self) -> u8 {
+        match self {
+            Self::Start => 1,
+            Self::Stop => 2,
+            Self::ServerReady => 3,
+            Self::PeerReady => 4,
+            Self::Error => 5,
+        }
+    }
+
+    fn from_code(value: u8) -> Result<Self, ProtocolError> {
+        match value {
+            1 => Ok(Self::Start),
+            2 => Ok(Self::Stop),
+            3 => Ok(Self::ServerReady),
+            4 => Ok(Self::PeerReady),
+            5 => Ok(Self::Error),
+            _ => Err(ProtocolError::InvalidP2pAction),
+        }
+    }
 }
 
 impl VideoSource {
@@ -840,6 +1051,24 @@ pub enum Message {
         stream_id: u64,
         reason: String,
     },
+    P2pControl {
+        target_id: String,
+        session_id: u64,
+        nonce: u64,
+        action: P2pAction,
+        server_udp_addr: String,
+        peer_udp_addr: String,
+        detail: String,
+    },
+    P2pResult {
+        client_id: String,
+        session_id: u64,
+        success: bool,
+        finished: bool,
+        endpoint: String,
+        rtt_ms: u32,
+        detail: String,
+    },
     Error {
         detail: String,
     },
@@ -874,6 +1103,8 @@ impl Message {
             Self::ProxyOpenResult { .. } => 19,
             Self::ProxyData { .. } => 20,
             Self::ProxyClose { .. } => 21,
+            Self::P2pControl { .. } => 22,
+            Self::P2pResult { .. } => 23,
         }
     }
 
@@ -1078,6 +1309,40 @@ impl Message {
                 writer.u64(*stream_id);
                 writer.string(reason);
             }
+            Self::P2pControl {
+                target_id,
+                session_id,
+                nonce,
+                action,
+                server_udp_addr,
+                peer_udp_addr,
+                detail,
+            } => {
+                writer.string(target_id);
+                writer.u64(*session_id);
+                writer.u64(*nonce);
+                writer.u8(action.to_code());
+                writer.string(server_udp_addr);
+                writer.string(peer_udp_addr);
+                writer.string(detail);
+            }
+            Self::P2pResult {
+                client_id,
+                session_id,
+                success,
+                finished,
+                endpoint,
+                rtt_ms,
+                detail,
+            } => {
+                writer.string(client_id);
+                writer.u64(*session_id);
+                writer.bool(*success);
+                writer.bool(*finished);
+                writer.string(endpoint);
+                writer.u32(*rtt_ms);
+                writer.string(detail);
+            }
             Self::Error { detail } => writer.string(detail),
             Self::Session { token } => writer.string(token),
         }
@@ -1235,6 +1500,24 @@ impl Message {
                 client_id: reader.string()?,
                 stream_id: reader.u64()?,
                 reason: reader.string()?,
+            },
+            22 => Self::P2pControl {
+                target_id: reader.string()?,
+                session_id: reader.u64()?,
+                nonce: reader.u64()?,
+                action: P2pAction::from_code(reader.u8()?)?,
+                server_udp_addr: reader.string()?,
+                peer_udp_addr: reader.string()?,
+                detail: reader.string()?,
+            },
+            23 => Self::P2pResult {
+                client_id: reader.string()?,
+                session_id: reader.u64()?,
+                success: reader.bool()?,
+                finished: reader.bool()?,
+                endpoint: reader.string()?,
+                rtt_ms: reader.u32()?,
+                detail: reader.string()?,
             },
             _ => return Err(ProtocolError::InvalidMessageKind(kind)),
         };
@@ -1454,6 +1737,7 @@ pub enum ProtocolError {
     InvalidCommandOutputStream,
     InvalidFileTransferDirection,
     InvalidFileTransferAction,
+    InvalidP2pAction,
     InvalidMessageKind(u16),
     InvalidBool(u8),
     InvalidUtf8,
@@ -1478,6 +1762,7 @@ impl fmt::Display for ProtocolError {
             Self::InvalidCommandOutputStream => write!(f, "invalid command output stream"),
             Self::InvalidFileTransferDirection => write!(f, "invalid file transfer direction"),
             Self::InvalidFileTransferAction => write!(f, "invalid file transfer action"),
+            Self::InvalidP2pAction => write!(f, "invalid p2p action"),
             Self::InvalidMessageKind(kind) => write!(f, "invalid message kind: {kind}"),
             Self::InvalidBool(value) => write!(f, "invalid bool byte: {value}"),
             Self::InvalidUtf8 => write!(f, "invalid utf-8 string"),

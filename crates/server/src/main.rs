@@ -1,12 +1,12 @@
 use geoip::GeoIpLocator;
 use rdl_protocol::{
     now_epoch_ms, read_envelope, AudioSource, ClientInfo, FileTransferAction,
-    FileTransferDirection, Message, Role, VideoSource,
+    FileTransferDirection, Message, P2pAction, Role, VideoSource,
 };
 use realtime_video::{latest_video_channel, RealtimeVideoSender};
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -20,6 +20,7 @@ mod realtime_video;
 const HEARTBEAT_INTERVAL_MS: u128 = 10_000;
 const STALE_PEER_MS: u128 = 45_000;
 const MAINTENANCE_TICK_MS: u64 = 100;
+const P2P_SESSION_TTL_MS: u128 = 60_000;
 
 #[derive(Debug)]
 enum ServerEvent {
@@ -43,6 +44,12 @@ enum ServerEvent {
     },
     Disconnected {
         peer_id: usize,
+    },
+    P2pUdpRegister {
+        role: Role,
+        session_id: u64,
+        nonce: u64,
+        addr: SocketAddr,
     },
 }
 
@@ -82,6 +89,20 @@ struct Peer {
 type FileTransferKey = (String, u64, &'static str);
 type ProxyStreamKey = (String, u64);
 type VideoRouteKey = (String, u8);
+type P2pSessionKey = (String, u64);
+
+#[derive(Clone)]
+struct P2pSession {
+    admin_peer_id: usize,
+    client_id: String,
+    session_id: u64,
+    nonce: u64,
+    admin_udp_addr: Option<SocketAddr>,
+    client_udp_addr: Option<SocketAddr>,
+    last_admin_peer_udp_sent: Option<SocketAddr>,
+    last_client_peer_udp_sent: Option<SocketAddr>,
+    updated_at_epoch_ms: u128,
+}
 
 #[derive(Clone)]
 struct AuthConfig {
@@ -112,9 +133,9 @@ fn main() -> io::Result<()> {
         );
     }
     println!("use this token in rdl-admin-gui; clients need it only when client_auth=required");
-    audio_udp_relay::start(bind_addr.clone());
+    audio_udp_relay::start(bind_addr.clone(), events_tx.clone());
     thread::spawn(move || accept_loop(listener, events_tx));
-    event_loop(events_rx, geoip, config.auth);
+    event_loop(events_rx, geoip, config.auth, bind_addr);
     Ok(())
 }
 
@@ -228,11 +249,17 @@ fn handle_peer(peer_id: usize, stream: TcpStream, events_tx: Sender<ServerEvent>
     let _ = events_tx.send(ServerEvent::Disconnected { peer_id });
 }
 
-fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthConfig) {
+fn event_loop(
+    events_rx: Receiver<ServerEvent>,
+    geoip: GeoIpLocator,
+    auth: AuthConfig,
+    p2p_udp_addr: String,
+) {
     let mut peers: HashMap<usize, Peer> = HashMap::new();
     let mut cancelled_file_transfers = HashSet::<FileTransferKey>::new();
     let mut proxy_routes = HashMap::<ProxyStreamKey, usize>::new();
     let mut video_routes = HashMap::<VideoRouteKey, HashSet<usize>>::new();
+    let mut p2p_sessions = HashMap::<P2pSessionKey, P2pSession>::new();
 
     loop {
         let event = match events_rx.recv_timeout(Duration::from_millis(MAINTENANCE_TICK_MS)) {
@@ -240,6 +267,7 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthC
             Err(RecvTimeoutError::Timeout) => {
                 maintain_peers(&mut peers);
                 retain_live_video_routes(&mut video_routes, &peers);
+                retain_p2p_sessions(&mut p2p_sessions, &peers);
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -779,6 +807,74 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthC
                             _ => eprintln!("peer #{peer_id} sent proxy close before registration"),
                         }
                     }
+                    Message::P2pControl {
+                        target_id,
+                        session_id,
+                        nonce: _,
+                        action,
+                        server_udp_addr: _,
+                        peer_udp_addr: _,
+                        detail: _,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        if peer_role(peer_id, &peers) != Some(Role::Admin) {
+                            eprintln!("peer #{peer_id} sent p2p control without admin role");
+                            continue;
+                        }
+                        match action {
+                            P2pAction::Start => {
+                                start_p2p_session(
+                                    peer_id,
+                                    &target_id,
+                                    &mut p2p_sessions,
+                                    &peers,
+                                    &p2p_udp_addr,
+                                );
+                            }
+                            P2pAction::Stop => {
+                                stop_p2p_session(
+                                    peer_id,
+                                    &target_id,
+                                    session_id,
+                                    &mut p2p_sessions,
+                                    &peers,
+                                    &p2p_udp_addr,
+                                );
+                            }
+                            other => eprintln!(
+                                "peer #{peer_id} sent unsupported p2p control action={}",
+                                other.as_str()
+                            ),
+                        }
+                    }
+                    Message::P2pResult {
+                        client_id,
+                        session_id,
+                        success,
+                        finished,
+                        endpoint,
+                        rtt_ms,
+                        detail,
+                    } => {
+                        mark_seen(peer_id, &mut peers);
+                        if peer_role(peer_id, &peers) != Some(Role::Client) {
+                            eprintln!("peer #{peer_id} sent p2p result without client role");
+                            continue;
+                        }
+                        route_p2p_result_to_admin(
+                            &peers,
+                            &p2p_sessions,
+                            Message::P2pResult {
+                                client_id,
+                                session_id,
+                                success,
+                                finished,
+                                endpoint,
+                                rtt_ms,
+                                detail,
+                            },
+                        );
+                    }
                     Message::Ping => {
                         mark_seen(peer_id, &mut peers);
                         if let Some(peer) = peers.get(&peer_id) {
@@ -807,13 +903,31 @@ fn event_loop(events_rx: Receiver<ServerEvent>, geoip: GeoIpLocator, auth: AuthC
                 println!("audit event=disconnect peer=#{peer_id} identity={identity}");
                 remove_proxy_routes_for_peer(peer_id, removed.as_ref(), &mut proxy_routes, &peers);
                 remove_video_routes_for_peer(peer_id, removed.as_ref(), &mut video_routes);
+                remove_p2p_sessions_for_peer(peer_id, removed.as_ref(), &mut p2p_sessions, &peers);
                 if removed.and_then(|peer| peer.client_info).is_some() {
                     broadcast_clients(&peers);
                 }
             }
+            ServerEvent::P2pUdpRegister {
+                role,
+                session_id,
+                nonce,
+                addr,
+            } => {
+                handle_p2p_udp_register(
+                    &mut p2p_sessions,
+                    &peers,
+                    role,
+                    session_id,
+                    nonce,
+                    addr,
+                    &p2p_udp_addr,
+                );
+            }
         }
         maintain_peers(&mut peers);
         retain_live_video_routes(&mut video_routes, &peers);
+        retain_p2p_sessions(&mut p2p_sessions, &peers);
     }
 }
 
@@ -882,6 +996,20 @@ fn simple_hash(value: &str) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+fn random_nonzero_u64() -> u64 {
+    let mut bytes = [0_u8; 8];
+    if getrandom::fill(&mut bytes).is_err() {
+        let fallback = format!(
+            "{}|{}|{}",
+            now_epoch_ms(),
+            std::process::id(),
+            thread::current().name().unwrap_or("server")
+        );
+        bytes.copy_from_slice(&simple_hash(&fallback).to_be_bytes());
+    }
+    u64::from_be_bytes(bytes).max(1)
 }
 
 fn maintain_peers(peers: &mut HashMap<usize, Peer>) {
@@ -1236,6 +1364,275 @@ fn find_client_peer<'a>(peers: &'a HashMap<usize, Peer>, client_id: &str) -> Opt
                 .map(|info| info.id == client_id)
                 .unwrap_or(false)
     })
+}
+
+fn start_p2p_session(
+    admin_peer_id: usize,
+    client_id: &str,
+    p2p_sessions: &mut HashMap<P2pSessionKey, P2pSession>,
+    peers: &HashMap<usize, Peer>,
+    p2p_udp_addr: &str,
+) {
+    let Some(client_peer) = find_client_peer(peers, client_id) else {
+        send_p2p_control_to_admin(
+            peers,
+            admin_peer_id,
+            client_id,
+            0,
+            0,
+            P2pAction::Error,
+            p2p_udp_addr,
+            "",
+            &format!("client '{client_id}' is offline"),
+        );
+        return;
+    };
+    let session_id = random_nonzero_u64();
+    let nonce = random_nonzero_u64();
+    let key = (client_id.to_string(), session_id);
+    p2p_sessions.insert(
+        key,
+        P2pSession {
+            admin_peer_id,
+            client_id: client_id.to_string(),
+            session_id,
+            nonce,
+            admin_udp_addr: None,
+            client_udp_addr: None,
+            last_admin_peer_udp_sent: None,
+            last_client_peer_udp_sent: None,
+            updated_at_epoch_ms: now_epoch_ms(),
+        },
+    );
+    println!(
+        "audit event=p2p_start peer=#{admin_peer_id} identity={} client={} session={session_id}",
+        peer_identity(admin_peer_id, peers),
+        client_id
+    );
+    let _ = client_peer.sender.send(Message::P2pControl {
+        target_id: client_id.to_string(),
+        session_id,
+        nonce,
+        action: P2pAction::Start,
+        server_udp_addr: p2p_udp_addr.to_string(),
+        peer_udp_addr: String::new(),
+        detail: "start".to_string(),
+    });
+    send_p2p_control_to_admin(
+        peers,
+        admin_peer_id,
+        client_id,
+        session_id,
+        nonce,
+        P2pAction::ServerReady,
+        p2p_udp_addr,
+        "",
+        "server ready",
+    );
+}
+
+fn stop_p2p_session(
+    admin_peer_id: usize,
+    client_id: &str,
+    session_id: u64,
+    p2p_sessions: &mut HashMap<P2pSessionKey, P2pSession>,
+    peers: &HashMap<usize, Peer>,
+    p2p_udp_addr: &str,
+) {
+    let key = (client_id.to_string(), session_id);
+    let session = p2p_sessions.remove(&key);
+    if let Some(client_peer) = find_client_peer(peers, client_id) {
+        let nonce = session.as_ref().map(|session| session.nonce).unwrap_or(0);
+        let _ = client_peer.sender.send(Message::P2pControl {
+            target_id: client_id.to_string(),
+            session_id,
+            nonce,
+            action: P2pAction::Stop,
+            server_udp_addr: p2p_udp_addr.to_string(),
+            peer_udp_addr: String::new(),
+            detail: "stop".to_string(),
+        });
+    }
+    println!(
+        "audit event=p2p_stop peer=#{admin_peer_id} identity={} client={} session={session_id}",
+        peer_identity(admin_peer_id, peers),
+        client_id
+    );
+}
+
+fn handle_p2p_udp_register(
+    p2p_sessions: &mut HashMap<P2pSessionKey, P2pSession>,
+    peers: &HashMap<usize, Peer>,
+    role: Role,
+    session_id: u64,
+    nonce: u64,
+    addr: SocketAddr,
+    p2p_udp_addr: &str,
+) {
+    let Some((_, session)) =
+        p2p_sessions
+            .iter_mut()
+            .find(|((_, candidate_session_id), session)| {
+                *candidate_session_id == session_id && session.nonce == nonce
+            })
+    else {
+        return;
+    };
+    match role {
+        Role::Admin => session.admin_udp_addr = Some(addr),
+        Role::Client => session.client_udp_addr = Some(addr),
+        Role::Server => return,
+    }
+    session.updated_at_epoch_ms = now_epoch_ms();
+    notify_p2p_peer_endpoints(peers, session, p2p_udp_addr);
+}
+
+fn notify_p2p_peer_endpoints(
+    peers: &HashMap<usize, Peer>,
+    session: &mut P2pSession,
+    p2p_udp_addr: &str,
+) {
+    let (Some(admin_addr), Some(client_addr)) = (session.admin_udp_addr, session.client_udp_addr)
+    else {
+        return;
+    };
+    if session.last_admin_peer_udp_sent != Some(client_addr) {
+        send_p2p_control_to_admin(
+            peers,
+            session.admin_peer_id,
+            &session.client_id,
+            session.session_id,
+            session.nonce,
+            P2pAction::PeerReady,
+            p2p_udp_addr,
+            &client_addr.to_string(),
+            "client endpoint ready",
+        );
+        session.last_admin_peer_udp_sent = Some(client_addr);
+    }
+    if session.last_client_peer_udp_sent != Some(admin_addr) {
+        if let Some(client_peer) = find_client_peer(peers, &session.client_id) {
+            let _ = client_peer.sender.send(Message::P2pControl {
+                target_id: session.client_id.clone(),
+                session_id: session.session_id,
+                nonce: session.nonce,
+                action: P2pAction::PeerReady,
+                server_udp_addr: p2p_udp_addr.to_string(),
+                peer_udp_addr: admin_addr.to_string(),
+                detail: "admin endpoint ready".to_string(),
+            });
+            session.last_client_peer_udp_sent = Some(admin_addr);
+        }
+    }
+}
+
+fn route_p2p_result_to_admin(
+    peers: &HashMap<usize, Peer>,
+    p2p_sessions: &HashMap<P2pSessionKey, P2pSession>,
+    message: Message,
+) {
+    let Message::P2pResult {
+        client_id,
+        session_id,
+        ..
+    } = &message
+    else {
+        return;
+    };
+    let Some(session) = p2p_sessions.get(&(client_id.clone(), *session_id)) else {
+        return;
+    };
+    if let Some(peer) = peers.get(&session.admin_peer_id) {
+        let _ = peer.sender.send(message);
+    }
+}
+
+fn retain_p2p_sessions(
+    p2p_sessions: &mut HashMap<P2pSessionKey, P2pSession>,
+    peers: &HashMap<usize, Peer>,
+) {
+    let now = now_epoch_ms();
+    p2p_sessions.retain(|(client_id, _), session| {
+        now.saturating_sub(session.updated_at_epoch_ms) <= P2P_SESSION_TTL_MS
+            && peers
+                .get(&session.admin_peer_id)
+                .map(|peer| peer.role == Some(Role::Admin))
+                .unwrap_or(false)
+            && client_peer_exists(peers, client_id)
+    });
+}
+
+fn remove_p2p_sessions_for_peer(
+    peer_id: usize,
+    removed: Option<&Peer>,
+    p2p_sessions: &mut HashMap<P2pSessionKey, P2pSession>,
+    peers: &HashMap<usize, Peer>,
+) {
+    let removed_client_id = removed
+        .and_then(|peer| peer.client_info.as_ref())
+        .map(|info| info.id.clone());
+    let removed_sessions: Vec<_> = p2p_sessions
+        .iter()
+        .filter_map(|(key, session)| {
+            if session.admin_peer_id == peer_id
+                || removed_client_id.as_deref() == Some(key.0.as_str())
+            {
+                Some((key.clone(), session.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    for (key, session) in removed_sessions {
+        p2p_sessions.remove(&key);
+        if session.admin_peer_id == peer_id {
+            if let Some(client_peer) = find_client_peer(peers, &session.client_id) {
+                let _ = client_peer.sender.send(Message::P2pControl {
+                    target_id: session.client_id.clone(),
+                    session_id: key.1,
+                    nonce: session.nonce,
+                    action: P2pAction::Stop,
+                    server_udp_addr: String::new(),
+                    peer_udp_addr: String::new(),
+                    detail: "admin disconnected".to_string(),
+                });
+            }
+        } else if let Some(peer) = peers.get(&session.admin_peer_id) {
+            let _ = peer.sender.send(Message::P2pControl {
+                target_id: session.client_id.clone(),
+                session_id: key.1,
+                nonce: session.nonce,
+                action: P2pAction::Error,
+                server_udp_addr: String::new(),
+                peer_udp_addr: String::new(),
+                detail: "client disconnected".to_string(),
+            });
+        }
+    }
+}
+
+fn send_p2p_control_to_admin(
+    peers: &HashMap<usize, Peer>,
+    admin_peer_id: usize,
+    client_id: &str,
+    session_id: u64,
+    nonce: u64,
+    action: P2pAction,
+    server_udp_addr: &str,
+    peer_udp_addr: &str,
+    detail: &str,
+) {
+    if let Some(peer) = peers.get(&admin_peer_id) {
+        let _ = peer.sender.send(Message::P2pControl {
+            target_id: client_id.to_string(),
+            session_id,
+            nonce,
+            action,
+            server_udp_addr: server_udp_addr.to_string(),
+            peer_udp_addr: peer_udp_addr.to_string(),
+            detail: detail.to_string(),
+        });
+    }
 }
 
 fn route_file_transfer_to_client(

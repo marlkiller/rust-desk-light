@@ -10,6 +10,7 @@ mod command_result;
 pub(crate) mod event;
 mod file_transfer;
 mod network;
+mod p2p_test;
 mod payload;
 mod settings;
 mod status_bar;
@@ -211,6 +212,7 @@ struct AdminApp {
     audio_udp_next_stream_id: u64,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     proxy_windows: Vec<remote_management::reverse_proxy::ReverseProxyWindow>,
+    p2p_test: p2p_test::P2pTestWindow,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     voice_chat_windows: Vec<user_interaction::voice_chat::VoiceChatWindow>,
     interaction_command_windows: Vec<user_interaction::InteractionCommandWindow>,
@@ -286,6 +288,7 @@ impl AdminApp {
             audio_udp_next_stream_id: initial_stream_id(),
             terminal_windows: Vec::new(),
             proxy_windows: Vec::new(),
+            p2p_test: p2p_test::P2pTestWindow::default(),
             chat_windows: Vec::new(),
             voice_chat_windows: Vec::new(),
             voice_audio_tx,
@@ -334,6 +337,7 @@ impl AdminApp {
                     self.stop_all_voice_udp_sessions();
                     self.clear_voice_udp_senders();
                     remote_management::reverse_proxy::stop_all(&mut self.proxy_windows);
+                    self.p2p_test.stop_all_local();
                     for client in &mut self.clients {
                         client.status = ClientStatus::Offline;
                     }
@@ -612,6 +616,40 @@ impl AdminApp {
                         reason,
                     );
                 }
+                AdminEvent::P2pControl {
+                    target_id,
+                    session_id,
+                    nonce,
+                    action,
+                    server_udp_addr,
+                    peer_udp_addr,
+                    detail,
+                } => {
+                    let fallback_server_udp_addr =
+                        format!("{}:{}", self.config.ip, self.config.port);
+                    self.p2p_test.handle_control(
+                        target_id,
+                        session_id,
+                        nonce,
+                        action,
+                        server_udp_addr,
+                        peer_udp_addr,
+                        detail,
+                        fallback_server_udp_addr,
+                        self.event_tx.clone(),
+                    );
+                }
+                AdminEvent::P2pResult {
+                    client_id,
+                    session_id,
+                    success,
+                    finished,
+                    endpoint,
+                    rtt_ms,
+                    detail,
+                } => self.p2p_test.handle_result(
+                    client_id, session_id, success, finished, endpoint, rtt_ms, detail,
+                ),
                 AdminEvent::Log(line) => self.push_log(line),
             }
         }
@@ -706,6 +744,37 @@ impl AdminApp {
     fn render_settings_window(&mut self, ctx: &egui::Context) {
         if let Some(action) = settings::render_settings_window(ctx, &mut self.settings) {
             self.handle_settings_action(action);
+        }
+    }
+
+    fn render_p2p_test_window(&mut self, ctx: &egui::Context) {
+        let clients = self.clients.clone();
+        let Some(action) = self.p2p_test.render(ctx, &clients, self.connected) else {
+            return;
+        };
+        match action {
+            p2p_test::P2pWindowAction::Start(client_ids) => {
+                for client_id in client_ids {
+                    let Some(client) = self
+                        .clients
+                        .iter()
+                        .find(|client| client.info.id == client_id)
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    self.p2p_test.mark_starting(&client);
+                    p2p_test::send_start(&self.input_tx, &client.info.id);
+                    self.push_log(format!("p2p test requested for {}", client.info.id));
+                }
+            }
+            p2p_test::P2pWindowAction::Stop(sessions) => {
+                for (client_id, session_id) in sessions {
+                    p2p_test::send_stop(&self.input_tx, &client_id, session_id);
+                    self.push_log(format!("p2p test stopped for {client_id}"));
+                }
+                self.p2p_test.stop_all_local();
+            }
         }
     }
 
@@ -1557,6 +1626,13 @@ impl AdminApp {
                 if ui.button(t("Client Builder")).clicked() {
                     self.client_builder_open = true;
                 }
+                ui.menu_button(t("Tools"), |ui| {
+                    ui.set_min_width(180.0);
+                    if ui.button(t("P2P Test")).clicked() {
+                        self.p2p_test.open();
+                        ui.close();
+                    }
+                });
                 if let Some(client_id) = self.selected_client_id.clone() {
                     ui.separator();
                     let status = self

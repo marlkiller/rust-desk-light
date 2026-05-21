@@ -28,6 +28,7 @@ mod live_control;
 mod live_video_stream;
 mod outbound;
 mod payload;
+mod p2p;
 mod remote_management;
 mod reverse_proxy;
 mod runtime;

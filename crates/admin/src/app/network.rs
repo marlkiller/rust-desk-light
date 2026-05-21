@@ -200,6 +200,9 @@ fn admin_connection_once(
                 AdminInput::Proxy(message) => {
                     send(&mut stream, &mut next_message_id, &session_token, message)
                 }
+                AdminInput::P2p(message) => {
+                    send(&mut stream, &mut next_message_id, &session_token, message)
+                }
                 AdminInput::Reconnect { reason, endpoint } => {
                     debug_log!("debug event=admin_reconnect_request reason={reason}");
                     let _ = stream.shutdown(Shutdown::Both);
@@ -344,6 +347,44 @@ fn admin_connection_once(
                         client_id,
                         stream_id,
                         reason,
+                    });
+                }
+                Message::P2pControl {
+                    target_id,
+                    session_id,
+                    nonce,
+                    action,
+                    server_udp_addr,
+                    peer_udp_addr,
+                    detail,
+                } => {
+                    event_sink.send(AdminEvent::P2pControl {
+                        target_id,
+                        session_id,
+                        nonce,
+                        action,
+                        server_udp_addr,
+                        peer_udp_addr,
+                        detail,
+                    });
+                }
+                Message::P2pResult {
+                    client_id,
+                    session_id,
+                    success,
+                    finished,
+                    endpoint,
+                    rtt_ms,
+                    detail,
+                } => {
+                    event_sink.send(AdminEvent::P2pResult {
+                        client_id,
+                        session_id,
+                        success,
+                        finished,
+                        endpoint,
+                        rtt_ms,
+                        detail,
                     });
                 }
                 Message::Ping => send(

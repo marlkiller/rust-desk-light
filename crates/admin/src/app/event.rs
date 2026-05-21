@@ -40,6 +40,7 @@ pub(crate) enum AdminInput {
     },
     FileTransfer(Message),
     Proxy(Message),
+    P2p(Message),
     Reconnect {
         reason: String,
         endpoint: Option<ReconnectEndpoint>,
@@ -130,6 +131,24 @@ pub(super) enum AdminEvent {
         client_id: String,
         stream_id: u64,
         reason: String,
+    },
+    P2pControl {
+        target_id: String,
+        session_id: u64,
+        nonce: u64,
+        action: rdl_protocol::P2pAction,
+        server_udp_addr: String,
+        peer_udp_addr: String,
+        detail: String,
+    },
+    P2pResult {
+        client_id: String,
+        session_id: u64,
+        success: bool,
+        finished: bool,
+        endpoint: String,
+        rtt_ms: u32,
+        detail: String,
     },
     Log(String),
 }

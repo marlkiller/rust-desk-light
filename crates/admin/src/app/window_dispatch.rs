@@ -9,6 +9,7 @@ impl AdminApp {
         self.render_audio_windows(ctx);
         self.render_terminal_windows(ctx);
         self.render_proxy_windows(ctx);
+        self.render_p2p_test_window(ctx);
         self.render_chat_windows(ctx);
         self.render_voice_chat_windows(ctx);
         self.render_interaction_command_windows(ctx);
