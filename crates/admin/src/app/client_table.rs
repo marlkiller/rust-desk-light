@@ -1,8 +1,9 @@
 use super::*;
 
-const GROUP_TAG_MAX_WIDTH: f32 = 74.0;
-const GROUP_TAG_HEIGHT: f32 = 18.0;
-const GROUP_TAG_TEXT_SIZE: f32 = 11.0;
+const MODE_TAG_WIDTH: f32 = 38.0;
+const MODE_TAG_HEIGHT: f32 = 18.0;
+const MODE_TAG_TEXT_SIZE: f32 = 11.0;
+const CLIENT_TABLE_MIN_WIDTH: f32 = 1028.0;
 
 fn overview_metric(ui: &mut egui::Ui, label: &str, value: impl Into<String>) {
     let value = value.into();
@@ -95,134 +96,136 @@ impl AdminApp {
                 return;
             }
 
-            let ctx = ui.ctx().clone();
-            crate::theme::clickable_table(ui, "admin_clients_table_group_tag", false)
-                .column(
-                    egui_extras::Column::initial(156.0)
-                        .at_least(118.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(170.0)
-                        .at_least(120.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(108.0)
-                        .at_least(82.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(150.0)
-                        .at_least(120.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(180.0)
-                        .at_least(120.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(150.0)
-                        .at_least(120.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(100.0)
-                        .at_least(80.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(220.0)
-                        .at_least(130.0)
-                        .clip(true),
-                )
-                .header(24.0, |mut header| {
-                    header.col(|ui| table_header(ui, t("Status")));
-                    header.col(|ui| table_header(ui, t("Name")));
-                    header.col(|ui| table_header(ui, t("Client Mode")));
-                    header.col(|ui| table_header(ui, t("IP")));
-                    header.col(|ui| table_header(ui, t("Location")));
-                    header.col(|ui| table_header(ui, t("Host")));
-                    header.col(|ui| table_header(ui, t("User")));
-                    header.col(|ui| table_header(ui, t("OS Version")));
-                })
-                .body(|body| {
-                    body.rows(30.0, clients.len(), |mut row| {
-                        let row_data = &clients[row.index()];
-                        let client = &row_data.info;
-                        let selected =
-                            self.selected_client_id.as_deref() == Some(client.id.as_str());
-                        row.set_selected(selected);
-                        row.col(|ui| {
-                            centered_cell(ui, |ui| {
-                                grouped_status_cell(
-                                    ui,
-                                    self.client_group(&client.id),
-                                    row_data.status,
-                                )
-                            })
-                        });
-                        row.col(|ui| {
-                            centered_cell(ui, |ui| {
-                                cell_label(ui, self.client_display_label(row_data))
-                            })
-                        });
-                        row.col(|ui| {
-                            centered_cell(ui, |ui| {
-                                cell_label(ui, client_mode_label(client.gui_available))
-                            })
-                        });
-                        row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.peer_addr)));
-                        row.col(|ui| {
-                            centered_cell(ui, |ui| cell_label(ui, client_location_label(client)))
-                        });
-                        row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.hostname)));
-                        row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.username)));
-                        row.col(|ui| {
-                            centered_cell(ui, |ui| cell_label(ui, client_os_label(&client.os)))
-                        });
-                        let response = row.response();
-                        if response.hovered() {
-                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if response.clicked() {
-                            self.selected_client_id = Some(client.id.clone());
-                        }
-                        response.context_menu(|ui| {
-                            let mut queued_command = None::<(String, CommandKind)>;
-                            let mut edit_alias = false;
-                            if row_data.status.can_receive_commands() {
-                                command_menu::render_context_menu(
-                                    ui,
-                                    &client.id,
-                                    client.gui_available,
-                                    &mut |client_id, command| {
-                                        queued_command = Some((client_id.to_string(), command));
-                                    },
-                                    &mut |_| {
-                                        edit_alias = true;
-                                    },
-                                );
-                            } else {
-                                command_menu::render_unavailable_client_menu(
-                                    ui,
-                                    &client.id,
-                                    client_status_display(row_data.status).0,
-                                    &mut |client_id, command| {
-                                        queued_command = Some((client_id.to_string(), command));
-                                    },
-                                    &mut |_| {
-                                        edit_alias = true;
-                                    },
-                                );
+            let table_view_width = ui.available_width();
+            egui::ScrollArea::horizontal()
+                .id_salt("admin_clients_table_horizontal_scroll")
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_min_width(table_view_width.max(CLIENT_TABLE_MIN_WIDTH));
+
+                    let ctx = ui.ctx().clone();
+                    crate::theme::clickable_table(
+                        ui,
+                        "admin_clients_table_status_mode_group_last",
+                        false,
+                    )
+                    .column(
+                        egui_extras::Column::initial(112.0)
+                            .at_least(96.0)
+                            .clip(true),
+                    )
+                    .column(
+                        egui_extras::Column::initial(158.0)
+                            .at_least(120.0)
+                            .clip(true),
+                    )
+                    .column(
+                        egui_extras::Column::initial(132.0)
+                            .at_least(104.0)
+                            .clip(true),
+                    )
+                    .column(
+                        egui_extras::Column::initial(150.0)
+                            .at_least(104.0)
+                            .clip(true),
+                    )
+                    .column(
+                        egui_extras::Column::initial(128.0)
+                            .at_least(104.0)
+                            .clip(true),
+                    )
+                    .column(egui_extras::Column::initial(84.0).at_least(68.0).clip(true))
+                    .column(
+                        egui_extras::Column::initial(176.0)
+                            .at_least(120.0)
+                            .clip(true),
+                    )
+                    .column(egui_extras::Column::initial(86.0).at_least(64.0).clip(true))
+                    .header(crate::theme::TABLE_HEADER_HEIGHT, |mut header| {
+                        header.col(|ui| table_header(ui, t("Status")));
+                        header.col(|ui| table_header(ui, t("Name")));
+                        header.col(|ui| table_header(ui, t("IP")));
+                        header.col(|ui| table_header(ui, t("Location")));
+                        header.col(|ui| table_header(ui, t("Host")));
+                        header.col(|ui| table_header(ui, t("User")));
+                        header.col(|ui| table_header(ui, t("OS Version")));
+                        header.col(|ui| table_header(ui, t("Group")));
+                    })
+                    .body(|body| {
+                        body.rows(crate::theme::TABLE_ROW_HEIGHT, clients.len(), |mut row| {
+                            let row_data = &clients[row.index()];
+                            let client = &row_data.info;
+                            let selected =
+                                self.selected_client_id.as_deref() == Some(client.id.as_str());
+                            row.set_selected(selected);
+                            row.col(|ui| {
+                                centered_cell(ui, |ui| {
+                                    grouped_status_cell(ui, row_data.status, client.gui_available)
+                                })
+                            });
+                            row.col(|ui| {
+                                centered_cell(ui, |ui| {
+                                    cell_label(ui, self.client_display_label(row_data))
+                                })
+                            });
+                            row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.peer_addr)));
+                            row.col(|ui| {
+                                centered_cell(ui, |ui| {
+                                    cell_label(ui, client_location_label(client))
+                                })
+                            });
+                            row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.hostname)));
+                            row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.username)));
+                            row.col(|ui| {
+                                centered_cell(ui, |ui| cell_label(ui, client_os_label(&client.os)))
+                            });
+                            row.col(|ui| {
+                                centered_cell(ui, |ui| {
+                                    cell_label(ui, self.client_group(&client.id))
+                                })
+                            });
+                            let response = row.response();
+                            if response.hovered() {
+                                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
-                            if edit_alias {
-                                self.open_alias_window(&client.id);
+                            if response.clicked() {
+                                self.selected_client_id = Some(client.id.clone());
                             }
-                            if let Some((client_id, command)) = queued_command {
-                                self.send_command(&client_id, command);
-                            }
+                            response.context_menu(|ui| {
+                                let mut queued_command = None::<(String, CommandKind)>;
+                                let mut edit_alias = false;
+                                if row_data.status.can_receive_commands() {
+                                    command_menu::render_context_menu(
+                                        ui,
+                                        &client.id,
+                                        client.gui_available,
+                                        &mut |client_id, command| {
+                                            queued_command = Some((client_id.to_string(), command));
+                                        },
+                                        &mut |_| {
+                                            edit_alias = true;
+                                        },
+                                    );
+                                } else {
+                                    command_menu::render_unavailable_client_menu(
+                                        ui,
+                                        &client.id,
+                                        client_status_display(row_data.status).0,
+                                        &mut |client_id, command| {
+                                            queued_command = Some((client_id.to_string(), command));
+                                        },
+                                        &mut |_| {
+                                            edit_alias = true;
+                                        },
+                                    );
+                                }
+                                if edit_alias {
+                                    self.open_alias_window(&client.id);
+                                }
+                                if let Some((client_id, command)) = queued_command {
+                                    self.send_command(&client_id, command);
+                                }
+                            });
                         });
                     });
                 });
@@ -313,29 +316,23 @@ fn csv_field(value: impl AsRef<str>) -> String {
     }
 }
 
-fn grouped_status_cell(ui: &mut egui::Ui, group: &str, status: ClientStatus) {
+fn grouped_status_cell(ui: &mut egui::Ui, status: ClientStatus, gui_available: bool) {
     let item_spacing = ui.spacing().item_spacing.x;
     ui.spacing_mut().item_spacing.x = 6.0;
     client_status_text(ui, status);
-    let group = group.trim();
-    if !group.is_empty() {
-        group_tag(ui, group);
-    }
+    mode_tag(ui, gui_available);
     ui.spacing_mut().item_spacing.x = item_spacing;
 }
 
-fn group_tag(ui: &mut egui::Ui, group: &str) {
+fn mode_tag(ui: &mut egui::Ui, gui_available: bool) {
     let palette = crate::theme::palette();
-    let available = ui.available_width().max(0.0);
-    let width = ((group.chars().count() as f32 * 7.0) + 18.0)
-        .clamp(34.0, GROUP_TAG_MAX_WIDTH)
-        .min(available);
-    if width < 24.0 {
+    let width = MODE_TAG_WIDTH.min(ui.available_width().max(0.0));
+    if width < MODE_TAG_WIDTH {
         return;
     }
 
     let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(width, GROUP_TAG_HEIGHT), egui::Sense::hover());
+        ui.allocate_exact_size(egui::vec2(width, MODE_TAG_HEIGHT), egui::Sense::hover());
     ui.painter().rect_filled(rect, 4.0, palette.selection_bg);
     ui.painter().rect_stroke(
         rect,
@@ -346,28 +343,19 @@ fn group_tag(ui: &mut egui::Ui, group: &str) {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        compact_group_tag(group, width),
-        egui::FontId::proportional(GROUP_TAG_TEXT_SIZE),
+        client_mode_fixed_label(gui_available),
+        egui::FontId::proportional(MODE_TAG_TEXT_SIZE),
         palette.accent,
     );
     if response.hovered() {
-        response.on_hover_text(group);
+        response.on_hover_text(client_mode_fixed_label(gui_available));
     }
 }
 
-fn compact_group_tag(group: &str, width: f32) -> String {
-    let max_chars = ((width - 14.0) / 7.0).floor().max(1.0) as usize;
-    if group.chars().count() <= max_chars {
-        return group.to_string();
+fn client_mode_fixed_label(gui_available: bool) -> &'static str {
+    if gui_available {
+        "GUI"
+    } else {
+        "CLI"
     }
-    if max_chars <= 2 {
-        return group.chars().take(max_chars).collect();
-    }
-    format!(
-        "{}..",
-        group
-            .chars()
-            .take(max_chars.saturating_sub(2))
-            .collect::<String>()
-    )
 }

@@ -1,11 +1,4 @@
-use crate::{
-    i18n::t,
-    theme::{
-        COLOR_BAD, COLOR_BG, COLOR_BORDER, COLOR_GOOD, COLOR_MUTED, COLOR_PANEL, COLOR_TEXT,
-        COLOR_WARN,
-    },
-    windowing,
-};
+use crate::{i18n::t, windowing};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use eframe::egui;
 use std::collections::VecDeque;
@@ -423,7 +416,7 @@ fn render_window(ctx: &egui::Context, window: &mut VoiceChatWindow) {
             close_requested.store(true, Ordering::Relaxed);
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::default().fill(COLOR_BG).inner_margin(16.0))
+            .frame(crate::theme::page_frame())
             .show_inside(ui, |ui| {
                 windowing::render_child_window_controls(ui);
                 ui.vertical_centered(|ui| {
@@ -435,13 +428,13 @@ fn render_window(ctx: &egui::Context, window: &mut VoiceChatWindow) {
                     ui.label(
                         egui::RichText::new(notice.as_str())
                             .size(13.0)
-                            .color(COLOR_MUTED),
+                            .color(crate::theme::palette().muted),
                     );
                     ui.add_space(10.0);
                     ui.label(
                         egui::RichText::new(duration_label(status, started_at))
                             .size(18.0)
-                            .color(COLOR_TEXT),
+                            .color(crate::theme::palette().text),
                     );
                     ui.add_space(18.0);
                     render_meters(ui, &stats);
@@ -465,15 +458,17 @@ fn render_window(ctx: &egui::Context, window: &mut VoiceChatWindow) {
 
 fn render_avatar(ui: &mut egui::Ui, status: VoiceChatStatus) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(112.0, 112.0), egui::Sense::hover());
+    let palette = crate::theme::palette();
     let color = match status {
-        VoiceChatStatus::Live => COLOR_GOOD,
-        VoiceChatStatus::Failed => COLOR_BAD,
-        VoiceChatStatus::Ended => COLOR_MUTED,
-        _ => COLOR_WARN,
+        VoiceChatStatus::Live => palette.good,
+        VoiceChatStatus::Failed => palette.bad,
+        VoiceChatStatus::Ended => palette.muted,
+        _ => palette.warn,
     };
-    ui.painter().circle_filled(rect.center(), 54.0, COLOR_PANEL);
     ui.painter()
-        .circle_stroke(rect.center(), 54.0, egui::Stroke::new(1.0, COLOR_BORDER));
+        .circle_filled(rect.center(), 54.0, palette.panel);
+    ui.painter()
+        .circle_stroke(rect.center(), 54.0, egui::Stroke::new(1.0, palette.border));
     ui.painter()
         .circle_filled(rect.center(), 34.0, color.gamma_multiply(0.16));
     ui.painter().text(
@@ -496,22 +491,22 @@ fn render_status_title(ui: &mut egui::Ui, status: VoiceChatStatus) {
         egui::RichText::new(status_title(status))
             .size(22.0)
             .strong()
-            .color(COLOR_TEXT),
+            .color(crate::theme::palette().text),
     );
 }
 
 fn meter(ui: &mut egui::Ui, label: &str, peak: f32) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).size(12.0).color(COLOR_MUTED));
+        let palette = crate::theme::palette();
+        ui.label(egui::RichText::new(label).size(12.0).color(palette.muted));
         let desired = egui::vec2((ui.available_width() - 8.0).max(80.0), 10.0);
         let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-        ui.painter()
-            .rect_filled(rect, 4.0, crate::theme::COLOR_METER_BG);
+        ui.painter().rect_filled(rect, 4.0, palette.meter_bg);
         let fill = egui::Rect::from_min_size(
             rect.min,
             egui::vec2(rect.width() * peak.clamp(0.0, 1.0), rect.height()),
         );
-        ui.painter().rect_filled(fill, 4.0, COLOR_GOOD);
+        ui.painter().rect_filled(fill, 4.0, palette.good);
     });
 }
 
@@ -525,7 +520,13 @@ fn render_controls(
 ) {
     match status {
         VoiceChatStatus::Ready | VoiceChatStatus::Ended | VoiceChatStatus::Failed => {
-            if call_button(ui, &format!("📞 {}", t("Call")), COLOR_GOOD).clicked() {
+            if call_button(
+                ui,
+                &format!("📞 {}", t("Call")),
+                crate::theme::palette().good,
+            )
+            .clicked()
+            {
                 call_requested.store(true, Ordering::Relaxed);
             }
         }
@@ -543,7 +544,13 @@ fn render_controls(
                 }
             });
             ui.add_space(20.0);
-            if call_button(ui, &format!("☎ {}", t("Hang Up")), COLOR_BAD).clicked() {
+            if call_button(
+                ui,
+                &format!("☎ {}", t("Hang Up")),
+                crate::theme::palette().bad,
+            )
+            .clicked()
+            {
                 end_requested.store(true, Ordering::Relaxed);
             }
         }
@@ -569,7 +576,7 @@ fn speaker_label(muted: bool) -> &'static str {
 fn call_button(ui: &mut egui::Ui, label: &str, color: egui::Color32) -> egui::Response {
     let fill = color.gamma_multiply(0.92);
     let text = egui::RichText::new(label)
-        .color(crate::theme::COLOR_ON_ACCENT)
+        .color(crate::theme::palette().on_accent)
         .strong();
     ui.add_sized(
         [132.0, 42.0],

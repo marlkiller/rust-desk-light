@@ -11,6 +11,7 @@ const ACTIVITY_LOG_LIMIT: usize = 300;
 
 pub(super) fn apply_admin_theme(ctx: &egui::Context, theme: ThemeKind) -> ResolvedTheme {
     ctx.set_theme(crate::theme::theme_preference(theme));
+    apply_native_viewport_theme(ctx, theme);
     let resolved_theme = crate::theme::resolve_theme(ctx, theme);
     crate::theme::set_resolved_theme(resolved_theme);
     install_cjk_font(ctx);
@@ -42,6 +43,15 @@ pub(super) fn apply_admin_theme(ctx: &egui::Context, theme: ThemeKind) -> Resolv
     }
     ctx.set_global_style(style);
     resolved_theme
+}
+
+fn apply_native_viewport_theme(ctx: &egui::Context, theme: ThemeKind) {
+    let system_theme = match theme {
+        ThemeKind::System => egui::SystemTheme::SystemDefault,
+        ThemeKind::Light => egui::SystemTheme::Light,
+        ThemeKind::Dark => egui::SystemTheme::Dark,
+    };
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(system_theme));
 }
 
 fn install_cjk_font(ctx: &egui::Context) {

@@ -261,13 +261,9 @@ fn dark_map_palette() -> MapPalette {
 }
 
 pub(crate) const COLOR_ACCENT: egui::Color32 = LIGHT_PALETTE.accent;
-pub(crate) const COLOR_ON_ACCENT: egui::Color32 = LIGHT_PALETTE.on_accent;
 pub(crate) const COLOR_GOOD: egui::Color32 = LIGHT_PALETTE.good;
 pub(crate) const COLOR_BAD: egui::Color32 = LIGHT_PALETTE.bad;
 pub(crate) const COLOR_WARN: egui::Color32 = LIGHT_PALETTE.warn;
-pub(crate) const COLOR_BG: egui::Color32 = LIGHT_PALETTE.bg;
-pub(crate) const COLOR_PANEL: egui::Color32 = LIGHT_PALETTE.panel;
-pub(crate) const COLOR_BORDER: egui::Color32 = LIGHT_PALETTE.border;
 pub(crate) const COLOR_TEXT: egui::Color32 = LIGHT_PALETTE.text;
 pub(crate) const COLOR_MUTED: egui::Color32 = LIGHT_PALETTE.muted;
 pub(crate) const COLOR_METER_BG: egui::Color32 = LIGHT_PALETTE.meter_bg;
