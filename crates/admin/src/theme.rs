@@ -346,6 +346,13 @@ pub(crate) fn table_body_label(ui: &mut egui::Ui, text: impl Into<String>) -> eg
     )
 }
 
+pub(crate) fn paint_table_cell_background(ui: &mut egui::Ui, fill: egui::Color32) {
+    let rect = ui.max_rect().intersect(ui.clip_rect());
+    if rect.is_positive() {
+        ui.painter().rect_filled(rect, 0.0, fill);
+    }
+}
+
 pub(crate) fn table_cell_label(
     ui: &mut egui::Ui,
     text: &str,

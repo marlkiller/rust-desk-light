@@ -1635,8 +1635,7 @@ impl AdminApp {
                 if ui.button(t("Client Builder")).clicked() {
                     self.client_builder_open = true;
                 }
-                ui.menu_button(t("Tools"), |ui| {
-                    ui.set_min_width(180.0);
+                ui.menu_button(format!("🔧 {}", t("Tools")), |ui| {
                     if ui.button(t("P2P Test")).clicked() {
                         self.p2p_test.open();
                         ui.close();

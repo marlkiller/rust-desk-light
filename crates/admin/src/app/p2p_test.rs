@@ -398,24 +398,40 @@ impl P2pTestWindow {
                     let client = &clients[row.index()];
                     let client_id = &client.info.id;
                     let selected = self.selected_clients.contains(client_id);
+                    let row_fill = self
+                        .sessions
+                        .get(client_id)
+                        .and_then(|session| p2p_status_row_fill(session.status));
                     row.set_selected(selected);
                     row.col(|ui| {
+                        paint_p2p_table_cell_background(ui, row_fill, selected);
                         let mut checked = selected;
                         if ui.checkbox(&mut checked, "").changed() {
                             self.set_selected(client_id, checked);
                         }
                     });
                     row.col(|ui| {
+                        paint_p2p_table_cell_background(ui, row_fill, selected);
                         let (text, color) =
                             super::client_state::client_status_display(client.status);
                         centered_cell(ui, |ui| {
                             ui.label(egui::RichText::new(text).size(12.0).color(color).strong());
                         });
                     });
-                    row.col(|ui| centered_cell(ui, |ui| cell_label(ui, client_id)));
-                    row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.info.hostname)));
-                    row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.info.peer_addr)));
                     row.col(|ui| {
+                        paint_p2p_table_cell_background(ui, row_fill, selected);
+                        centered_cell(ui, |ui| cell_label(ui, client_id));
+                    });
+                    row.col(|ui| {
+                        paint_p2p_table_cell_background(ui, row_fill, selected);
+                        centered_cell(ui, |ui| cell_label(ui, &client.info.hostname));
+                    });
+                    row.col(|ui| {
+                        paint_p2p_table_cell_background(ui, row_fill, selected);
+                        centered_cell(ui, |ui| cell_label(ui, &client.info.peer_addr));
+                    });
+                    row.col(|ui| {
+                        paint_p2p_table_cell_background(ui, row_fill, selected);
                         let text = self
                             .sessions
                             .get(client_id)
@@ -884,6 +900,27 @@ fn session_result_text(session: &P2pClientSession) -> String {
         text.push_str(&format!(" ({rtt_ms}ms)"));
     }
     text
+}
+
+fn p2p_status_row_fill(status: P2pStatus) -> Option<egui::Color32> {
+    let palette = crate::theme::palette();
+    match status {
+        P2pStatus::Succeeded => Some(palette.success_bg),
+        P2pStatus::Failed => Some(palette.danger_bg),
+        _ => None,
+    }
+}
+
+fn paint_p2p_table_cell_background(
+    ui: &mut egui::Ui,
+    row_fill: Option<egui::Color32>,
+    selected: bool,
+) {
+    if !selected {
+        if let Some(fill) = row_fill {
+            crate::theme::paint_table_cell_background(ui, fill);
+        }
+    }
 }
 
 fn status_label(status: P2pStatus) -> &'static str {

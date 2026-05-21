@@ -1137,7 +1137,7 @@ fn render_result_table(
                             let (_, cell_response) = row.col(|ui| {
                                 if !is_selected {
                                     if let Some(fill) = startup_row_fill {
-                                        paint_table_cell_background(ui, fill);
+                                        crate::theme::paint_table_cell_background(ui, fill);
                                     }
                                 }
                                 let _ = table_cell_label(
@@ -1441,13 +1441,6 @@ fn startup_client_row_fill(
         return None;
     }
     Some(startup_client_autostart_style(status).fill)
-}
-
-fn paint_table_cell_background(ui: &mut egui::Ui, fill: egui::Color32) {
-    let rect = ui.max_rect().intersect(ui.clip_rect());
-    if rect.is_positive() {
-        ui.painter().rect_filled(rect, 0.0, fill);
-    }
 }
 
 fn startup_row_status(headers: &[String], row: &[String]) -> Option<StartupClientAutostartStatus> {
