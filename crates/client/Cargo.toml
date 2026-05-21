@@ -34,7 +34,6 @@ gui = [
     "dep:eframe",
     "dep:rust-desk-light-assets",
     "dep:image",
-    "dep:libc",
     "dep:mozjpeg",
     "dep:nokhwa",
     "dep:windows-sys",
@@ -47,9 +46,6 @@ gui = [
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"], optional = true }
 mozjpeg = { version = "0.10.13", optional = true }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = { version = "0.2", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 nokhwa = { version = "0.10.10", default-features = true, features = ["input-msmf"], optional = true }
