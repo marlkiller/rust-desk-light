@@ -42,7 +42,13 @@ pub(crate) fn video_stream_loop(
         let remote_desktop_screen = video_control_value(&start_payload, "screen")
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or_default();
-        match crate::live_control::open_remote_desktop_capture(remote_desktop_screen, &quality) {
+        let tile_diff_enabled =
+            video_control_value(&start_payload, "diff").as_deref() == Some("tiles_v1");
+        match crate::live_control::open_remote_desktop_capture(
+            remote_desktop_screen,
+            &quality,
+            tile_diff_enabled,
+        ) {
             Ok(capture) => {
                 remote_desktop_capture = Some(capture);
             }

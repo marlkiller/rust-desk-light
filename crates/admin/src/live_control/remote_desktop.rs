@@ -57,7 +57,11 @@ pub(crate) struct DesktopFrame {
     image: egui::ColorImage,
 }
 
-pub(crate) fn decode_video_frame(
+pub(crate) type DesktopFrameDecodeState = crate::live_control::tile_frame::DecodeState;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_video_frame_with_state(
+    state: &mut DesktopFrameDecodeState,
     seq: u64,
     source_width: u32,
     source_height: u32,
@@ -65,16 +69,40 @@ pub(crate) fn decode_video_frame(
     image_height: u32,
     format: String,
     bytes: Vec<u8>,
-) -> Result<DesktopFrame, String> {
+) -> Result<Option<DesktopFrame>, String> {
     if source_width == 0 || source_height == 0 || image_width == 0 || image_height == 0 {
         return Err("invalid remote frame metadata".to_string());
     }
+    if format == crate::live_control::tile_frame::FORMAT {
+        return crate::live_control::tile_frame::decode_frame(
+            state,
+            image_width,
+            image_height,
+            &bytes,
+        )
+        .map(|decoded| {
+            decoded.map(|decoded| {
+                let size = [decoded.width as usize, decoded.height as usize];
+                DesktopFrame {
+                    seq,
+                    screen_width: source_width,
+                    screen_height: source_height,
+                    image_width: size[0],
+                    image_height: size[1],
+                    encoded_bytes: bytes.len(),
+                    format,
+                    image: egui::ColorImage::from_rgba_unmultiplied(size, &decoded.rgba),
+                }
+            })
+        });
+    }
+    state.reset();
     let image = image::load_from_memory(&bytes)
         .map_err(|error| format!("load frame failed: {error}"))?
         .to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-    Ok(DesktopFrame {
+    Ok(Some(DesktopFrame {
         seq,
         screen_width: source_width,
         screen_height: source_height,
@@ -83,7 +111,7 @@ pub(crate) fn decode_video_frame(
         encoded_bytes: bytes.len(),
         format,
         image: color_image,
-    })
+    }))
 }
 
 pub(crate) fn handle_decoded_frame(
@@ -700,7 +728,7 @@ fn render_toolbar(
                     queue_ui_payload(
                         queued,
                         format!(
-                            "action=start\nscreen={selected}\nquality={selected_quality}\nfps={selected_fps}"
+                            "action=start\nscreen={selected}\nquality={selected_quality}\nfps={selected_fps}\ndiff=tiles_v1"
                         ),
                     );
                 }

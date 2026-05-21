@@ -1,23 +1,28 @@
-use rdl_protocol::CommandKind;
+use rdl_protocol::{CommandKind, VideoSource};
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "audio-control")]
 mod audio_listen;
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 mod camera;
 pub(crate) mod realtime_video;
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 mod remote_desktop;
+#[cfg(all(
+    feature = "video-control",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+mod tile_diff;
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "audio-control")]
 pub(crate) use audio_listen::{
     AudioInputStream, AudioOutputPlayer, AudioOutputSink, CapturedAudioFrame,
 };
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 pub(crate) use camera::{CameraCapture, CameraVideoFrame};
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 pub(crate) use remote_desktop::{RemoteDesktopCapture, RemoteDesktopVideoFrame};
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 pub(crate) struct CapturedAudioFrame {
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
@@ -25,7 +30,7 @@ pub(crate) struct CapturedAudioFrame {
     pub(crate) bytes: Vec<u8>,
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 pub(crate) struct AudioInputStream {
     pub(crate) sample_rate: u32,
     pub(crate) channels: u16,
@@ -33,13 +38,13 @@ pub(crate) struct AudioInputStream {
     pub(crate) dropped_callbacks: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 pub(crate) struct AudioOutputPlayer;
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 pub(crate) struct AudioOutputSink;
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) struct RemoteDesktopVideoFrame {
     pub(crate) source_width: u32,
     pub(crate) source_height: u32,
@@ -49,10 +54,10 @@ pub(crate) struct RemoteDesktopVideoFrame {
     pub(crate) bytes: Vec<u8>,
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) struct RemoteDesktopCapture;
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) struct CameraVideoFrame {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -60,10 +65,10 @@ pub(crate) struct CameraVideoFrame {
     pub(crate) bytes: Vec<u8>,
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 impl AudioOutputPlayer {
     pub(crate) fn start() -> Result<Self, String> {
-        Err(gui_unavailable_message())
+        Err(audio_unavailable_message())
     }
 
     pub(crate) fn sink(&self) -> AudioOutputSink {
@@ -71,7 +76,7 @@ impl AudioOutputPlayer {
     }
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 impl AudioOutputSink {
     pub(crate) fn push_frame(
         &self,
@@ -80,16 +85,15 @@ impl AudioOutputSink {
         _format: &str,
         _bytes: &[u8],
     ) -> Result<(), String> {
-        Err(gui_unavailable_message())
+        Err(audio_unavailable_message())
     }
 }
 
-#[cfg(feature = "gui")]
 pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {
-        CommandKind::RemoteDesktop => remote_desktop::handle(payload),
-        CommandKind::Camera => camera::handle(payload),
-        CommandKind::AudioListen => audio_listen::handle(payload),
+        CommandKind::RemoteDesktop => handle_remote_desktop(payload),
+        CommandKind::Camera => handle_camera(payload),
+        CommandKind::AudioListen => handle_audio_listen(payload),
         _ => format!(
             "TODO: {} accepted as planned stub; payload='{}'",
             command.as_str(),
@@ -98,19 +102,68 @@ pub fn handle(command: &CommandKind, payload: &str) -> String {
     }
 }
 
-#[cfg(not(feature = "gui"))]
-pub fn handle(command: &CommandKind, _payload: &str) -> String {
-    disabled_detail(command)
+#[cfg(feature = "video-control")]
+fn handle_remote_desktop(payload: &str) -> String {
+    remote_desktop::handle(payload)
+}
+
+#[cfg(not(feature = "video-control"))]
+fn handle_remote_desktop(_payload: &str) -> String {
+    disabled_detail(&CommandKind::RemoteDesktop)
+}
+
+#[cfg(feature = "video-control")]
+fn handle_camera(payload: &str) -> String {
+    camera::handle(payload)
+}
+
+#[cfg(not(feature = "video-control"))]
+fn handle_camera(_payload: &str) -> String {
+    disabled_detail(&CommandKind::Camera)
+}
+
+#[cfg(feature = "audio-control")]
+fn handle_audio_listen(payload: &str) -> String {
+    audio_listen::handle(payload)
+}
+
+#[cfg(not(feature = "audio-control"))]
+fn handle_audio_listen(_payload: &str) -> String {
+    disabled_detail(&CommandKind::AudioListen)
+}
+
+pub(crate) fn command_available(command: &CommandKind) -> bool {
+    match command {
+        CommandKind::RemoteDesktop | CommandKind::Camera => video_control_available(),
+        CommandKind::AudioListen => audio_control_available(),
+        _ => true,
+    }
+}
+
+pub(crate) fn video_source_available(source: &VideoSource) -> bool {
+    match source {
+        VideoSource::RemoteDesktop | VideoSource::Camera => video_control_available(),
+    }
+}
+
+pub(crate) fn video_control_available() -> bool {
+    cfg!(feature = "video-control")
+}
+
+pub(crate) fn audio_control_available() -> bool {
+    cfg!(feature = "audio-control")
 }
 
 pub(crate) fn disabled_detail(command: &CommandKind) -> String {
     match command {
         CommandKind::RemoteDesktop => {
-            "remote_desktop_error\nmessage=client GUI is not available".to_string()
+            "remote_desktop_error\nmessage=client video control is not available".to_string()
         }
-        CommandKind::Camera => "camera_error\nmessage=client GUI is not available".to_string(),
+        CommandKind::Camera => {
+            "camera_error\nmessage=client video control is not available".to_string()
+        }
         CommandKind::AudioListen => {
-            "audio_listen_error\nmessage=client GUI is not available".to_string()
+            "audio_listen_error\nmessage=client audio control is not available".to_string()
         }
         _ => format!(
             "{}_disabled\nmessage=client GUI is not available",
@@ -119,76 +172,78 @@ pub(crate) fn disabled_detail(command: &CommandKind) -> String {
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 pub(crate) fn open_remote_desktop_capture(
     screen_index: usize,
     quality: &str,
+    tile_diff_enabled: bool,
 ) -> Result<RemoteDesktopCapture, String> {
-    RemoteDesktopCapture::new(screen_index, quality)
+    RemoteDesktopCapture::new(screen_index, quality, tile_diff_enabled)
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) struct CameraCapture;
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) fn open_remote_desktop_capture(
     _screen_index: usize,
     _quality: &str,
+    _tile_diff_enabled: bool,
 ) -> Result<RemoteDesktopCapture, String> {
-    Err(gui_unavailable_message())
+    Err(video_unavailable_message())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 pub(crate) fn capture_remote_desktop_stream_frame(
     capture: &mut RemoteDesktopCapture,
 ) -> Result<Option<RemoteDesktopVideoFrame>, String> {
     capture.capture_frame()
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) fn capture_remote_desktop_stream_frame(
     _capture: &mut RemoteDesktopCapture,
 ) -> Result<Option<RemoteDesktopVideoFrame>, String> {
-    Err(gui_unavailable_message())
+    Err(video_unavailable_message())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 pub(crate) fn open_camera_capture(device: usize, quality: &str) -> Result<CameraCapture, String> {
     CameraCapture::new(device, quality)
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) fn open_camera_capture(_device: usize, _quality: &str) -> Result<CameraCapture, String> {
-    Err(gui_unavailable_message())
+    Err(video_unavailable_message())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "video-control")]
 pub(crate) fn capture_camera_stream_frame(
     capture: &mut CameraCapture,
 ) -> Result<CameraVideoFrame, String> {
     capture.capture_frame()
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "video-control"))]
 pub(crate) fn capture_camera_stream_frame(
     _capture: &mut CameraCapture,
 ) -> Result<CameraVideoFrame, String> {
-    Err(gui_unavailable_message())
+    Err(video_unavailable_message())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "audio-control")]
 #[allow(dead_code)]
 pub(crate) fn confirm_audio_listen() -> Result<(), String> {
     audio_listen::confirm_audio_listen()
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 #[allow(dead_code)]
 pub(crate) fn confirm_audio_listen() -> Result<(), String> {
-    Err(gui_unavailable_message())
+    Err(audio_unavailable_message())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(feature = "audio-control")]
 pub(crate) fn start_audio_input_stream(
     device: usize,
     frame_tx: std::sync::mpsc::SyncSender<CapturedAudioFrame>,
@@ -196,15 +251,20 @@ pub(crate) fn start_audio_input_stream(
     audio_listen::start_input_stream(device, frame_tx)
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(feature = "audio-control"))]
 pub(crate) fn start_audio_input_stream(
     _device: usize,
     _frame_tx: std::sync::mpsc::SyncSender<CapturedAudioFrame>,
 ) -> Result<AudioInputStream, String> {
-    Err(gui_unavailable_message())
+    Err(audio_unavailable_message())
 }
 
-#[cfg(not(feature = "gui"))]
-fn gui_unavailable_message() -> String {
-    "client GUI is not available".to_string()
+#[cfg(not(feature = "audio-control"))]
+fn audio_unavailable_message() -> String {
+    "client audio control is not available".to_string()
+}
+
+#[cfg(not(feature = "video-control"))]
+fn video_unavailable_message() -> String {
+    "client video control is not available".to_string()
 }

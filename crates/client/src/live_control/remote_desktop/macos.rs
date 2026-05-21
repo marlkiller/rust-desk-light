@@ -1,4 +1,5 @@
 pub(crate) mod capture {
+    use super::super::super::tile_diff;
     use super::super::{FrameChangeDetector, RemoteDesktopVideoFrame};
     use core_graphics::display::{CGDirectDisplayID, CGDisplay};
     use core_graphics::image::CGImage;
@@ -30,10 +31,15 @@ pub(crate) mod capture {
         display: CGDisplay,
         rgba: Vec<u8>,
         change_detector: FrameChangeDetector,
+        tile_encoder: tile_diff::TileDiffEncoder,
     }
 
     impl CaptureStream {
-        pub(crate) fn new(screen_index: usize, quality: &str) -> Result<Self, String> {
+        pub(crate) fn new(
+            screen_index: usize,
+            quality: &str,
+            tile_diff_enabled: bool,
+        ) -> Result<Self, String> {
             let screen = enum_screens().and_then(|screens| {
                 screens
                     .into_iter()
@@ -47,6 +53,7 @@ pub(crate) mod capture {
                 display,
                 rgba: Vec::new(),
                 change_detector: FrameChangeDetector::default(),
+                tile_encoder: tile_diff::TileDiffEncoder::new(tile_diff_enabled),
             })
         }
 
@@ -61,6 +68,7 @@ pub(crate) mod capture {
                 self.quality,
                 &mut self.rgba,
                 &mut self.change_detector,
+                &mut self.tile_encoder,
             )
         }
     }
@@ -129,9 +137,10 @@ pub(crate) mod capture {
         quality: QualityProfile,
         rgba: &mut Vec<u8>,
         change_detector: &mut FrameChangeDetector,
+        tile_encoder: &mut tile_diff::TileDiffEncoder,
     ) -> Result<Option<RemoteDesktopVideoFrame>, String> {
         let (width, height) = cg_image_to_rgba_buffer(capture, rgba)?;
-        if !change_detector.should_send(rgba) {
+        if !tile_encoder.is_enabled() && !change_detector.should_send(rgba) {
             return Ok(None);
         }
         let rgba_buffer = std::mem::take(rgba);
@@ -152,6 +161,27 @@ pub(crate) mod capture {
                 DynamicImage::ImageRgba8(image),
             )
         };
+        if tile_encoder.is_enabled() {
+            let rgb = image.to_rgb8();
+            let result = tile_encoder
+                .encode_rgb_frame(rgb.as_raw(), image_width, image_height, quality.jpeg_quality)
+                .map(|bytes| {
+                    bytes.map(|bytes| RemoteDesktopVideoFrame {
+                        source_width: screen.width,
+                        source_height: screen.height,
+                        image_width,
+                        image_height,
+                        format: tile_diff::FORMAT.to_string(),
+                        bytes,
+                    })
+                });
+            if recycle_output {
+                if let DynamicImage::ImageRgba8(image) = image {
+                    *rgba = image.into_raw();
+                }
+            }
+            return result;
+        }
         let mut encoded = Vec::new();
         JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
             .encode_image(&image)

@@ -62,6 +62,10 @@ impl AdminApp {
                     || row.info.username.to_ascii_lowercase().contains(&filter)
                     || row.info.os.to_ascii_lowercase().contains(&filter)
                     || self
+                        .client_display_label(row)
+                        .to_ascii_lowercase()
+                        .contains(&filter)
+                    || self
                         .client_group(&row.info.id)
                         .to_ascii_lowercase()
                         .contains(&filter)
@@ -95,7 +99,14 @@ impl AdminApp {
         self.clients
             .iter()
             .find(|row| row.info.id == selected_id)
-            .map(|row| client_identity_label(&row.info))
+            .map(|row| self.client_display_label(row))
             .unwrap_or_else(|| selected_id.to_string())
+    }
+
+    pub(super) fn client_display_label(&self, row: &ClientRow) -> String {
+        self.client_aliases
+            .get(&row.info.id)
+            .cloned()
+            .unwrap_or_else(|| client_identity_label(&row.info))
     }
 }

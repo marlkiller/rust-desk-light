@@ -25,6 +25,10 @@ pub(crate) struct CameraCapture {
     backends: Vec<linux::CameraBackend>,
     #[cfg(target_os = "linux")]
     active_backend: usize,
+    #[cfg(target_os = "linux")]
+    ffmpeg_stream: Option<linux::FfmpegMjpegStream>,
+    #[cfg(target_os = "linux")]
+    ffmpeg_stream_failed: bool,
 }
 
 impl CameraCapture {
@@ -37,6 +41,8 @@ impl CameraCapture {
                 device_path: linux::device_path(device),
                 backends: linux::camera_backends()?,
                 active_backend: 0,
+                ffmpeg_stream: None,
+                ffmpeg_stream_failed: false,
             });
         }
         #[cfg(any(target_os = "windows", target_os = "macos"))]

@@ -1,4 +1,5 @@
 pub(crate) mod capture {
+    use super::super::super::tile_diff;
     use super::super::{FrameChangeDetector, RemoteDesktopVideoFrame};
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
@@ -53,10 +54,15 @@ pub(crate) mod capture {
         rgb_buffer: Vec<u8>,
         resources: CaptureResources,
         change_detector: FrameChangeDetector,
+        tile_encoder: tile_diff::TileDiffEncoder,
     }
 
     impl CaptureStream {
-        pub(crate) fn new(screen_index: usize, quality: &str) -> Result<Self, String> {
+        pub(crate) fn new(
+            screen_index: usize,
+            quality: &str,
+            tile_diff_enabled: bool,
+        ) -> Result<Self, String> {
             let screen = enum_screens().and_then(|screens| {
                 screens
                     .into_iter()
@@ -79,6 +85,7 @@ pub(crate) mod capture {
                 rgb_buffer: Vec::new(),
                 resources,
                 change_detector: FrameChangeDetector::default(),
+                tile_encoder: tile_diff::TileDiffEncoder::new(tile_diff_enabled),
             })
         }
 
@@ -101,6 +108,27 @@ pub(crate) mod capture {
                         self.screen.height
                     )
                 })?;
+            if self.tile_encoder.is_enabled() {
+                write_rgb_from_bgra(&self.bgra_buffer, &mut self.rgb_buffer)?;
+                return self
+                    .tile_encoder
+                    .encode_rgb_frame(
+                        &self.rgb_buffer,
+                        self.image_width,
+                        self.image_height,
+                        self.quality.jpeg_quality,
+                    )
+                    .map(|bytes| {
+                        bytes.map(|bytes| RemoteDesktopVideoFrame {
+                            source_width: self.screen.width,
+                            source_height: self.screen.height,
+                            image_width: self.image_width,
+                            image_height: self.image_height,
+                            format: tile_diff::FORMAT.to_string(),
+                            bytes,
+                        })
+                    });
+            }
             if !self.change_detector.should_send(&self.bgra_buffer) {
                 return Ok(None);
             }

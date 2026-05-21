@@ -1,10 +1,6 @@
 use super::payload::{clean_result_value, ParsedInteractionPayload};
 
-pub(crate) fn handle(payload: &str, gui_mode: bool) -> String {
-    if !gui_mode {
-        return super::disabled_detail(&rdl_protocol::CommandKind::BalloonTip);
-    }
-
+pub(crate) fn handle(payload: &str) -> String {
     let payload = ParsedInteractionPayload::parse(
         payload,
         "Rust Desk Light",

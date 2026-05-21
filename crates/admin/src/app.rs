@@ -1,5 +1,6 @@
 mod about;
 mod audio_udp;
+mod client_aliases;
 mod client_builder;
 mod client_groups;
 mod client_map;
@@ -10,6 +11,7 @@ mod command_result;
 pub(crate) mod event;
 mod file_transfer;
 mod network;
+mod p2p_test;
 mod payload;
 mod settings;
 mod status_bar;
@@ -23,6 +25,7 @@ use self::{
         initial_stream_id, push_pending_audio_frame, voice_audio_forward_loop, AudioUdpEndpoint,
         AudioUdpSender, AudioUdpSession, PendingAudioFrame,
     },
+    client_aliases::{AliasAction, AliasWindow},
     client_builder::ClientBuilderState,
     client_groups::{MoveGroupAction, MoveGroupWindow},
     client_map::ClientMapWindow,
@@ -194,7 +197,9 @@ struct AdminApp {
     audio_playback_registry: live_control::audio_listen::AudioPlaybackRegistry,
     connected: bool,
     clients: Vec<ClientRow>,
+    client_aliases: HashMap<String, String>,
     client_groups: HashMap<String, String>,
+    alias_window: AliasWindow,
     move_group_window: MoveGroupWindow,
     client_filter: String,
     client_builder_open: bool,
@@ -211,6 +216,7 @@ struct AdminApp {
     audio_udp_next_stream_id: u64,
     terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
     proxy_windows: Vec<remote_management::reverse_proxy::ReverseProxyWindow>,
+    p2p_test: p2p_test::P2pTestWindow,
     chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
     voice_chat_windows: Vec<user_interaction::voice_chat::VoiceChatWindow>,
     interaction_command_windows: Vec<user_interaction::InteractionCommandWindow>,
@@ -269,7 +275,9 @@ impl AdminApp {
             audio_playback_registry,
             connected: false,
             clients: Vec::new(),
+            client_aliases: client_aliases::load_client_aliases(),
             client_groups: client_groups::load_client_groups(),
+            alias_window: AliasWindow::default(),
             move_group_window: MoveGroupWindow::default(),
             client_filter: String::new(),
             client_builder_open: false,
@@ -286,6 +294,7 @@ impl AdminApp {
             audio_udp_next_stream_id: initial_stream_id(),
             terminal_windows: Vec::new(),
             proxy_windows: Vec::new(),
+            p2p_test: p2p_test::P2pTestWindow::default(),
             chat_windows: Vec::new(),
             voice_chat_windows: Vec::new(),
             voice_audio_tx,
@@ -334,6 +343,7 @@ impl AdminApp {
                     self.stop_all_voice_udp_sessions();
                     self.clear_voice_udp_senders();
                     remote_management::reverse_proxy::stop_all(&mut self.proxy_windows);
+                    self.p2p_test.stop_all_local();
                     for client in &mut self.clients {
                         client.status = ClientStatus::Offline;
                     }
@@ -612,6 +622,40 @@ impl AdminApp {
                         reason,
                     );
                 }
+                AdminEvent::P2pControl {
+                    target_id,
+                    session_id,
+                    nonce,
+                    action,
+                    server_udp_addr,
+                    peer_udp_addr,
+                    detail,
+                } => {
+                    let fallback_server_udp_addr =
+                        format!("{}:{}", self.config.ip, self.config.port);
+                    self.p2p_test.handle_control(
+                        target_id,
+                        session_id,
+                        nonce,
+                        action,
+                        server_udp_addr,
+                        peer_udp_addr,
+                        detail,
+                        fallback_server_udp_addr,
+                        self.event_tx.clone(),
+                    );
+                }
+                AdminEvent::P2pResult {
+                    client_id,
+                    session_id,
+                    success,
+                    finished,
+                    endpoint,
+                    rtt_ms,
+                    detail,
+                } => self.p2p_test.handle_result(
+                    client_id, session_id, success, finished, endpoint, rtt_ms, detail,
+                ),
                 AdminEvent::Log(line) => self.push_log(line),
             }
         }
@@ -706,6 +750,48 @@ impl AdminApp {
     fn render_settings_window(&mut self, ctx: &egui::Context) {
         if let Some(action) = settings::render_settings_window(ctx, &mut self.settings) {
             self.handle_settings_action(action);
+        }
+    }
+
+    fn render_p2p_test_window(&mut self, ctx: &egui::Context) {
+        let clients = self.clients.clone();
+        let aliases = self.client_aliases.clone();
+        let Some(action) = self
+            .p2p_test
+            .render(ctx, &clients, &aliases, self.connected)
+        else {
+            return;
+        };
+        match action {
+            p2p_test::P2pWindowAction::Start(client_ids) => {
+                for client_id in client_ids {
+                    let Some(client) = self
+                        .clients
+                        .iter()
+                        .find(|client| client.info.id == client_id)
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    let label = self.client_display_label(&client);
+                    self.p2p_test.mark_starting(&client, label.clone());
+                    p2p_test::send_start(&self.input_tx, &client.info.id);
+                    self.push_log(format!("p2p test requested for {label}"));
+                }
+            }
+            p2p_test::P2pWindowAction::Stop(sessions) => {
+                for (client_id, session_id) in sessions {
+                    p2p_test::send_stop(&self.input_tx, &client_id, session_id);
+                    let label = self
+                        .clients
+                        .iter()
+                        .find(|client| client.info.id == client_id)
+                        .map(|client| self.client_display_label(client))
+                        .unwrap_or_else(|| client_id.clone());
+                    self.push_log(format!("p2p test stopped for {label}"));
+                }
+                self.p2p_test.stop_all_local();
+            }
         }
     }
 
@@ -810,9 +896,9 @@ impl AdminApp {
             return;
         }
 
-        if command.requires_client_gui() && !self.client_gui_available(client_id) {
+        if command_requires_client_ui(&command) && !self.client_gui_available(client_id) {
             self.push_log(format!(
-                "blocked command={} to {}: client has no GUI session",
+                "blocked command={} to {}: client has no client UI",
                 command.as_str(),
                 client_id
             ));
@@ -1010,6 +1096,74 @@ impl AdminApp {
         );
     }
 
+    fn open_alias_window(&mut self, client_id: &str) {
+        let default_alias = self.default_client_alias(client_id);
+        let current_alias = self
+            .client_aliases
+            .get(client_id)
+            .cloned()
+            .unwrap_or_else(|| default_alias.clone());
+        self.alias_window.open(
+            client_id,
+            current_alias.clone(),
+            default_alias,
+            &current_alias,
+        );
+    }
+
+    fn apply_alias_action(&mut self, action: AliasAction) {
+        match action {
+            AliasAction::Save { client_id, alias } => {
+                let alias = client_aliases::clean_alias(&alias);
+                if alias.is_empty() {
+                    self.alias_window.set_error(t("Alias cannot be empty"));
+                } else if alias == self.default_client_alias(&client_id) {
+                    self.client_aliases.remove(&client_id);
+                    match client_aliases::save_client_aliases(&self.client_aliases) {
+                        Ok(()) => {
+                            self.alias_window.close();
+                            self.push_log(format!("client {client_id} alias restored to default"));
+                        }
+                        Err(error) => self
+                            .alias_window
+                            .set_error(format!("{}: {error}", t("Save alias failed"))),
+                    }
+                } else {
+                    self.client_aliases.insert(client_id.clone(), alias.clone());
+                    match client_aliases::save_client_aliases(&self.client_aliases) {
+                        Ok(()) => {
+                            self.alias_window.close();
+                            self.push_log(format!("client {client_id} alias set to {alias}"));
+                        }
+                        Err(error) => self
+                            .alias_window
+                            .set_error(format!("{}: {error}", t("Save alias failed"))),
+                    }
+                }
+            }
+            AliasAction::RestoreDefault { client_id } => {
+                self.client_aliases.remove(&client_id);
+                match client_aliases::save_client_aliases(&self.client_aliases) {
+                    Ok(()) => {
+                        self.alias_window.close();
+                        self.push_log(format!("client {client_id} alias restored to default"));
+                    }
+                    Err(error) => self
+                        .alias_window
+                        .set_error(format!("{}: {error}", t("Save alias failed"))),
+                }
+            }
+        }
+    }
+
+    fn default_client_alias(&self, client_id: &str) -> String {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| client_identity_label(&row.info))
+            .unwrap_or_else(|| client_id.to_string())
+    }
+
     fn open_move_group_window(&mut self, client_id: &str) {
         let label = self
             .clients
@@ -1099,8 +1253,8 @@ impl AdminApp {
         self.clients
             .iter()
             .find(|row| row.info.id == client_id)
-            .map(|row| (row.info.hostname.clone(), row.info.username.clone()))
-            .unwrap_or_else(|| ("unknown-host".to_string(), "unknown-user".to_string()))
+            .map(|row| (self.client_display_label(row), String::new()))
+            .unwrap_or_else(|| (client_id.to_string(), String::new()))
     }
 
     fn client_os(&self, client_id: &str) -> String {
@@ -1132,15 +1286,15 @@ impl AdminApp {
             .find(|row| row.info.id == client_id)
             .map(|row| {
                 (
-                    row.info.hostname.clone(),
-                    row.info.username.clone(),
+                    self.client_display_label(row),
+                    String::new(),
                     row.info.os.clone(),
                 )
             })
             .unwrap_or_else(|| {
                 (
-                    "unknown-host".to_string(),
-                    "unknown-user".to_string(),
+                    client_id.to_string(),
+                    String::new(),
                     "unknown-os".to_string(),
                 )
             })
@@ -1554,20 +1708,24 @@ impl AdminApp {
                 if ui.button(format!("🌐 {}", t("Client Map"))).clicked() {
                     self.client_map_window.open();
                 }
-                if ui.button(t("Client Builder")).clicked() {
+                if ui.button(format!("🛠 {}", t("Client Builder"))).clicked() {
                     self.client_builder_open = true;
                 }
+                ui.menu_button(format!("🔧 {}", t("Tools")), |ui| {
+                    if ui.button(t("P2P Test")).clicked() {
+                        self.p2p_test.open();
+                        ui.close();
+                    }
+                });
                 if let Some(client_id) = self.selected_client_id.clone() {
                     ui.separator();
                     let status = self
                         .client_status_for(&client_id)
                         .unwrap_or(ClientStatus::Offline);
                     if status.can_receive_commands() {
-                        let gui_available = self.client_gui_available(&client_id);
                         command_menu::render_toolbar_actions(
                             ui,
                             &client_id,
-                            gui_available,
                             &mut |client_id, command| {
                                 self.send_command(client_id, command);
                             },
@@ -2358,6 +2516,7 @@ impl eframe::App for AdminApp {
         self.client_map_window.render(
             ui.ctx(),
             &self.clients,
+            &self.client_aliases,
             &mut self.selected_client_id,
             &mut self.client_filter,
         );
@@ -2375,4 +2534,8 @@ impl eframe::App for AdminApp {
                 .request_repaint_after(std::time::Duration::from_millis(interval_ms));
         }
     }
+}
+
+fn command_requires_client_ui(command: &CommandKind) -> bool {
+    matches!(command, CommandKind::TextChat | CommandKind::VoiceChat)
 }

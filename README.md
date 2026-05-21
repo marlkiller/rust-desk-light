@@ -22,11 +22,11 @@ Windows, Linux, and macOS.
 | `rdl-admin-gui` | GUI | Operator console for online clients, command dispatch, live control, file transfer, and remote terminals. |
 | `rdl-server-cli` | CLI | Relay server for peer registration, session tokens, presence, routing, and UDP audio relay. |
 | `rdl-client-gui` | GUI | Full endpoint client with status window, live control, media capture, and terminal fallback. |
-| `rdl-client-cli` | CLI | Terminal-only endpoint client built without GUI/live-control dependencies. |
+| `rdl-client-cli` | CLI | Terminal-only endpoint client with live control and basic desktop interaction, but no local client UI. |
 
 Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`,
 and `xdotool`. macOS remote control needs Accessibility permission for the app
-that launches `rdl-client-gui`, and screen capture may need Screen Recording
+that launches the client, and screen capture may need Screen Recording
 permission.
 
 ## Features

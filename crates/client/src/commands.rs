@@ -22,8 +22,8 @@ impl CommandReply {
 }
 
 pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> CommandReply {
-    if command.requires_client_gui() && (!gui_mode || !cfg!(feature = "gui")) {
-        return CommandReply::rejected(gui_disabled_detail(command));
+    if let Some(detail) = unavailable_detail(command, gui_mode) {
+        return CommandReply::rejected(detail);
     }
 
     CommandReply::accepted(match command {
@@ -70,6 +70,31 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> C
         // Interactive stream commands, including reverse proxy, use dedicated Message variants.
         _ => return CommandReply::rejected(unsupported_command_detail(command)),
     })
+}
+
+fn unavailable_detail(command: &CommandKind, client_ui_available: bool) -> Option<String> {
+    if matches!(command, CommandKind::RemoteDesktop | CommandKind::Camera)
+        && !crate::live_control::command_available(command)
+    {
+        return Some(crate::live_control::disabled_detail(command));
+    }
+    if matches!(command, CommandKind::AudioListen)
+        && !crate::live_control::command_available(command)
+    {
+        return Some(crate::live_control::disabled_detail(command));
+    }
+    if matches!(
+        command,
+        CommandKind::MessageBox
+            | CommandKind::BalloonTip
+            | CommandKind::TextChat
+            | CommandKind::VoiceChat
+            | CommandKind::OpenTextInNotepad
+    ) && !crate::user_interaction::command_available(command, client_ui_available)
+    {
+        return Some(crate::user_interaction::disabled_detail(command));
+    }
+    None
 }
 
 fn unsupported_command_detail(command: &CommandKind) -> String {

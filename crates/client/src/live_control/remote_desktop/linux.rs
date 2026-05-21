@@ -1,4 +1,5 @@
 pub(crate) mod capture {
+    use super::super::super::tile_diff;
     use super::super::{FrameChangeDetector, RemoteDesktopVideoFrame};
     use image::codecs::jpeg::JpegEncoder;
     use image::{imageops::FilterType, DynamicImage};
@@ -32,10 +33,15 @@ pub(crate) mod capture {
         backends: Vec<CaptureBackend>,
         active_backend: usize,
         change_detector: FrameChangeDetector,
+        tile_encoder: tile_diff::TileDiffEncoder,
     }
 
     impl CaptureStream {
-        pub(crate) fn new(screen_index: usize, quality: &str) -> Result<Self, String> {
+        pub(crate) fn new(
+            screen_index: usize,
+            quality: &str,
+            tile_diff_enabled: bool,
+        ) -> Result<Self, String> {
             let screen = enum_screens().and_then(|screens| {
                 screens
                     .into_iter()
@@ -50,6 +56,7 @@ pub(crate) mod capture {
                 backends: capture_backends()?,
                 active_backend: 0,
                 change_detector: FrameChangeDetector::default(),
+                tile_encoder: tile_diff::TileDiffEncoder::new(tile_diff_enabled),
             })
         }
 
@@ -60,11 +67,18 @@ pub(crate) mod capture {
                 match self.backends[index].capture(&self.geometry) {
                     Ok(bytes) => {
                         self.active_backend = index;
-                        if !self.change_detector.should_send(&bytes) {
+                        if !self.tile_encoder.is_enabled()
+                            && !self.change_detector.should_send(&bytes)
+                        {
                             return Ok(None);
                         }
-                        match encode_frame(self.screen.clone(), bytes, self.quality) {
-                            Ok(frame) => return Ok(Some(frame)),
+                        match encode_frame(
+                            self.screen.clone(),
+                            bytes,
+                            self.quality,
+                            &mut self.tile_encoder,
+                        ) {
+                            Ok(frame) => return Ok(frame),
                             Err(error) => {
                                 last_error = error;
                             }
@@ -257,7 +271,8 @@ pub(crate) mod capture {
         screen: Screen,
         bytes: Vec<u8>,
         quality: QualityProfile,
-    ) -> Result<RemoteDesktopVideoFrame, String> {
+        tile_encoder: &mut tile_diff::TileDiffEncoder,
+    ) -> Result<Option<RemoteDesktopVideoFrame>, String> {
         let image = image::load_from_memory(&bytes)
             .map_err(|error| format!("load captured image failed: {error}"))?;
         let scale = (quality.max_width as f32 / image.width() as f32).min(1.0);
@@ -269,18 +284,33 @@ pub(crate) mod capture {
         } else {
             (image.width(), image.height(), image)
         };
+        if tile_encoder.is_enabled() {
+            let rgb = image.to_rgb8();
+            return tile_encoder
+                .encode_rgb_frame(rgb.as_raw(), image_width, image_height, quality.jpeg_quality)
+                .map(|bytes| {
+                    bytes.map(|bytes| RemoteDesktopVideoFrame {
+                        source_width: screen.width,
+                        source_height: screen.height,
+                        image_width,
+                        image_height,
+                        format: tile_diff::FORMAT.to_string(),
+                        bytes,
+                    })
+                });
+        }
         let mut encoded = Vec::new();
         JpegEncoder::new_with_quality(&mut encoded, quality.jpeg_quality)
             .encode_image(&image)
             .map_err(|error| format!("jpeg encode failed: {error}"))?;
-        Ok(RemoteDesktopVideoFrame {
+        Ok(Some(RemoteDesktopVideoFrame {
             source_width: screen.width,
             source_height: screen.height,
             image_width,
             image_height,
             format: "jpeg".to_string(),
             bytes: encoded,
-        })
+        }))
     }
 
     fn format_screens(screens: &[Screen]) -> String {

@@ -160,6 +160,7 @@ fn video_decode_worker_loop(
     shared: Arc<VideoDecodeShared>,
 ) {
     let sink = AdminEventSink::new(event_tx, Some(repaint_handle), None);
+    let mut desktop_decode_state = live_control::remote_desktop::DesktopFrameDecodeState::default();
     loop {
         let Some(frame) = wait_for_latest_video_frame(&shared) else {
             break;
@@ -167,7 +168,8 @@ fn video_decode_worker_loop(
         let decode_started = Instant::now();
         match source {
             VideoSource::RemoteDesktop => {
-                let result = live_control::remote_desktop::decode_video_frame(
+                let result = live_control::remote_desktop::decode_video_frame_with_state(
+                    &mut desktop_decode_state,
                     frame.seq,
                     frame.source_width,
                     frame.source_height,
@@ -176,11 +178,23 @@ fn video_decode_worker_loop(
                     frame.format,
                     frame.bytes,
                 );
-                sink.send(AdminEvent::DecodedDesktopFrame {
-                    client_id: client_id.clone(),
-                    result,
-                    decode_ms: Some(decode_started.elapsed().as_millis()),
-                });
+                match result {
+                    Ok(Some(frame)) => {
+                        sink.send(AdminEvent::DecodedDesktopFrame {
+                            client_id: client_id.clone(),
+                            result: Ok(frame),
+                            decode_ms: Some(decode_started.elapsed().as_millis()),
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        sink.send(AdminEvent::DecodedDesktopFrame {
+                            client_id: client_id.clone(),
+                            result: Err(error),
+                            decode_ms: Some(decode_started.elapsed().as_millis()),
+                        });
+                    }
+                }
             }
             VideoSource::Camera => {
                 let result = live_control::camera::decode_video_frame(

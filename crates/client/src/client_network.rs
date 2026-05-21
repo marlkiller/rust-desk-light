@@ -18,7 +18,7 @@ use crate::{
 };
 use rdl_protocol::{
     AudioSource, CommandKind, EnvelopeDecoder, FileTransferAction, FileTransferDirection, Message,
-    Role, VideoSource,
+    P2pAction, Role, VideoSource,
 };
 use std::collections::HashMap;
 use std::io;
@@ -136,6 +136,7 @@ fn client_connection_once(
     let mut voice_chat_invite_udp_endpoint: Option<AudioUdpEndpoint> = None;
     let mut voice_chat_udp_stop: Option<Arc<AtomicBool>> = None;
     let mut proxy_streams = HashMap::<u64, ClientProxyStream>::new();
+    let mut p2p_sessions = HashMap::<u64, crate::p2p::P2pTestSession>::new();
     let (proxy_done_tx, proxy_done_rx) = mpsc::channel::<u64>();
     loop {
         while let Ok(stream_id) = proxy_done_rx.try_recv() {
@@ -556,7 +557,7 @@ fn client_connection_once(
                 }
             }
             Message::DesktopControl { target_id, payload } => {
-                if !gui_mode {
+                if !crate::live_control::command_available(&CommandKind::RemoteDesktop) {
                     desktop_stream.running.store(false, Ordering::Relaxed);
                     desktop_stream.generation.fetch_add(1, Ordering::Relaxed);
                     let _ = queue_message(
@@ -618,7 +619,7 @@ fn client_connection_once(
                 }
             }
             Message::DesktopInput { target_id, payload } => {
-                if !gui_mode {
+                if !crate::live_control::command_available(&CommandKind::RemoteDesktop) {
                     let _ = queue_message(
                         &out_tx,
                         &session_token,
@@ -661,7 +662,7 @@ fn client_connection_once(
                 source,
                 payload,
             } => match video_control_action(&payload).as_deref() {
-                _ if !gui_mode => {
+                _ if !crate::live_control::video_source_available(&source) => {
                     let stream_state = match &source {
                         VideoSource::RemoteDesktop => desktop_stream.clone(),
                         VideoSource::Camera => camera_stream.clone(),
@@ -728,7 +729,7 @@ fn client_connection_once(
                 payload,
             } => match source {
                 AudioSource::AudioListen => match video_control_action(&payload).as_deref() {
-                    _ if !gui_mode => {
+                    _ if !crate::live_control::audio_control_available() => {
                         audio_stream.running.store(false, Ordering::Relaxed);
                         audio_stream.generation.fetch_add(1, Ordering::Relaxed);
                         let _ = queue_message(
@@ -905,6 +906,65 @@ fn client_connection_once(
                     stream.stop.store(true, Ordering::Relaxed);
                 }
             }
+            Message::P2pControl {
+                target_id,
+                session_id,
+                nonce,
+                action,
+                server_udp_addr,
+                peer_udp_addr,
+                detail,
+            } => {
+                if target_id != identity.id {
+                    continue;
+                }
+                match action {
+                    P2pAction::Start => {
+                        if let Some(session) = p2p_sessions.remove(&session_id) {
+                            session.stop();
+                        }
+                        let fallback_server_udp_addr = format!("{}:{}", config.ip, config.port);
+                        let session = crate::p2p::start_test(
+                            identity.id.clone(),
+                            session_id,
+                            nonce,
+                            server_udp_addr,
+                            fallback_server_udp_addr,
+                            out_tx.clone(),
+                            session_token.clone(),
+                            event_sink.clone(),
+                        );
+                        p2p_sessions.insert(session_id, session);
+                    }
+                    P2pAction::Stop => {
+                        if let Some(session) = p2p_sessions.remove(&session_id) {
+                            session.stop();
+                        }
+                        event_sink.send(ClientEvent::Log(format!(
+                            "p2p test stopped by admin session={session_id}"
+                        )));
+                    }
+                    P2pAction::PeerReady => match peer_udp_addr.parse() {
+                        Ok(addr) => {
+                            if let Some(session) = p2p_sessions.get(&session_id) {
+                                session.set_peer_addr(addr);
+                            }
+                        }
+                        Err(error) => event_sink.send(ClientEvent::Log(format!(
+                            "p2p peer endpoint invalid session={session_id}: {error}"
+                        ))),
+                    },
+                    P2pAction::Error => {
+                        if let Some(session) = p2p_sessions.remove(&session_id) {
+                            session.stop();
+                        }
+                        event_sink.send(ClientEvent::Log(format!(
+                            "p2p test error session={session_id}: {detail}"
+                        )));
+                    }
+                    P2pAction::ServerReady => {}
+                }
+            }
             Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
             Message::Error { detail } if detail.starts_with("auth failed") => {
                 event_sink.send(ClientEvent::Log(format!("server: {detail}")));
@@ -918,6 +978,9 @@ fn client_connection_once(
 
     audio_stream.running.store(false, Ordering::Relaxed);
     voice_chat_stream.running.store(false, Ordering::Relaxed);
+    for session in p2p_sessions.values() {
+        session.stop();
+    }
     if let Some(stop) = voice_chat_udp_stop.take() {
         stop.store(true, Ordering::Relaxed);
     }

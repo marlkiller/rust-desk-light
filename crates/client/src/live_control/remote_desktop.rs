@@ -69,28 +69,36 @@ pub(crate) struct RemoteDesktopCapture {
 }
 
 impl RemoteDesktopCapture {
-    pub(crate) fn new(screen_index: usize, quality: &str) -> Result<Self, String> {
+    pub(crate) fn new(
+        screen_index: usize,
+        quality: &str,
+        tile_diff_enabled: bool,
+    ) -> Result<Self, String> {
         #[cfg(target_os = "windows")]
         {
             return Ok(Self {
-                inner: windows::capture::CaptureStream::new(screen_index, quality)?,
+                inner: windows::capture::CaptureStream::new(
+                    screen_index,
+                    quality,
+                    tile_diff_enabled,
+                )?,
             });
         }
         #[cfg(target_os = "linux")]
         {
             return Ok(Self {
-                inner: linux::capture::CaptureStream::new(screen_index, quality)?,
+                inner: linux::capture::CaptureStream::new(screen_index, quality, tile_diff_enabled)?,
             });
         }
         #[cfg(target_os = "macos")]
         {
             return Ok(Self {
-                inner: macos::capture::CaptureStream::new(screen_index, quality)?,
+                inner: macos::capture::CaptureStream::new(screen_index, quality, tile_diff_enabled)?,
             });
         }
         #[allow(unreachable_code)]
         {
-            let _ = (screen_index, quality);
+            let _ = (screen_index, quality, tile_diff_enabled);
             Err("screenshot is not implemented for this platform".to_string())
         }
     }
