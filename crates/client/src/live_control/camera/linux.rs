@@ -7,13 +7,31 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::time::Duration;
 
+mod v4l2;
+
 const FFMPEG_STREAM_FRAME_TIMEOUT: Duration = Duration::from_millis(900);
 const MAX_MJPEG_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(target_os = "linux")]
+pub(super) use v4l2::V4l2CameraStream;
+
+#[cfg(target_os = "linux")]
 pub(super) fn capture_frame(request: &CameraRequest) -> Result<CameraVideoFrame, String> {
     let mut capture = CameraCapture::new(request.device, &request.quality)?;
-    capture_single_frame(&mut capture, String::new())
+    if capture.backends.is_empty() {
+        return capture_v4l2_stream_frame(&mut capture);
+    }
+    match capture_single_frame(&mut capture, String::new()) {
+        Ok(frame) => Ok(frame),
+        Err(error) => {
+            match capture_v4l2_stream_frame(&mut capture) {
+                Ok(frame) => Ok(frame),
+                Err(v4l2_error) => {
+                    Err(format!("{error}; v4l2 stream failed: {v4l2_error}"))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -28,6 +46,20 @@ pub(super) fn capture_stream_frame(
                 capture.ffmpeg_stream = None;
                 capture.ffmpeg_stream_failed = true;
                 last_error = format!("ffmpeg stream failed: {error}");
+            }
+        }
+    }
+    if !capture.v4l2_stream_failed {
+        match capture_v4l2_stream_frame(capture) {
+            Ok(frame) => return Ok(frame),
+            Err(error) => {
+                capture.v4l2_stream = None;
+                capture.v4l2_stream_failed = true;
+                last_error = if last_error.trim().is_empty() {
+                    format!("v4l2 stream failed: {error}")
+                } else {
+                    format!("{last_error}; v4l2 stream failed: {error}")
+                };
             }
         }
     }
@@ -55,7 +87,7 @@ fn capture_single_frame(
         }
     }
     Err(if last_error.trim().is_empty() {
-        "Linux camera capture requires ffmpeg, fswebcam, or streamer".to_string()
+        "Linux camera capture requires a V4L2 camera, ffmpeg, fswebcam, or streamer".to_string()
     } else {
         last_error
     })
@@ -159,6 +191,21 @@ fn capture_ffmpeg_stream_frame(capture: &mut CameraCapture) -> Result<CameraVide
         .ok_or_else(|| "ffmpeg camera stream is not open".to_string())?
         .read_frame()?;
     encode_camera_bytes(bytes, &capture.quality)
+}
+
+#[cfg(target_os = "linux")]
+fn capture_v4l2_stream_frame(capture: &mut CameraCapture) -> Result<CameraVideoFrame, String> {
+    if capture.v4l2_stream.is_none() {
+        capture.v4l2_stream = Some(V4l2CameraStream::open(
+            &capture.device_path,
+            &capture.quality,
+        )?);
+    }
+    capture
+        .v4l2_stream
+        .as_mut()
+        .ok_or_else(|| "v4l2 camera stream is not open".to_string())?
+        .read_frame(&capture.quality)
 }
 
 #[cfg(target_os = "linux")]
@@ -368,7 +415,7 @@ pub(super) fn device_path(device: usize) -> String {
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn camera_backends() -> Result<Vec<CameraBackend>, String> {
+pub(super) fn camera_backends() -> Vec<CameraBackend> {
     let mut backends = Vec::new();
     if command_in_path("ffmpeg") {
         backends.push(CameraBackend::FfmpegStdout);
@@ -380,11 +427,7 @@ pub(super) fn camera_backends() -> Result<Vec<CameraBackend>, String> {
     if command_in_path("streamer") {
         backends.push(CameraBackend::StreamerFile);
     }
-    if backends.is_empty() {
-        Err("Linux camera capture requires ffmpeg, fswebcam, or streamer".to_string())
-    } else {
-        Ok(backends)
-    }
+    backends
 }
 
 #[cfg(target_os = "linux")]

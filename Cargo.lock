@@ -3500,6 +3500,7 @@ dependencies = [
  "eframe",
  "fs2",
  "image",
+ "libc",
  "mozjpeg",
  "nokhwa",
  "objc2-app-kit 0.3.2",
