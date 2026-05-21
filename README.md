@@ -4,9 +4,16 @@
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 
-`rust-desk-light` is a lightweight Rust remote assistance toolkit with a GUI operator console, a CLI relay server, GUI and CLI endpoint clients, and a compact binary protocol. It supports device discovery, command execution, remote terminal, file transfer, remote desktop, camera preview, audio listen, and duplex voice chat across Windows, Linux, and macOS.
+`rust-desk-light` is a lightweight Rust remote assistance toolkit with a GUI
+operator console, a CLI relay server, GUI and CLI endpoint clients, and a compact
+binary protocol. It supports device discovery, remote management, file transfer,
+remote desktop, camera preview, audio listening, and duplex voice chat across
+Windows, Linux, and macOS.
 
-> Intended for authorized remote assistance, lab administration, and development/testing environments. Current transport is not end-to-end encrypted; use trusted networks, VPNs, or other network-level protection for sensitive deployments.
+> Intended for authorized remote assistance, lab administration, and
+> development/testing environments. Current transport is not end-to-end
+> encrypted; use trusted networks, VPNs, or other network-level protection for
+> sensitive deployments.
 
 ## Overview
 
@@ -17,7 +24,21 @@
 | `rdl-client-gui` | GUI | Full endpoint client with status window, live control, media capture, and terminal fallback. |
 | `rdl-client-cli` | CLI | Terminal-only endpoint client built without GUI/live-control dependencies. |
 
-Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`, and `xdotool`. macOS remote control needs Accessibility permission for the app that launches `rdl-client-gui`, and screen capture may need Screen Recording permission.
+Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`,
+and `xdotool`. macOS remote control needs Accessibility permission for the app
+that launches `rdl-client-gui`, and screen capture may need Screen Recording
+permission.
+
+## Features
+
+| Area | Features |
+| --- | --- |
+| Device management | Online list, search and filtering, host information, heartbeat reconnects, offline cleanup. |
+| Remote management | File management, directory transfer, remote terminal, process/window/startup/driver management. |
+| System diagnostics | Registry snapshots, event logs, active connections, performance monitoring, computer information. |
+| Live control | Remote desktop, mouse and keyboard input, camera preview, audio listening, two-way voice. |
+| Interaction tools | Message boxes, system notifications, text chat, clipboard read/write, file/code execution, command presets. |
+| Admin utilities | Client Builder for preconfigured endpoints and GeoIP-backed client map. |
 
 ## Screenshots
 
@@ -41,15 +62,18 @@ Windows:
 .\scripts\start-dev.bat --release
 ```
 
-Manual local run:
+For a manual local run, start the server first, then clients, then admin:
 
 ```sh
-./target/debug/rdl-server-cli --ip 0.0.0.0 --port 5169
-./target/debug/rdl-client-gui --ip 127.0.0.1 --port 5169
-./target/debug/rdl-admin-gui --ip 127.0.0.1 --port 5169
+./target/release/rdl-server-cli --ip 0.0.0.0 --port 5169
+./target/release/rdl-client-gui --ip 127.0.0.1 --port 5169
+./target/release/rdl-admin-gui --ip 127.0.0.1 --port 5169
 ```
 
-Start the server first, then clients, then admin.
+## Download
+
+Prebuilt release packages are available on the
+[GitHub Releases page](https://github.com/marlkiller/rust-desk-light/releases).
 
 ## Build
 
@@ -77,12 +101,23 @@ cargo build-client-cli --release
 cargo build-admin-gui --release
 ```
 
-Debug binaries go to `target/debug`; release binaries go to `target/release`. Windows adds `.exe`.
+Debug binaries go to `target/debug`; release binaries go to `target/release`.
+Windows adds `.exe`.
+
+On macOS, clear quarantine metadata if you run binaries extracted from a
+downloaded archive:
+
+```sh
+xattr -cr ./rdl-client-gui
+xattr -cr ./rdl-admin-gui
+xattr -cr ./rdl-server-cli
+```
 
 ## Local App Packages
 
-Use the local packaging scripts to create separate double-clickable app packages
-for the GUI client and admin console:
+Use the local packaging scripts to wrap the standalone GUI binaries as
+system-native app packages for the client and admin console. The packaged apps
+launch without a terminal window and are written to `dist/apps/<platform>/`.
 
 Windows:
 
@@ -96,15 +131,10 @@ macOS/Linux:
 ./scripts/package-apps.sh --release
 ```
 
-The scripts build `rdl-client-gui` and `rdl-admin-gui`, then write packages to
-`dist/apps/<platform>/`. Client and admin are packaged separately. The GUI app
-packages include the application icon, config templates, and a short README.
-On Windows, the normal `target/release` GUI binaries remain console executables
-so terminal runs show logs and wait for command output like `--version`. The
-packaging script rewrites only the copied executables inside `dist/apps/` to the
-Windows GUI subsystem, so packaged app double-clicks do not open a terminal
-window. macOS packages are `.app` bundles; Linux packages are AppDir style
-directories with `.desktop` metadata and icons.
+The scripts build `rdl-client-gui` and `rdl-admin-gui`, package them separately,
+and include the application icon, config templates, and a short README. macOS
+packages are `.app` bundles; Linux packages are AppDir style directories with
+`.desktop` metadata and icons.
 
 `rdl-client-cli` is not included in these app packages because it is a
 terminal-only client. Build it separately with `cargo build-client-cli --release`
@@ -127,6 +157,8 @@ Use `--config PATH` for repo-local or custom config files. Startup arguments
 override config files. Client binaries generated by the admin Client Builder can
 also carry an embedded read-only config in the client executable itself; that
 embedded client config has the highest priority and overrides startup arguments.
+Use a freshly built `rdl-client-gui` as the Client Builder template; older
+binaries without the embedded config slot are rejected.
 
 Auth uses one shared token across server, admin, and optionally clients. The
 admin must present the token before it can register. If `rdl-server-cli` starts
@@ -141,6 +173,16 @@ rdl-admin-gui --auth-token "change-me"
 rdl-client-gui --auth-token "change-me"
 ```
 
+To enable the admin client map, pass a MaxMind GeoLite2/GeoIP2 City database to
+the server:
+
+```sh
+./target/release/rdl-server-cli --ip 0.0.0.0 --port 5169 --geoip-db /path/GeoLite2-City.mmdb
+```
+
+The startup scripts also auto-detect `third_party/geoip/GeoLite2-City.mmdb`.
+See [GeoLite2 City setup](docs/geolite2-city-setup.md).
+
 Useful environment variables:
 
 | Variable | Purpose |
@@ -150,16 +192,6 @@ Useful environment variables:
 | `RDL_AUTH_TOKEN` | Shared registration token for server/admin/client. |
 | `RDL_GEOIP_DB` | Path to a MaxMind GeoLite2/GeoIP2 City database. |
 | `RDL_BUILD_VERSION` | Overrides the displayed build version. |
-
-## Capabilities
-
-| Area | Capabilities |
-| --- | --- |
-| Device operations | Online client list, search/filter, host metadata, heartbeat/reconnect, offline cleanup. |
-| Remote management | File manager, directory transfer, remote terminal, process/window/startup/driver managers, registry snapshot, event log, active connections, performance monitor. |
-| Live control | Remote desktop, mouse/keyboard input, camera preview, audio listen, duplex voice chat. |
-| User interaction | Message box, system notification, text chat, open text in the platform editor. |
-| System tools | Computer information, clipboard read/write, execute file, execute code, static commands, and managed scheduled tasks. |
 
 ## Architecture
 
@@ -189,7 +221,8 @@ relay.
 
 ## Transport
 
-The configured server address uses the same numeric port for TCP and UDP. If you run across machines, allow both protocols on that port.
+The configured server address uses the same numeric port for TCP and UDP. If you
+run across machines, allow both protocols on that port.
 
 | Capability | Direction | Transport | Message format |
 | --- | --- | --- | --- |
@@ -199,67 +232,18 @@ The configured server address uses the same numeric port for TCP and UDP. If you
 | Remote desktop and camera preview | Client -> Server -> Admin | TCP | `VideoControl`, `VideoFrame`, `DesktopInput` |
 | Audio listen and duplex voice chat | Admin/Client <-> Server | UDP | `RDU1` `pcm_s16le` packets |
 
-Reliable work stays on framed TCP messages; interactive audio uses small low-latency UDP packets so voice does not queue behind bulk traffic.
-
-## Client Map
-
-The admin map uses a MaxMind GeoLite2/GeoIP2 City database when configured:
-
-```sh
-./target/release/rdl-server-cli --ip 0.0.0.0 --port 5169 --geoip-db /path/GeoLite2-City.mmdb
-```
-
-The startup scripts also auto-detect `third_party/geoip/GeoLite2-City.mmdb`. See [GeoLite2 City setup](docs/geolite2-city-setup.md).
-
-## Release Builds
-
-Tagged releases are built by GitHub Actions from `.github/workflows/release.yml`.
-
-Each release package contains:
-
-```text
-rdl-server-cli
-rdl-client-gui
-rdl-client-cli
-rdl-admin-gui
-README.md
-```
-
-`rdl-client-cli` is built without GUI dependencies for terminal-only deployments.
-
-On macOS, clear quarantine metadata after extracting a downloaded archive if needed:
-
-```sh
-xattr -cr ./rdl-client-gui
-xattr -cr ./rdl-admin-gui
-xattr -cr ./rdl-server-cli
-```
-
-Tagged builds use the git tag; local builds use the workspace version unless `RDL_BUILD_VERSION` is set.
-
-## Client Builder
-
-![Client Builder](docs/screenshots/admin-build-client.png)
-
-
-`rdl-admin-gui` includes a Client Builder button in the top toolbar. Select a
-fresh `rdl-client-gui` template binary, choose an output path, set the server
-IP/port and optional auth token, then generate a configured client. The builder
-writes the TOML config into a fixed read-only config slot compiled into the
-client binary, so the generated client can be double-clicked without a separate
-client config file. On macOS, the generated binary is ad-hoc signed after the
-slot is written. When an embedded config is present, the client does not load,
-create, or update `client.toml`; runtime identity and lock files may still be
-written under the normal rust-desk-light config directory.
-
-Use a client binary built after this feature as the template. Older client
-binaries do not contain the embedded config slot and will be rejected.
+Reliable work stays on framed TCP messages; interactive audio uses small
+low-latency UDP packets so voice does not queue behind bulk traffic.
 
 ## Project Notes
 
-- The main transport is a custom versioned binary protocol with `RDL1` framed messages.
-- Audio listen and voice chat use a separate `RDU1` packet format with stream ids, sequence numbers, capture timestamps, sample rate, channel count, and PCM payloads.
-- Linux remote desktop testing details live in [Ubuntu X11 remote desktop testing](docs/ubuntu-x11-remote-desktop-testing.md).
+- The main transport is a custom versioned binary protocol with `RDL1` framed
+  messages.
+- Audio listen and voice chat use a separate `RDU1` packet format with stream
+  ids, sequence numbers, capture timestamps, sample rate, channel count, and PCM
+  payloads.
+- Linux remote desktop testing details live in
+  [Ubuntu X11 remote desktop testing](docs/ubuntu-x11-remote-desktop-testing.md).
 - Current milestones and planned work live in [ROADMAP.md](ROADMAP.md).
 
 ## Powered by
