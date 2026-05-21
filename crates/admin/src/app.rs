@@ -765,13 +765,22 @@ impl AdminApp {
                     };
                     self.p2p_test.mark_starting(&client);
                     p2p_test::send_start(&self.input_tx, &client.info.id);
-                    self.push_log(format!("p2p test requested for {}", client.info.id));
+                    self.push_log(format!(
+                        "p2p test requested for {}",
+                        client_identity_label(&client.info)
+                    ));
                 }
             }
             p2p_test::P2pWindowAction::Stop(sessions) => {
                 for (client_id, session_id) in sessions {
                     p2p_test::send_stop(&self.input_tx, &client_id, session_id);
-                    self.push_log(format!("p2p test stopped for {client_id}"));
+                    let label = self
+                        .clients
+                        .iter()
+                        .find(|client| client.info.id == client_id)
+                        .map(|client| client_identity_label(&client.info))
+                        .unwrap_or_else(|| client_id.clone());
+                    self.push_log(format!("p2p test stopped for {label}"));
                 }
                 self.p2p_test.stop_all_local();
             }

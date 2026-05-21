@@ -1,6 +1,6 @@
 use super::{
     event::{AdminEvent, AdminInput},
-    ui::{cell_label, centered_cell, table_header, timestamped_log},
+    ui::{cell_label, centered_cell, compact_id, table_header, timestamped_log},
     ClientRow, ClientStatus,
 };
 use crate::{i18n::t, windowing};
@@ -38,6 +38,7 @@ pub(super) enum P2pWindowAction {
 
 struct P2pClientSession {
     client_id: String,
+    label: String,
     session_id: u64,
     status: P2pStatus,
     detail: String,
@@ -113,6 +114,7 @@ impl P2pTestWindow {
             client_id.clone(),
             P2pClientSession {
                 client_id: client_id.clone(),
+                label: client_log_label(client),
                 session_id: 0,
                 status: P2pStatus::Starting,
                 detail: t("Waiting for server session...").to_string(),
@@ -122,7 +124,11 @@ impl P2pTestWindow {
                 worker: None,
             },
         );
-        self.push_log(format!("{} {}", t("P2P test requested for"), client_id));
+        self.push_log(format!(
+            "{} {}",
+            t("P2P test requested for"),
+            self.client_label(&client_id)
+        ));
     }
 
     pub(super) fn handle_control(
@@ -161,7 +167,7 @@ impl P2pTestWindow {
                 self.push_log(format!(
                     "{} {} session={session_id}",
                     t("P2P server ready for"),
-                    target_id
+                    self.client_label(&target_id)
                 ));
             }
             P2pAction::PeerReady => {
@@ -181,7 +187,7 @@ impl P2pTestWindow {
                         self.push_log(format!(
                             "{} {} peer={}",
                             t("P2P peer endpoint ready for"),
-                            target_id,
+                            self.client_label(&target_id),
                             peer_udp_addr
                         ));
                     }
@@ -191,7 +197,7 @@ impl P2pTestWindow {
                         self.push_log(format!(
                             "{} {}: {}",
                             t("P2P peer endpoint invalid for"),
-                            target_id,
+                            self.client_label(&target_id),
                             error
                         ));
                     }
@@ -208,7 +214,7 @@ impl P2pTestWindow {
                 self.push_log(format!(
                     "{} {}: {}",
                     t("P2P test failed for"),
-                    target_id,
+                    self.client_label(&target_id),
                     detail
                 ));
             }
@@ -265,7 +271,7 @@ impl P2pTestWindow {
             session.status = P2pStatus::WaitingPeer;
         }
         session.detail = detail.clone();
-        self.push_log(format!("{}: {}", client_id, detail));
+        self.push_log(format!("{}: {}", self.client_label(&client_id), detail));
     }
 
     pub(super) fn render(
@@ -428,7 +434,7 @@ impl P2pTestWindow {
         crate::theme::panel_frame_with_margin(crate::theme::PANEL_MARGIN).show(ui, |ui| {
             ui.label(crate::theme::strong_body_text(t("Test Logs")));
             ui.add_space(crate::theme::SECTION_GAP);
-            egui::ScrollArea::vertical()
+            let output = egui::ScrollArea::vertical()
                 .id_salt("p2p_test_logs")
                 .stick_to_bottom(true)
                 .auto_shrink([false, false])
@@ -442,6 +448,27 @@ impl P2pTestWindow {
                         }
                     }
                 });
+            ui.interact(
+                output.inner_rect,
+                output.id.with("p2p_test_log_context_menu"),
+                egui::Sense::click(),
+            )
+            .context_menu(|ui| {
+                if ui.button(t("Copy")).clicked() {
+                    ui.ctx().copy_text(
+                        self.logs
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                    ui.close();
+                }
+                if ui.button(t("Clear")).clicked() {
+                    self.logs.clear();
+                    ui.close();
+                }
+            });
         });
     }
 
@@ -513,12 +540,20 @@ impl P2pTestWindow {
             self.logs.pop_front();
         }
     }
+
+    fn client_label(&self, client_id: &str) -> String {
+        self.sessions
+            .get(client_id)
+            .map(|session| session.label.clone())
+            .unwrap_or_else(|| compact_id(client_id))
+    }
 }
 
 impl P2pClientSession {
     fn new_placeholder(client_id: &str) -> Self {
         Self {
             client_id: client_id.to_string(),
+            label: compact_id(client_id),
             session_id: 0,
             status: P2pStatus::Starting,
             detail: String::new(),
@@ -859,5 +894,23 @@ fn status_label(status: P2pStatus) -> &'static str {
         P2pStatus::Succeeded => t("Succeeded"),
         P2pStatus::Failed => t("Failed"),
         P2pStatus::Stopped => t("Stopped"),
+    }
+}
+
+fn client_log_label(client: &ClientRow) -> String {
+    let hostname = client.info.hostname.trim();
+    let username = client.info.username.trim();
+    match (hostname.is_empty(), username.is_empty()) {
+        (false, false) => format!("{hostname} / {username}"),
+        (false, true) => hostname.to_string(),
+        (true, false) => username.to_string(),
+        (true, true) => {
+            let peer_addr = client.info.peer_addr.trim();
+            if peer_addr.is_empty() {
+                compact_id(&client.info.id)
+            } else {
+                peer_addr.to_string()
+            }
+        }
     }
 }
