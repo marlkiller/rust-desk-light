@@ -179,6 +179,7 @@ fn zh(key: &'static str) -> &'static str {
         "Client config loaded." => "客户端配置已加载。",
         "Client config saved. Restarting client." => "客户端配置已保存，正在重启客户端。",
         "Client Program Path" => "客户端程序路径",
+        "Client Mode" => "客户端模式",
         "Client restart/update scheduled." => "客户端重启/更新已安排。",
         "Client list exported to" => "客户端列表已导出到",
         "Clone Client Settings" => "克隆客户端设置",
@@ -320,6 +321,7 @@ fn zh(key: &'static str) -> &'static str {
         "Go" => "转到",
         "Group" => "分组",
         "Group Name" => "分组名称",
+        "GUI" => "图形界面",
         "GeoIP may be configured, but current clients have no public IP location. Local, LAN, VPN, proxy, and relay addresses cannot be placed on the map." => {
             "GeoIP 可能已配置，但当前客户端没有公网 IP 位置。本地、局域网、VPN、代理和中继地址无法标注到地图上。"
         }
@@ -565,6 +567,9 @@ fn zh(key: &'static str) -> &'static str {
         }
         "Search by alias, fingerprint, group, host, user, OS, or location" => {
             "按别名、指纹、分组、主机、用户、系统或位置搜索"
+        }
+        "Search by alias, mode, fingerprint, group, host, user, OS, or location" => {
+            "按别名、模式、指纹、分组、主机、用户、系统或位置搜索"
         }
         "Search by id, fingerprint, host, user, or OS" => "按 ID、指纹、主机、用户或系统搜索",
         "Sending" => "发送中",

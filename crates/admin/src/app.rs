@@ -31,8 +31,8 @@ use self::{
     client_map::ClientMapWindow,
     client_state::{
         client_commands_disabled_text, client_identity_label, client_location_label,
-        client_online_notice, client_os_label, client_status_display, client_status_text,
-        ClientOnlineToast, ClientRow, ClientStatus,
+        client_mode_label, client_mode_search_tokens, client_online_notice, client_os_label,
+        client_status_display, client_status_text, ClientOnlineToast, ClientRow, ClientStatus,
     },
     command_result::{
         command_status_notice, command_title, command_window_identity_title, detail_status,

@@ -61,6 +61,10 @@ impl AdminApp {
                     || row.info.hostname.to_ascii_lowercase().contains(&filter)
                     || row.info.username.to_ascii_lowercase().contains(&filter)
                     || row.info.os.to_ascii_lowercase().contains(&filter)
+                    || client_mode_label(row.info.gui_available)
+                        .to_ascii_lowercase()
+                        .contains(&filter)
+                    || client_mode_search_tokens(row.info.gui_available).contains(&filter)
                     || self
                         .client_display_label(row)
                         .to_ascii_lowercase()

@@ -615,17 +615,7 @@ impl AudioSource {
 
 impl CommandKind {
     pub fn requires_client_gui(&self) -> bool {
-        matches!(
-            self,
-            Self::RemoteDesktop
-                | Self::Camera
-                | Self::AudioListen
-                | Self::MessageBox
-                | Self::BalloonTip
-                | Self::TextChat
-                | Self::VoiceChat
-                | Self::OpenTextInNotepad
-        )
+        matches!(self, Self::TextChat | Self::VoiceChat)
     }
 
     pub fn as_str(&self) -> &'static str {

@@ -21,8 +21,8 @@ Windows, Linux, and macOS.
 | --- | --- | --- |
 | `rdl-admin-gui` | GUI | Operator console for online clients, command dispatch, live control, file transfer, and remote terminals. |
 | `rdl-server-cli` | CLI | Relay server for peer registration, session tokens, presence, routing, and UDP audio relay. |
-| `rdl-client-gui` | GUI | Full endpoint client with status window, live control, media capture, and terminal fallback. |
-| `rdl-client-cli` | CLI | Terminal-only endpoint client with live control and basic desktop interaction, but no local client UI. |
+| `rdl-client-gui` | GUI | Full graphical endpoint client with a status window, live control, media capture, desktop interaction, and terminal fallback. |
+| `rdl-client-cli` | CLI | Command-line endpoint client with most GUI-client capabilities, including live control, media capture, and desktop interaction, but without the local client UI. |
 
 Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`,
 and `xdotool`. macOS remote control needs Accessibility permission for the app
@@ -86,11 +86,6 @@ cargo build --workspace
 cargo build --workspace --release
 ```
 
-Build the no-GUI client:
-
-```sh
-cargo build-client-cli --release
-```
 
 Individual build aliases:
 
@@ -136,9 +131,9 @@ and include the application icon, config templates, and a short README. macOS
 packages are `.app` bundles; Linux packages are AppDir style directories with
 `.desktop` metadata and icons.
 
-`rdl-client-cli` is not included in these app packages because it is a
-terminal-only client. Build it separately with `cargo build-client-cli --release`
-when you need the CLI endpoint.
+`rdl-client-cli` is not included in these app packages because it does not ship a
+local graphical UI. Build it separately with `cargo build-client-cli --release`
+when you need the command-line endpoint.
 
 ## Configuration
 

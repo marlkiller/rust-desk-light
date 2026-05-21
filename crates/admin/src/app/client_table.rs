@@ -82,7 +82,7 @@ impl AdminApp {
                     [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut self.client_filter)
                         .hint_text(t(
-                            "Search by alias, fingerprint, group, host, user, OS, or location",
+                            "Search by alias, mode, fingerprint, group, host, user, OS, or location",
                         ))
                         .vertical_align(egui::Align::Center),
                 );
@@ -105,6 +105,11 @@ impl AdminApp {
                 .column(
                     egui_extras::Column::initial(170.0)
                         .at_least(120.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(108.0)
+                        .at_least(82.0)
                         .clip(true),
                 )
                 .column(
@@ -135,6 +140,7 @@ impl AdminApp {
                 .header(24.0, |mut header| {
                     header.col(|ui| table_header(ui, t("Status")));
                     header.col(|ui| table_header(ui, t("Name")));
+                    header.col(|ui| table_header(ui, t("Client Mode")));
                     header.col(|ui| table_header(ui, t("IP")));
                     header.col(|ui| table_header(ui, t("Location")));
                     header.col(|ui| table_header(ui, t("Host")));
@@ -160,6 +166,11 @@ impl AdminApp {
                         row.col(|ui| {
                             centered_cell(ui, |ui| {
                                 cell_label(ui, self.client_display_label(row_data))
+                            })
+                        });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, client_mode_label(client.gui_available))
                             })
                         });
                         row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.peer_addr)));
@@ -253,6 +264,7 @@ impl AdminApp {
             t("Name"),
             t("Alias"),
             t("Group"),
+            t("Client Mode"),
             t("Client ID"),
             t("IP"),
             t("Location"),
@@ -269,6 +281,7 @@ impl AdminApp {
                 self.client_display_label(row),
                 self.client_display_label(row),
                 self.client_group(&client.id).to_string(),
+                client_mode_label(client.gui_available).to_string(),
                 client.id.clone(),
                 client.peer_addr.clone(),
                 client_location_label(client),

@@ -58,6 +58,22 @@ pub(super) fn client_commands_disabled_text(status: ClientStatus) -> &'static st
     }
 }
 
+pub(super) fn client_mode_label(gui_mode: bool) -> &'static str {
+    if gui_mode {
+        t("GUI")
+    } else {
+        t("Terminal")
+    }
+}
+
+pub(super) fn client_mode_search_tokens(gui_mode: bool) -> &'static str {
+    if gui_mode {
+        "gui graphical ui"
+    } else {
+        "terminal cli no ui"
+    }
+}
+
 pub(super) fn client_location_label(client: &ClientInfo) -> String {
     client
         .location
