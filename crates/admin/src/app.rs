@@ -1,5 +1,6 @@
 mod about;
 mod audio_udp;
+mod client_aliases;
 mod client_builder;
 mod client_groups;
 mod client_map;
@@ -24,6 +25,7 @@ use self::{
         initial_stream_id, push_pending_audio_frame, voice_audio_forward_loop, AudioUdpEndpoint,
         AudioUdpSender, AudioUdpSession, PendingAudioFrame,
     },
+    client_aliases::{AliasAction, AliasWindow},
     client_builder::ClientBuilderState,
     client_groups::{MoveGroupAction, MoveGroupWindow},
     client_map::ClientMapWindow,
@@ -195,7 +197,9 @@ struct AdminApp {
     audio_playback_registry: live_control::audio_listen::AudioPlaybackRegistry,
     connected: bool,
     clients: Vec<ClientRow>,
+    client_aliases: HashMap<String, String>,
     client_groups: HashMap<String, String>,
+    alias_window: AliasWindow,
     move_group_window: MoveGroupWindow,
     client_filter: String,
     client_builder_open: bool,
@@ -271,7 +275,9 @@ impl AdminApp {
             audio_playback_registry,
             connected: false,
             clients: Vec::new(),
+            client_aliases: client_aliases::load_client_aliases(),
             client_groups: client_groups::load_client_groups(),
+            alias_window: AliasWindow::default(),
             move_group_window: MoveGroupWindow::default(),
             client_filter: String::new(),
             client_builder_open: false,
@@ -749,7 +755,11 @@ impl AdminApp {
 
     fn render_p2p_test_window(&mut self, ctx: &egui::Context) {
         let clients = self.clients.clone();
-        let Some(action) = self.p2p_test.render(ctx, &clients, self.connected) else {
+        let aliases = self.client_aliases.clone();
+        let Some(action) = self
+            .p2p_test
+            .render(ctx, &clients, &aliases, self.connected)
+        else {
             return;
         };
         match action {
@@ -763,12 +773,10 @@ impl AdminApp {
                     else {
                         continue;
                     };
-                    self.p2p_test.mark_starting(&client);
+                    let label = self.client_display_label(&client);
+                    self.p2p_test.mark_starting(&client, label.clone());
                     p2p_test::send_start(&self.input_tx, &client.info.id);
-                    self.push_log(format!(
-                        "p2p test requested for {}",
-                        client_identity_label(&client.info)
-                    ));
+                    self.push_log(format!("p2p test requested for {label}"));
                 }
             }
             p2p_test::P2pWindowAction::Stop(sessions) => {
@@ -778,7 +786,7 @@ impl AdminApp {
                         .clients
                         .iter()
                         .find(|client| client.info.id == client_id)
-                        .map(|client| client_identity_label(&client.info))
+                        .map(|client| self.client_display_label(client))
                         .unwrap_or_else(|| client_id.clone());
                     self.push_log(format!("p2p test stopped for {label}"));
                 }
@@ -1088,6 +1096,74 @@ impl AdminApp {
         );
     }
 
+    fn open_alias_window(&mut self, client_id: &str) {
+        let default_alias = self.default_client_alias(client_id);
+        let current_alias = self
+            .client_aliases
+            .get(client_id)
+            .cloned()
+            .unwrap_or_else(|| default_alias.clone());
+        self.alias_window.open(
+            client_id,
+            current_alias.clone(),
+            default_alias,
+            &current_alias,
+        );
+    }
+
+    fn apply_alias_action(&mut self, action: AliasAction) {
+        match action {
+            AliasAction::Save { client_id, alias } => {
+                let alias = client_aliases::clean_alias(&alias);
+                if alias.is_empty() {
+                    self.alias_window.set_error(t("Alias cannot be empty"));
+                } else if alias == self.default_client_alias(&client_id) {
+                    self.client_aliases.remove(&client_id);
+                    match client_aliases::save_client_aliases(&self.client_aliases) {
+                        Ok(()) => {
+                            self.alias_window.close();
+                            self.push_log(format!("client {client_id} alias restored to default"));
+                        }
+                        Err(error) => self
+                            .alias_window
+                            .set_error(format!("{}: {error}", t("Save alias failed"))),
+                    }
+                } else {
+                    self.client_aliases.insert(client_id.clone(), alias.clone());
+                    match client_aliases::save_client_aliases(&self.client_aliases) {
+                        Ok(()) => {
+                            self.alias_window.close();
+                            self.push_log(format!("client {client_id} alias set to {alias}"));
+                        }
+                        Err(error) => self
+                            .alias_window
+                            .set_error(format!("{}: {error}", t("Save alias failed"))),
+                    }
+                }
+            }
+            AliasAction::RestoreDefault { client_id } => {
+                self.client_aliases.remove(&client_id);
+                match client_aliases::save_client_aliases(&self.client_aliases) {
+                    Ok(()) => {
+                        self.alias_window.close();
+                        self.push_log(format!("client {client_id} alias restored to default"));
+                    }
+                    Err(error) => self
+                        .alias_window
+                        .set_error(format!("{}: {error}", t("Save alias failed"))),
+                }
+            }
+        }
+    }
+
+    fn default_client_alias(&self, client_id: &str) -> String {
+        self.clients
+            .iter()
+            .find(|row| row.info.id == client_id)
+            .map(|row| client_identity_label(&row.info))
+            .unwrap_or_else(|| client_id.to_string())
+    }
+
     fn open_move_group_window(&mut self, client_id: &str) {
         let label = self
             .clients
@@ -1177,8 +1253,8 @@ impl AdminApp {
         self.clients
             .iter()
             .find(|row| row.info.id == client_id)
-            .map(|row| (row.info.hostname.clone(), row.info.username.clone()))
-            .unwrap_or_else(|| ("unknown-host".to_string(), "unknown-user".to_string()))
+            .map(|row| (self.client_display_label(row), String::new()))
+            .unwrap_or_else(|| (client_id.to_string(), String::new()))
     }
 
     fn client_os(&self, client_id: &str) -> String {
@@ -1210,15 +1286,15 @@ impl AdminApp {
             .find(|row| row.info.id == client_id)
             .map(|row| {
                 (
-                    row.info.hostname.clone(),
-                    row.info.username.clone(),
+                    self.client_display_label(row),
+                    String::new(),
                     row.info.os.clone(),
                 )
             })
             .unwrap_or_else(|| {
                 (
-                    "unknown-host".to_string(),
-                    "unknown-user".to_string(),
+                    client_id.to_string(),
+                    String::new(),
                     "unknown-os".to_string(),
                 )
             })
@@ -2442,6 +2518,7 @@ impl eframe::App for AdminApp {
         self.client_map_window.render(
             ui.ctx(),
             &self.clients,
+            &self.client_aliases,
             &mut self.selected_client_id,
             &mut self.client_filter,
         );

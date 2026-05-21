@@ -10,9 +10,10 @@ pub fn render_context_menu(
     client_id: &str,
     gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
+    edit_alias: &mut impl FnMut(&str),
 ) {
     prepare_menu_ui(ui, CONTEXT_MENU_MIN_WIDTH);
-    render_session(ui, client_id, send_command);
+    render_session(ui, client_id, send_command, edit_alias);
     render_remote_management(ui, client_id, send_command);
     render_live_control(ui, client_id, gui_available, send_command);
     render_user_interaction(ui, client_id, gui_available, send_command);
@@ -71,6 +72,7 @@ pub fn render_unavailable_client_menu(
     client_id: &str,
     status: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
+    edit_alias: &mut impl FnMut(&str),
 ) {
     prepare_menu_ui(ui, CONTEXT_MENU_MIN_WIDTH);
     ui.add(
@@ -84,24 +86,17 @@ pub fn render_unavailable_client_menu(
         .wrap_mode(egui::TextWrapMode::Extend),
     );
     ui.separator();
-    menu_command(
-        ui,
-        client_id,
-        "Move To Group",
-        CommandKind::MoveToGroup,
-        send_command,
-    );
-    ui.separator();
-    if ui.add(menu_button(t("Copy Client ID"))).clicked() {
-        ui.ctx().copy_text(client_id.to_string());
-        ui.close();
-    }
+    ui.menu_button(menu_title("🔐", "Session"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
+        render_identity_session(ui, client_id, send_command, edit_alias);
+    });
 }
 
 fn render_session(
     ui: &mut egui::Ui,
     client_id: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
+    edit_alias: &mut impl FnMut(&str),
 ) {
     ui.menu_button(menu_title("🔐", "Session"), |ui| {
         prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
@@ -136,13 +131,8 @@ fn render_session(
         );
         menu_command(ui, client_id, "Reboot", CommandKind::Reboot, send_command);
         ui.separator();
-        menu_command(
-            ui,
-            client_id,
-            "Move To Group",
-            CommandKind::MoveToGroup,
-            send_command,
-        );
+        render_identity_session(ui, client_id, send_command, edit_alias);
+        ui.separator();
         menu_command(
             ui,
             client_id,
@@ -158,6 +148,28 @@ fn render_session(
             send_command,
         );
     });
+}
+
+fn render_identity_session(
+    ui: &mut egui::Ui,
+    client_id: &str,
+    send_command: &mut impl FnMut(&str, CommandKind),
+    edit_alias: &mut impl FnMut(&str),
+) {
+    if ui
+        .add(menu_button(format!("🏷 {}", t("Edit Alias"))))
+        .clicked()
+    {
+        edit_alias(client_id);
+        ui.close();
+    }
+    menu_command(
+        ui,
+        client_id,
+        "Move To Group",
+        CommandKind::MoveToGroup,
+        send_command,
+    );
 }
 
 fn render_remote_management(

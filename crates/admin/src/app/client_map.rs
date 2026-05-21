@@ -1,11 +1,12 @@
 mod world_map_data;
 
-use super::{ui, ClientRow};
+use super::{client_state::client_identity_label, ui, ClientRow};
 use crate::{
     i18n::{t, tf},
     windowing,
 };
 use eframe::egui;
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -35,6 +36,7 @@ impl ClientMapWindow {
         &mut self,
         ctx: &egui::Context,
         clients: &[ClientRow],
+        aliases: &HashMap<String, String>,
         selected_client_id: &mut Option<String>,
         client_filter: &mut String,
     ) {
@@ -64,6 +66,7 @@ impl ClientMapWindow {
                     render_map_contents(
                         ui,
                         clients,
+                        aliases,
                         selected_current.as_deref(),
                         client_filter,
                         &mut self.os_filter,
@@ -92,6 +95,7 @@ const MAP_STATS_HEIGHT: f32 = 30.0;
 fn render_map_contents(
     ui: &mut egui::Ui,
     clients: &[ClientRow],
+    aliases: &HashMap<String, String>,
     selected_client_id: Option<&str>,
     client_filter: &mut String,
     os_filter: &mut String,
@@ -116,7 +120,7 @@ fn render_map_contents(
         render_map_filter_toolbar(ui, client_filter, os_filter, &os_options);
         ui.add_space(8.0);
 
-        let clients = filtered_clients(clients, client_filter, os_filter);
+        let clients = filtered_clients(clients, aliases, client_filter, os_filter);
         let located = clients
             .iter()
             .filter(|row| row.info.location.is_some())
@@ -166,7 +170,7 @@ fn render_map_contents(
             let painter = ui.painter_at(map_rect);
             draw_world_map(&painter, map_rect);
 
-            let clusters = map_clusters(&clients, map_rect);
+            let clusters = map_clusters(&clients, aliases, map_rect);
             draw_map_summary(&painter, map_rect, located, clusters.len());
             for cluster in &clusters {
                 let selected = cluster
@@ -224,7 +228,12 @@ fn render_map_filter_toolbar(
     });
 }
 
-fn filtered_clients(clients: &[ClientRow], filter: &str, os_filter: &str) -> Vec<ClientRow> {
+fn filtered_clients(
+    clients: &[ClientRow],
+    aliases: &HashMap<String, String>,
+    filter: &str,
+    os_filter: &str,
+) -> Vec<ClientRow> {
     let filter = filter.trim().to_ascii_lowercase();
     let os_filter = os_filter.trim();
     clients
@@ -238,6 +247,9 @@ fn filtered_clients(clients: &[ClientRow], filter: &str, os_filter: &str) -> Vec
             }
             row.info.id.to_ascii_lowercase().contains(&filter)
                 || row.info.fingerprint.to_ascii_lowercase().contains(&filter)
+                || map_client_title(row, aliases)
+                    .to_ascii_lowercase()
+                    .contains(&filter)
                 || row.info.hostname.to_ascii_lowercase().contains(&filter)
                 || row.info.username.to_ascii_lowercase().contains(&filter)
                 || row.info.os.to_ascii_lowercase().contains(&filter)
@@ -735,7 +747,11 @@ fn truncate_label(value: &str, max_chars: usize) -> String {
     label
 }
 
-fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
+fn map_clusters(
+    clients: &[ClientRow],
+    aliases: &HashMap<String, String>,
+    rect: egui::Rect,
+) -> Vec<MapCluster> {
     let mut clusters = Vec::<MapCluster>::new();
     for row in clients {
         let Some(location) = row.info.location.as_ref() else {
@@ -744,8 +760,8 @@ fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
         let lat = location.latitude().clamp(-90.0, 90.0);
         let lon = location.longitude().clamp(-180.0, 180.0);
         let pos = map_project(rect, lat, lon);
-        let title = map_client_title(row);
-        let detail = map_point_detail(row);
+        let title = map_client_title(row, aliases);
+        let detail = map_point_detail(row, aliases);
 
         if let Some(cluster) = clusters
             .iter_mut()
@@ -776,21 +792,14 @@ fn map_clusters(clients: &[ClientRow], rect: egui::Rect) -> Vec<MapCluster> {
     clusters
 }
 
-fn map_client_title(row: &ClientRow) -> String {
-    let hostname = row.info.hostname.trim();
-    if !hostname.is_empty() {
-        return hostname.to_string();
-    }
-
-    let peer_ip = client_peer_ip(&row.info.peer_addr);
-    if peer_ip != "-" {
-        return peer_ip;
-    }
-
-    ui::compact_id(&row.info.id)
+fn map_client_title(row: &ClientRow, aliases: &HashMap<String, String>) -> String {
+    aliases
+        .get(&row.info.id)
+        .cloned()
+        .unwrap_or_else(|| client_identity_label(&row.info))
 }
 
-fn map_point_detail(row: &ClientRow) -> String {
+fn map_point_detail(row: &ClientRow, aliases: &HashMap<String, String>) -> String {
     let location = row
         .info
         .location
@@ -806,7 +815,9 @@ fn map_point_detail(row: &ClientRow) -> String {
         .unwrap_or_else(|| "-".to_string());
 
     format!(
-        "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}",
+        "{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}\n{}: {}",
+        t("Alias"),
+        display_value(&map_client_title(row, aliases)),
         t("Client ID"),
         ui::compact_id(&row.info.id),
         t("IP"),

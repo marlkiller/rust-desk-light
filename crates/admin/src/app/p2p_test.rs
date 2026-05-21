@@ -108,13 +108,13 @@ impl P2pTestWindow {
             .collect()
     }
 
-    pub(super) fn mark_starting(&mut self, client: &ClientRow) {
+    pub(super) fn mark_starting(&mut self, client: &ClientRow, label: String) {
         let client_id = client.info.id.clone();
         self.sessions.insert(
             client_id.clone(),
             P2pClientSession {
                 client_id: client_id.clone(),
-                label: client_log_label(client),
+                label,
                 session_id: 0,
                 status: P2pStatus::Starting,
                 detail: t("Waiting for server session...").to_string(),
@@ -278,6 +278,7 @@ impl P2pTestWindow {
         &mut self,
         ctx: &egui::Context,
         clients: &[ClientRow],
+        aliases: &HashMap<String, String>,
         connected: bool,
     ) -> Option<P2pWindowAction> {
         if !self.open {
@@ -304,7 +305,7 @@ impl P2pTestWindow {
                         |ui| {
                             self.render_toolbar(ui, clients, connected, &mut action);
                             ui.add_space(crate::theme::SECTION_GAP);
-                            self.render_clients(ui, clients);
+                            self.render_clients(ui, clients, aliases);
                             ui.add_space(crate::theme::SECTION_GAP);
                             self.render_logs(ui);
                         },
@@ -365,7 +366,16 @@ impl P2pTestWindow {
         });
     }
 
-    fn render_clients(&mut self, ui: &mut egui::Ui, clients: &[ClientRow]) {
+    fn render_clients(
+        &mut self,
+        ui: &mut egui::Ui,
+        clients: &[ClientRow],
+        aliases: &HashMap<String, String>,
+    ) {
+        let mut all_clients_selected = !clients.is_empty()
+            && clients
+                .iter()
+                .all(|client| self.selected_clients.contains(&client.info.id));
         crate::theme::clickable_table(ui, "p2p_test_clients_table", true)
             .column(egui_extras::Column::initial(56.0).at_least(48.0))
             .column(egui_extras::Column::initial(90.0).at_least(80.0))
@@ -386,9 +396,22 @@ impl P2pTestWindow {
             )
             .column(egui_extras::Column::remainder().at_least(180.0).clip(true))
             .header(crate::theme::TABLE_HEADER_HEIGHT, |mut header| {
-                header.col(|ui| table_header(ui, t("Select")));
+                header.col(|ui| {
+                    centered_cell(ui, |ui| {
+                        if ui
+                            .add_enabled(
+                                !clients.is_empty(),
+                                egui::Checkbox::without_text(&mut all_clients_selected),
+                            )
+                            .on_hover_text(t("Select All"))
+                            .changed()
+                        {
+                            self.set_all_selected(clients, all_clients_selected);
+                        }
+                    });
+                });
                 header.col(|ui| table_header(ui, t("Status")));
-                header.col(|ui| table_header(ui, t("Client ID")));
+                header.col(|ui| table_header(ui, t("Name")));
                 header.col(|ui| table_header(ui, t("Host")));
                 header.col(|ui| table_header(ui, t("IP")));
                 header.col(|ui| table_header(ui, t("P2P Result")));
@@ -420,7 +443,7 @@ impl P2pTestWindow {
                     });
                     row.col(|ui| {
                         paint_p2p_table_cell_background(ui, row_fill, selected);
-                        centered_cell(ui, |ui| cell_label(ui, client_id));
+                        centered_cell(ui, |ui| cell_label(ui, p2p_client_label(client, aliases)));
                     });
                     row.col(|ui| {
                         paint_p2p_table_cell_background(ui, row_fill, selected);
@@ -528,6 +551,12 @@ impl P2pTestWindow {
             self.selected_clients.insert(client_id.to_string());
         } else {
             self.selected_clients.remove(client_id);
+        }
+    }
+
+    fn set_all_selected(&mut self, clients: &[ClientRow], selected: bool) {
+        for client in clients {
+            self.set_selected(&client.info.id, selected);
         }
     }
 
@@ -934,7 +963,14 @@ fn status_label(status: P2pStatus) -> &'static str {
     }
 }
 
-fn client_log_label(client: &ClientRow) -> String {
+fn p2p_client_label(client: &ClientRow, aliases: &HashMap<String, String>) -> String {
+    aliases
+        .get(&client.info.id)
+        .cloned()
+        .unwrap_or_else(|| p2p_fallback_client_label(client))
+}
+
+fn p2p_fallback_client_label(client: &ClientRow) -> String {
     let hostname = client.info.hostname.trim();
     let username = client.info.username.trim();
     match (hostname.is_empty(), username.is_empty()) {

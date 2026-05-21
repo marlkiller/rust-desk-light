@@ -127,6 +127,8 @@ fn zh(key: &'static str) -> &'static str {
         "Add Item" => "添加项目",
         "Admin" => "管理员",
         "Admin network queue is closed" => "管理员网络队列已关闭",
+        "Alias" => "别名",
+        "Alias cannot be empty" => "别名不能为空",
         "All OS" => "全部系统",
         "Already listening" => "已在监听",
         "Appearance" => "外观",
@@ -178,6 +180,7 @@ fn zh(key: &'static str) -> &'static str {
         "Client config saved. Restarting client." => "客户端配置已保存，正在重启客户端。",
         "Client Program Path" => "客户端程序路径",
         "Client restart/update scheduled." => "客户端重启/更新已安排。",
+        "Client list exported to" => "客户端列表已导出到",
         "Clone Client Settings" => "克隆客户端设置",
         "Clone local socket failed: {error}" => "克隆本地套接字失败：{error}",
         "Clone target stream failed: {error}" => "克隆目标连接失败：{error}",
@@ -229,7 +232,6 @@ fn zh(key: &'static str) -> &'static str {
         "Copy" => "复制",
         "Copy All" => "全部复制",
         "Copy Cell" => "复制单元格",
-        "Copy Client ID" => "复制客户端 ID",
         "Copy Current Folder Path" => "复制当前文件夹路径",
         "Copy Data" => "复制数据",
         "Copy Full Path" => "复制完整路径",
@@ -288,7 +290,10 @@ fn zh(key: &'static str) -> &'static str {
         "error" => "错误",
         "Error" => "错误",
         "Event Log" => "事件日志",
+        "Edit Alias" => "编辑别名",
         "Edit Task" => "编辑任务",
+        "Export client list" => "导出客户端列表",
+        "Export client list failed" => "导出客户端列表失败",
         "Execute" => "执行",
         "Execute Code" => "执行代码",
         "Execute File" => "执行文件",
@@ -303,6 +308,7 @@ fn zh(key: &'static str) -> &'static str {
         "Filter" => "筛选",
         "Filter table content" => "筛选表格内容",
         "Filtered clients" => "筛选客户端",
+        "Fingerprint" => "指纹",
         "Folder name" => "文件夹名称",
         "Format" => "格式",
         "Frame received" => "已收到画面",
@@ -497,6 +503,7 @@ fn zh(key: &'static str) -> &'static str {
         "Replacement binary validation failed" => "替换二进制校验失败",
         "Restarts the remote client process." => "重启远程客户端进程。",
         "Restarts the remote computer." => "重启远程计算机。",
+        "Restore Default" => "恢复默认",
         "Repository" => "仓库",
         "Resource usage" => "资源使用",
         "Result received" => "已收到结果",
@@ -521,6 +528,8 @@ fn zh(key: &'static str) -> &'static str {
         "Save failed: {error}" => "保存失败：{error}",
         "Save preferences failed: {error}" => "保存偏好失败：{error}",
         "Save" => "保存",
+        "Save alias failed" => "保存别名失败",
+        "Save Alias" => "保存别名",
         "Save this client config and restart the client?" => "保存此客户端配置并重启客户端？",
         "Save group failed" => "保存分组失败",
         "Save Group" => "保存分组",
@@ -546,12 +555,16 @@ fn zh(key: &'static str) -> &'static str {
         "Selected replacement binary is invalid." => "所选替换二进制校验失败。",
         "Selected replacement binary passed validation." => "所选替换二进制已通过校验。",
         "Send" => "发送",
+        "Select All" => "全选",
         "Send this command to the client?" => "发送此命令到客户端？",
         "Search by id, fingerprint, host, user, OS, or location" => {
             "按 ID、指纹、主机、用户、系统或位置搜索"
         }
         "Search by id, fingerprint, group, host, user, OS, or location" => {
             "按 ID、指纹、分组、主机、用户、系统或位置搜索"
+        }
+        "Search by alias, id, fingerprint, group, host, user, OS, or location" => {
+            "按别名、ID、指纹、分组、主机、用户、系统或位置搜索"
         }
         "Search by id, fingerprint, host, user, or OS" => "按 ID、指纹、主机、用户或系统搜索",
         "Sending" => "发送中",

@@ -56,6 +56,19 @@ impl AdminApp {
                         let _ = self.input_tx.send(AdminInput::ListClients);
                         self.push_log("refresh clients requested");
                     }
+                    if ui
+                        .add_enabled(
+                            !self.clients.is_empty(),
+                            egui::Button::new("📤").min_size(egui::vec2(
+                                TOOLBAR_CONTROL_HEIGHT,
+                                TOOLBAR_CONTROL_HEIGHT,
+                            )),
+                        )
+                        .on_hover_text(t("Export client list"))
+                        .clicked()
+                    {
+                        self.export_client_list();
+                    }
                     ui.add_space(8.0);
                     ui.label(crate::theme::muted_text(t(
                         "Right click a row for commands",
@@ -69,7 +82,7 @@ impl AdminApp {
                     [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut self.client_filter)
                         .hint_text(t(
-                            "Search by id, fingerprint, group, host, user, OS, or location",
+                            "Search by alias, id, fingerprint, group, host, user, OS, or location",
                         ))
                         .vertical_align(egui::Align::Center),
                 );
@@ -87,6 +100,11 @@ impl AdminApp {
                 .column(
                     egui_extras::Column::initial(156.0)
                         .at_least(118.0)
+                        .clip(true),
+                )
+                .column(
+                    egui_extras::Column::initial(170.0)
+                        .at_least(120.0)
                         .clip(true),
                 )
                 .column(
@@ -121,6 +139,7 @@ impl AdminApp {
                 )
                 .header(24.0, |mut header| {
                     header.col(|ui| table_header(ui, t("Status")));
+                    header.col(|ui| table_header(ui, t("Name")));
                     header.col(|ui| table_header(ui, t("Client ID")));
                     header.col(|ui| table_header(ui, t("IP")));
                     header.col(|ui| table_header(ui, t("Location")));
@@ -144,6 +163,11 @@ impl AdminApp {
                                 )
                             })
                         });
+                        row.col(|ui| {
+                            centered_cell(ui, |ui| {
+                                cell_label(ui, self.client_display_label(row_data))
+                            })
+                        });
                         row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.id)));
                         row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.peer_addr)));
                         row.col(|ui| {
@@ -162,13 +186,18 @@ impl AdminApp {
                             self.selected_client_id = Some(client.id.clone());
                         }
                         response.context_menu(|ui| {
+                            let mut queued_command = None::<(String, CommandKind)>;
+                            let mut edit_alias = false;
                             if row_data.status.can_receive_commands() {
                                 command_menu::render_context_menu(
                                     ui,
                                     &client.id,
                                     client.gui_available,
                                     &mut |client_id, command| {
-                                        self.send_command(client_id, command);
+                                        queued_command = Some((client_id.to_string(), command));
+                                    },
+                                    &mut |_| {
+                                        edit_alias = true;
                                     },
                                 );
                             } else {
@@ -177,14 +206,104 @@ impl AdminApp {
                                     &client.id,
                                     client_status_display(row_data.status).0,
                                     &mut |client_id, command| {
-                                        self.send_command(client_id, command);
+                                        queued_command = Some((client_id.to_string(), command));
+                                    },
+                                    &mut |_| {
+                                        edit_alias = true;
                                     },
                                 );
+                            }
+                            if edit_alias {
+                                self.open_alias_window(&client.id);
+                            }
+                            if let Some((client_id, command)) = queued_command {
+                                self.send_command(&client_id, command);
                             }
                         });
                     });
                 });
         });
+    }
+
+    fn export_client_list(&mut self) {
+        let clients = self.filtered_clients();
+        if clients.is_empty() {
+            return;
+        }
+
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(t("Export client list"))
+            .add_filter("CSV", &["csv"])
+            .set_file_name(format!(
+                "rust-desk-light-clients-{}.csv",
+                rdl_protocol::now_epoch_ms()
+            ))
+            .save_file()
+        else {
+            return;
+        };
+        let path = ensure_csv_extension(path);
+        let content = self.client_list_csv(&clients);
+        match std::fs::write(&path, content) {
+            Ok(()) => self.push_log(format!(
+                "{} {}",
+                t("Client list exported to"),
+                path.display()
+            )),
+            Err(error) => self.push_log(format!("{}: {error}", t("Export client list failed"))),
+        }
+    }
+
+    fn client_list_csv(&self, clients: &[ClientRow]) -> String {
+        let headers = [
+            t("Status"),
+            t("Name"),
+            t("Alias"),
+            t("Group"),
+            t("Client ID"),
+            t("IP"),
+            t("Location"),
+            t("Host"),
+            t("User"),
+            t("OS Version"),
+            t("Fingerprint"),
+        ];
+        let mut lines = vec![headers.map(csv_field).join(",")];
+        for row in clients {
+            let client = &row.info;
+            let fields = [
+                client_status_display(row.status).0.to_string(),
+                self.client_display_label(row),
+                self.client_display_label(row),
+                self.client_group(&client.id).to_string(),
+                client.id.clone(),
+                client.peer_addr.clone(),
+                client_location_label(client),
+                client.hostname.clone(),
+                client.username.clone(),
+                client.os.clone(),
+                client.fingerprint.clone(),
+            ];
+            lines.push(fields.map(csv_field).join(","));
+        }
+        lines.push(String::new());
+        lines.join("\n")
+    }
+}
+
+fn ensure_csv_extension(mut path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.extension().is_none() {
+        path.set_extension("csv");
+    }
+    path
+}
+
+fn csv_field(value: impl AsRef<str>) -> String {
+    let value = value.as_ref().replace(['\r', '\n'], " ");
+    if value.contains(',') || value.contains('"') {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value
     }
 }
 
