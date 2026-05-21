@@ -28,19 +28,25 @@ rust-desk-light-version = { path = "../version" }
 
 [features]
 default = ["gui"]
-cli = []
+audio-control = ["dep:cpal", "dep:windows-sys"]
+cli = ["audio-control", "desktop-interaction", "video-control"]
+desktop-interaction = ["dep:windows-sys"]
 gui = [
-    "dep:cpal",
+    "audio-control",
+    "desktop-interaction",
+    "video-control",
     "dep:eframe",
     "dep:rust-desk-light-assets",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+]
+video-control = [
     "dep:image",
     "dep:mozjpeg",
     "dep:nokhwa",
     "dep:windows-sys",
     "dep:core-foundation",
     "dep:core-graphics",
-    "dep:objc2-app-kit",
-    "dep:objc2-foundation",
 ]
 
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]

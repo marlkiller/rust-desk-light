@@ -15,7 +15,7 @@ pub fn render_context_menu(
     prepare_menu_ui(ui, CONTEXT_MENU_MIN_WIDTH);
     render_session(ui, client_id, send_command, edit_alias);
     render_remote_management(ui, client_id, send_command);
-    render_live_control(ui, client_id, gui_available, send_command);
+    render_live_control(ui, client_id, send_command);
     render_user_interaction(ui, client_id, gui_available, send_command);
     render_system_info(ui, client_id, send_command);
     render_execute(ui, client_id, send_command);
@@ -25,7 +25,6 @@ pub fn render_context_menu(
 pub fn render_toolbar_actions(
     ui: &mut egui::Ui,
     client_id: &str,
-    gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.label(crate::theme::muted_text(t("Quick")).strong());
@@ -34,8 +33,8 @@ pub fn render_toolbar_actions(
         client_id,
         "Remote Desktop",
         CommandKind::RemoteDesktop,
-        gui_available,
-        "Disabled: selected client has no GUI session",
+        true,
+        "",
         send_command,
     );
     toolbar_command(
@@ -265,35 +264,27 @@ fn render_remote_management(
 fn render_live_control(
     ui: &mut egui::Ui,
     client_id: &str,
-    gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    let response = ui
-        .add_enabled_ui(gui_available, |ui| {
-            ui.menu_button(menu_title("📡", "Live Control"), |ui| {
-                prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
-                menu_command(
-                    ui,
-                    client_id,
-                    "Remote Desktop",
-                    CommandKind::RemoteDesktop,
-                    send_command,
-                );
-                ui.separator();
-                menu_command(ui, client_id, "Camera", CommandKind::Camera, send_command);
-                menu_command(
-                    ui,
-                    client_id,
-                    "Audio Listen",
-                    CommandKind::AudioListen,
-                    send_command,
-                );
-            });
-        })
-        .response;
-    if !gui_available {
-        response.on_hover_text(t("Disabled: selected client has no GUI session"));
-    }
+    ui.menu_button(menu_title("📡", "Live Control"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
+        menu_command(
+            ui,
+            client_id,
+            "Remote Desktop",
+            CommandKind::RemoteDesktop,
+            send_command,
+        );
+        ui.separator();
+        menu_command(ui, client_id, "Camera", CommandKind::Camera, send_command);
+        menu_command(
+            ui,
+            client_id,
+            "Audio Listen",
+            CommandKind::AudioListen,
+            send_command,
+        );
+    });
 }
 
 fn render_user_interaction(
@@ -302,53 +293,50 @@ fn render_user_interaction(
     gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    let response = ui
-        .add_enabled_ui(gui_available, |ui| {
-            ui.menu_button(menu_title("💬", "User Interaction"), |ui| {
-                prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
-                menu_command(
-                    ui,
-                    client_id,
-                    "Message Box",
-                    CommandKind::MessageBox,
-                    send_command,
-                );
-                menu_command(
-                    ui,
-                    client_id,
-                    "Balloon Tip",
-                    CommandKind::BalloonTip,
-                    send_command,
-                );
-                ui.separator();
-                menu_command(
-                    ui,
-                    client_id,
-                    "Text Chat",
-                    CommandKind::TextChat,
-                    send_command,
-                );
-                menu_command(
-                    ui,
-                    client_id,
-                    "Voice Chat",
-                    CommandKind::VoiceChat,
-                    send_command,
-                );
-                ui.separator();
-                menu_command(
-                    ui,
-                    client_id,
-                    "Open Text In Notepad",
-                    CommandKind::OpenTextInNotepad,
-                    send_command,
-                );
-            });
-        })
-        .response;
-    if !gui_available {
-        response.on_hover_text(t("Disabled: selected client has no GUI session"));
-    }
+    ui.menu_button(menu_title("💬", "User Interaction"), |ui| {
+        prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
+        menu_command(
+            ui,
+            client_id,
+            "Message Box",
+            CommandKind::MessageBox,
+            send_command,
+        );
+        menu_command(
+            ui,
+            client_id,
+            "Balloon Tip",
+            CommandKind::BalloonTip,
+            send_command,
+        );
+        ui.separator();
+        menu_command_enabled(
+            ui,
+            client_id,
+            "Text Chat",
+            CommandKind::TextChat,
+            gui_available,
+            "Disabled: selected client has no client UI",
+            send_command,
+        );
+        menu_command_enabled(
+            ui,
+            client_id,
+            "Voice Chat",
+            CommandKind::VoiceChat,
+            gui_available,
+            "Disabled: selected client has no client UI",
+            send_command,
+        );
+        ui.separator();
+        menu_command(
+            ui,
+            client_id,
+            "Open Text In Notepad",
+            CommandKind::OpenTextInNotepad,
+            send_command,
+        );
+    });
 }
 
 fn render_system_info(
@@ -460,17 +448,43 @@ fn menu_command(
     command: CommandKind,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
-    let icon = command_icon(&command);
+    if ui
+        .add(menu_button(menu_command_label(label, &command)))
+        .clicked()
+    {
+        send_command(client_id, command);
+        ui.close();
+    }
+}
+
+fn menu_command_enabled(
+    ui: &mut egui::Ui,
+    client_id: &str,
+    label: &'static str,
+    command: CommandKind,
+    enabled: bool,
+    disabled_hover: &'static str,
+    send_command: &mut impl FnMut(&str, CommandKind),
+) {
+    let response = ui.add_enabled(enabled, menu_button(menu_command_label(label, &command)));
+    if response.clicked() {
+        send_command(client_id, command);
+        ui.close();
+    }
+    if !enabled && !disabled_hover.is_empty() {
+        response.on_hover_text(t(disabled_hover));
+    }
+}
+
+fn menu_command_label(label: &'static str, command: &CommandKind) -> String {
+    let icon = command_icon(command);
     let label = t(label);
-    let label = if command_is_implemented(&command) {
+    let label = if command_is_implemented(command) {
         label.to_string()
     } else {
         format!("{label} (TODO)")
     };
-    if ui.add(menu_button(format!("{icon} {label}"))).clicked() {
-        send_command(client_id, command);
-        ui.close();
-    }
+    format!("{icon} {label}")
 }
 
 fn prepare_menu_ui(ui: &mut egui::Ui, min_width: f32) {

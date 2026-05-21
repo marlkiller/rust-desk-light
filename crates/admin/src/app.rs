@@ -896,9 +896,9 @@ impl AdminApp {
             return;
         }
 
-        if command.requires_client_gui() && !self.client_gui_available(client_id) {
+        if command_requires_client_ui(&command) && !self.client_gui_available(client_id) {
             self.push_log(format!(
-                "blocked command={} to {}: client has no GUI session",
+                "blocked command={} to {}: client has no client UI",
                 command.as_str(),
                 client_id
             ));
@@ -1723,11 +1723,9 @@ impl AdminApp {
                         .client_status_for(&client_id)
                         .unwrap_or(ClientStatus::Offline);
                     if status.can_receive_commands() {
-                        let gui_available = self.client_gui_available(&client_id);
                         command_menu::render_toolbar_actions(
                             ui,
                             &client_id,
-                            gui_available,
                             &mut |client_id, command| {
                                 self.send_command(client_id, command);
                             },
@@ -2536,4 +2534,8 @@ impl eframe::App for AdminApp {
                 .request_repaint_after(std::time::Duration::from_millis(interval_ms));
         }
     }
+}
+
+fn command_requires_client_ui(command: &CommandKind) -> bool {
+    matches!(command, CommandKind::TextChat | CommandKind::VoiceChat)
 }

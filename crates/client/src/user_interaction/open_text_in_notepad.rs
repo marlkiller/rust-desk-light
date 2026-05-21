@@ -4,11 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub(crate) fn handle(payload: &str, gui_mode: bool) -> String {
-    if !gui_mode {
-        return super::disabled_detail(&rdl_protocol::CommandKind::OpenTextInNotepad);
-    }
-
+pub(crate) fn handle(payload: &str) -> String {
     let payload =
         ParsedInteractionPayload::parse(payload, "rdl-note.txt", String::new(), "text_b64");
     let file_name = safe_text_file_name(&payload.title);

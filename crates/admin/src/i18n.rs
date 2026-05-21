@@ -268,7 +268,7 @@ fn zh(key: &'static str) -> &'static str {
         "Detail" => "详情",
         "Disable" => "禁用",
         "Disable Startup Item" => "禁用启动项",
-        "Disabled: selected client has no GUI session" => "已禁用：选中的客户端没有 GUI 会话",
+        "Disabled: selected client has no client UI" => "已禁用：选中的客户端没有客户端界面",
         "Dismiss" => "关闭",
         "Done" => "完成",
         "Download" => "下载",
@@ -563,8 +563,8 @@ fn zh(key: &'static str) -> &'static str {
         "Search by id, fingerprint, group, host, user, OS, or location" => {
             "按 ID、指纹、分组、主机、用户、系统或位置搜索"
         }
-        "Search by alias, id, fingerprint, group, host, user, OS, or location" => {
-            "按别名、ID、指纹、分组、主机、用户、系统或位置搜索"
+        "Search by alias, fingerprint, group, host, user, OS, or location" => {
+            "按别名、指纹、分组、主机、用户、系统或位置搜索"
         }
         "Search by id, fingerprint, host, user, or OS" => "按 ID、指纹、主机、用户或系统搜索",
         "Sending" => "发送中",

@@ -557,7 +557,7 @@ fn client_connection_once(
                 }
             }
             Message::DesktopControl { target_id, payload } => {
-                if !gui_mode {
+                if !crate::live_control::command_available(&CommandKind::RemoteDesktop) {
                     desktop_stream.running.store(false, Ordering::Relaxed);
                     desktop_stream.generation.fetch_add(1, Ordering::Relaxed);
                     let _ = queue_message(
@@ -619,7 +619,7 @@ fn client_connection_once(
                 }
             }
             Message::DesktopInput { target_id, payload } => {
-                if !gui_mode {
+                if !crate::live_control::command_available(&CommandKind::RemoteDesktop) {
                     let _ = queue_message(
                         &out_tx,
                         &session_token,
@@ -662,7 +662,7 @@ fn client_connection_once(
                 source,
                 payload,
             } => match video_control_action(&payload).as_deref() {
-                _ if !gui_mode => {
+                _ if !crate::live_control::video_source_available(&source) => {
                     let stream_state = match &source {
                         VideoSource::RemoteDesktop => desktop_stream.clone(),
                         VideoSource::Camera => camera_stream.clone(),
@@ -729,7 +729,7 @@ fn client_connection_once(
                 payload,
             } => match source {
                 AudioSource::AudioListen => match video_control_action(&payload).as_deref() {
-                    _ if !gui_mode => {
+                    _ if !crate::live_control::audio_control_available() => {
                         audio_stream.running.store(false, Ordering::Relaxed);
                         audio_stream.generation.fetch_add(1, Ordering::Relaxed);
                         let _ = queue_message(

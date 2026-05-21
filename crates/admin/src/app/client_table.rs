@@ -82,7 +82,7 @@ impl AdminApp {
                     [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
                     egui::TextEdit::singleline(&mut self.client_filter)
                         .hint_text(t(
-                            "Search by alias, id, fingerprint, group, host, user, OS, or location",
+                            "Search by alias, fingerprint, group, host, user, OS, or location",
                         ))
                         .vertical_align(egui::Align::Center),
                 );
@@ -105,11 +105,6 @@ impl AdminApp {
                 .column(
                     egui_extras::Column::initial(170.0)
                         .at_least(120.0)
-                        .clip(true),
-                )
-                .column(
-                    egui_extras::Column::initial(190.0)
-                        .at_least(140.0)
                         .clip(true),
                 )
                 .column(
@@ -140,7 +135,6 @@ impl AdminApp {
                 .header(24.0, |mut header| {
                     header.col(|ui| table_header(ui, t("Status")));
                     header.col(|ui| table_header(ui, t("Name")));
-                    header.col(|ui| table_header(ui, t("Client ID")));
                     header.col(|ui| table_header(ui, t("IP")));
                     header.col(|ui| table_header(ui, t("Location")));
                     header.col(|ui| table_header(ui, t("Host")));
@@ -168,7 +162,6 @@ impl AdminApp {
                                 cell_label(ui, self.client_display_label(row_data))
                             })
                         });
-                        row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.id)));
                         row.col(|ui| centered_cell(ui, |ui| cell_label(ui, &client.peer_addr)));
                         row.col(|ui| {
                             centered_cell(ui, |ui| cell_label(ui, client_location_label(client)))
