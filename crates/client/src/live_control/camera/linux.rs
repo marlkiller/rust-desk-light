@@ -198,16 +198,41 @@ fn capture_ffmpeg_stream_frame(capture: &mut CameraCapture) -> Result<CameraVide
 #[cfg(target_os = "linux")]
 fn capture_v4l2_stream_frame(capture: &mut CameraCapture) -> Result<CameraVideoFrame, String> {
     if capture.v4l2_stream.is_none() {
-        capture.v4l2_stream = Some(V4l2CameraStream::open(
-            &capture.device_path,
-            &capture.quality,
-        )?);
+        let (stream, device_path) = open_v4l2_camera_stream(&capture.device_path, &capture.quality)?;
+        capture.device_path = device_path;
+        capture.v4l2_stream = Some(stream);
     }
     capture
         .v4l2_stream
         .as_mut()
         .ok_or_else(|| "v4l2 camera stream is not open".to_string())?
         .read_frame(&capture.quality)
+}
+
+#[cfg(target_os = "linux")]
+fn open_v4l2_camera_stream(
+    device_path: &str,
+    quality: &str,
+) -> Result<(V4l2CameraStream, String), String> {
+    let mut errors = Vec::new();
+    match V4l2CameraStream::open(device_path, quality) {
+        Ok(stream) => return Ok((stream, device_path.to_string())),
+        Err(error) => errors.push(error),
+    }
+    for (_, path) in linux_camera_devices() {
+        if path == device_path {
+            continue;
+        }
+        match V4l2CameraStream::open(&path, quality) {
+            Ok(stream) => return Ok((stream, path)),
+            Err(error) => errors.push(error),
+        }
+    }
+    if errors.is_empty() {
+        Err("no V4L2 camera device found".to_string())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 #[cfg(target_os = "linux")]

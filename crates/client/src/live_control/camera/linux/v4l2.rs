@@ -41,12 +41,14 @@ impl V4l2CameraStream {
     pub(super) fn open(device_path: &str, quality: &str) -> Result<Self, String> {
         let file = open_device(device_path)?;
         let fd = file.as_raw_fd();
-        validate_capture_device(fd)?;
+        validate_capture_device(fd).map_err(|error| format!("{device_path}: {error}"))?;
         let (target_width, target_height) = requested_dimensions(quality);
-        let capture_format = set_capture_format(fd, target_width, target_height)?;
-        let buffers = prepare_mmap_buffers(fd)?;
+        let capture_format = set_capture_format(fd, target_width, target_height)
+            .map_err(|error| format!("{device_path}: {error}"))?;
+        let buffers = prepare_mmap_buffers(fd).map_err(|error| format!("{device_path}: {error}"))?;
         let mut stream_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        unsafe_ioctl_mut(fd, VIDIOC_STREAMON, &mut stream_type, "start v4l2 camera stream")?;
+        unsafe_ioctl_mut(fd, VIDIOC_STREAMON, &mut stream_type, "start v4l2 camera stream")
+            .map_err(|error| format!("{device_path}: {error}"))?;
         Ok(Self {
             file,
             buffers,
