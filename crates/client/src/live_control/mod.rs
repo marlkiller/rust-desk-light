@@ -1,26 +1,36 @@
 use rdl_protocol::{CommandKind, VideoSource};
 
+mod audio_stream;
 #[cfg(feature = "audio-control")]
 mod audio_listen;
 #[cfg(feature = "video-control")]
 mod camera;
+mod live_video_stream;
+pub(crate) mod payload;
 pub(crate) mod realtime_video;
 #[cfg(feature = "video-control")]
 mod remote_desktop;
+mod stream_state;
 #[cfg(all(
     feature = "video-control",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
 ))]
 mod tile_diff;
 
+pub(crate) use audio_stream::{
+    audio_stream_loop, audio_udp_receive_loop, new_audio_udp_stream_id, voice_chat_capture_loop,
+    AudioUdpEndpoint, AudioUdpSender, AUDIO_STREAM_STOP_SETTLE_MS, AUDIO_UDP_RECV_TIMEOUT_MS,
+};
 #[cfg(feature = "audio-control")]
 pub(crate) use audio_listen::{
     AudioInputStream, AudioOutputPlayer, AudioOutputSink, CapturedAudioFrame,
 };
 #[cfg(feature = "video-control")]
 pub(crate) use camera::{CameraCapture, CameraVideoFrame};
+pub(crate) use live_video_stream::video_stream_loop;
 #[cfg(feature = "video-control")]
 pub(crate) use remote_desktop::{RemoteDesktopCapture, RemoteDesktopVideoFrame};
+pub(crate) use stream_state::DesktopStreamState;
 
 #[cfg(not(feature = "audio-control"))]
 pub(crate) struct CapturedAudioFrame {

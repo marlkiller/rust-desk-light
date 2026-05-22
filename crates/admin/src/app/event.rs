@@ -47,7 +47,7 @@ pub(crate) enum AdminInput {
     },
 }
 
-pub(super) enum AdminEvent {
+pub(crate) enum AdminEvent {
     Connected,
     Disconnected,
     ConnectionFailed {

@@ -88,16 +88,3 @@ pub(crate) fn video_source_command(source: &VideoSource) -> CommandKind {
 pub(crate) fn stream_sequence_base(generation: u64) -> u64 {
     generation.saturating_mul(1_u64 << 32).max(1)
 }
-
-pub(crate) fn sanitize_log_value(value: &str) -> String {
-    let mut value = value
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect::<String>();
-    const MAX_LOG_VALUE_LEN: usize = 180;
-    if value.len() > MAX_LOG_VALUE_LEN {
-        value.truncate(MAX_LOG_VALUE_LEN);
-        value.push_str("...");
-    }
-    value
-}

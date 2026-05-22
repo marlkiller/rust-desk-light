@@ -26,6 +26,7 @@ mod remote_management;
 mod runtime;
 mod session;
 mod theme;
+mod tools;
 mod user_interaction;
 mod windowing;
 

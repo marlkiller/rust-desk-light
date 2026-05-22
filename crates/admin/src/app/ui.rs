@@ -111,7 +111,7 @@ pub(super) fn section_title(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-pub(super) fn table_header(ui: &mut egui::Ui, title: &str) {
+pub(crate) fn table_header(ui: &mut egui::Ui, title: &str) {
     crate::theme::table_header_label(ui, title);
 }
 
@@ -186,14 +186,14 @@ pub(super) fn token_text_edit(
     }
 }
 
-pub(super) fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.with_layout(
         egui::Layout::left_to_right(egui::Align::Center),
         add_contents,
     );
 }
 
-pub(super) fn cell_label(ui: &mut egui::Ui, text: impl Into<String>) {
+pub(crate) fn cell_label(ui: &mut egui::Ui, text: impl Into<String>) {
     let text = text.into();
     cell_label_with_hover(ui, text.clone(), text);
 }
@@ -211,7 +211,7 @@ pub(super) fn cell_label_with_hover(
     }
 }
 
-pub(super) fn timestamped_log(line: impl Into<String>) -> String {
+pub(crate) fn timestamped_log(line: impl Into<String>) -> String {
     format!("[{}] {}", activity_time_label(), line.into())
 }
 
@@ -253,7 +253,7 @@ fn activity_time_label() -> String {
     format!("{hour:02}:{minute:02}:{second:02}")
 }
 
-pub(super) fn compact_id(value: &str) -> String {
+pub(crate) fn compact_id(value: &str) -> String {
     let value = value.trim();
     let value = value.strip_prefix("client-").unwrap_or(value);
     compact_middle(value, 12, 6)

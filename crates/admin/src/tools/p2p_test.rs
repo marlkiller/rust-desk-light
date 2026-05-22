@@ -1,9 +1,12 @@
-use super::{
-    event::{AdminEvent, AdminInput},
-    ui::{cell_label, centered_cell, compact_id, table_header, timestamped_log},
-    ClientRow, ClientStatus,
+use crate::{
+    app::{
+        cell_label, centered_cell, client_status_display, compact_id,
+        event::{AdminEvent, AdminInput},
+        table_header, timestamped_log, ClientRow, ClientStatus,
+    },
+    i18n::t,
+    windowing,
 };
-use crate::{i18n::t, windowing};
 use eframe::egui;
 use rdl_protocol::{now_epoch_ms, p2p_udp, Message, P2pAction, Role};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -24,14 +27,14 @@ const MAX_LOG_LINES: usize = 500;
 const STATUS_BAR_HEIGHT: f32 = 44.0;
 const STATUS_BAR_GAP: f32 = 8.0;
 
-pub(super) struct P2pTestWindow {
+pub(crate) struct P2pTestWindow {
     open: bool,
     selected_clients: HashSet<String>,
     sessions: HashMap<String, P2pClientSession>,
     logs: VecDeque<String>,
 }
 
-pub(super) enum P2pWindowAction {
+pub(crate) enum P2pWindowAction {
     Start(Vec<String>),
     Stop(Vec<(String, u64)>),
 }
@@ -75,11 +78,11 @@ impl Default for P2pTestWindow {
 }
 
 impl P2pTestWindow {
-    pub(super) fn open(&mut self) {
+    pub(crate) fn open(&mut self) {
         self.open = true;
     }
 
-    pub(super) fn stop_all_local(&mut self) {
+    pub(crate) fn stop_all_local(&mut self) {
         for session in self.sessions.values_mut() {
             if let Some(worker) = session.worker.take() {
                 worker.stop.store(true, Ordering::Relaxed);
@@ -94,7 +97,7 @@ impl P2pTestWindow {
         }
     }
 
-    pub(super) fn active_sessions(&self) -> Vec<(String, u64)> {
+    pub(crate) fn active_sessions(&self) -> Vec<(String, u64)> {
         self.sessions
             .values()
             .filter(|session| {
@@ -108,7 +111,7 @@ impl P2pTestWindow {
             .collect()
     }
 
-    pub(super) fn mark_starting(&mut self, client: &ClientRow, label: String) {
+    pub(crate) fn mark_starting(&mut self, client: &ClientRow, label: String) {
         let client_id = client.info.id.clone();
         self.sessions.insert(
             client_id.clone(),
@@ -131,7 +134,7 @@ impl P2pTestWindow {
         ));
     }
 
-    pub(super) fn handle_control(
+    pub(crate) fn handle_control(
         &mut self,
         target_id: String,
         session_id: u64,
@@ -231,7 +234,7 @@ impl P2pTestWindow {
         }
     }
 
-    pub(super) fn handle_result(
+    pub(crate) fn handle_result(
         &mut self,
         client_id: String,
         session_id: u64,
@@ -274,7 +277,7 @@ impl P2pTestWindow {
         self.push_log(format!("{}: {}", self.client_label(&client_id), detail));
     }
 
-    pub(super) fn render(
+    pub(crate) fn render(
         &mut self,
         ctx: &egui::Context,
         clients: &[ClientRow],
@@ -435,8 +438,7 @@ impl P2pTestWindow {
                     });
                     row.col(|ui| {
                         paint_p2p_table_cell_background(ui, row_fill, selected);
-                        let (text, color) =
-                            super::client_state::client_status_display(client.status);
+                        let (text, color) = client_status_display(client.status);
                         centered_cell(ui, |ui| {
                             ui.label(egui::RichText::new(text).size(12.0).color(color).strong());
                         });
@@ -610,7 +612,7 @@ impl P2pClientSession {
     }
 }
 
-pub(super) fn send_start(input_tx: &SyncSender<AdminInput>, client_id: &str) {
+pub(crate) fn send_start(input_tx: &SyncSender<AdminInput>, client_id: &str) {
     let _ = input_tx.send(AdminInput::P2p(Message::P2pControl {
         target_id: client_id.to_string(),
         session_id: 0,
@@ -622,7 +624,7 @@ pub(super) fn send_start(input_tx: &SyncSender<AdminInput>, client_id: &str) {
     }));
 }
 
-pub(super) fn send_stop(input_tx: &SyncSender<AdminInput>, client_id: &str, session_id: u64) {
+pub(crate) fn send_stop(input_tx: &SyncSender<AdminInput>, client_id: &str, session_id: u64) {
     let _ = input_tx.send(AdminInput::P2p(Message::P2pControl {
         target_id: client_id.to_string(),
         session_id,

@@ -10,9 +10,11 @@ mod client_autostart;
 mod file_manager;
 mod registry_manager;
 mod remote_terminal;
+mod reverse_proxy;
 
 pub(crate) use file_manager::handle_transfer as handle_file_transfer;
 pub(crate) use remote_terminal::execute_streaming as execute_terminal_streaming;
+pub(crate) use reverse_proxy::{client_proxy_stream_loop, ClientProxyStream};
 
 pub fn handle(command: &CommandKind, payload: &str) -> String {
     match command {

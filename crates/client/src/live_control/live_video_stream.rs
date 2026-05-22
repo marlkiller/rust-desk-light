@@ -1,10 +1,12 @@
 use crate::live_control::realtime_video::RealtimeVideoSender;
-use crate::outbound::{queue_message, ClientOutbound};
-use crate::payload::{
-    remote_desktop_value, stream_sequence_base, video_control_value, video_fps_from_payload,
-    video_source_command,
+use crate::live_control::{
+    payload::{
+        remote_desktop_value, stream_sequence_base, video_control_value, video_fps_from_payload,
+        video_source_command,
+    },
+    DesktopStreamState,
 };
-use crate::stream_state::DesktopStreamState;
+use crate::outbound::{queue_message, ClientOutbound};
 use rdl_protocol::{Message, VideoSource};
 use std::io;
 use std::sync::{

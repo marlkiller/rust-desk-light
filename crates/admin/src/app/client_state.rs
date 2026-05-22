@@ -5,9 +5,9 @@ use rdl_protocol::ClientInfo;
 use std::time::Instant;
 
 #[derive(Clone)]
-pub(super) struct ClientRow {
-    pub(super) info: ClientInfo,
-    pub(super) status: ClientStatus,
+pub(crate) struct ClientRow {
+    pub(crate) info: ClientInfo,
+    pub(crate) status: ClientStatus,
 }
 
 pub(super) struct ClientOnlineToast {
@@ -17,7 +17,7 @@ pub(super) struct ClientOnlineToast {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum ClientStatus {
+pub(crate) enum ClientStatus {
     Online,
     Stale,
     Offline,
@@ -42,7 +42,7 @@ pub(super) fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
     });
 }
 
-pub(super) fn client_status_display(status: ClientStatus) -> (&'static str, egui::Color32) {
+pub(crate) fn client_status_display(status: ClientStatus) -> (&'static str, egui::Color32) {
     match status {
         ClientStatus::Online => (t("Online"), COLOR_GOOD),
         ClientStatus::Stale => (t("Stale"), COLOR_WARN),

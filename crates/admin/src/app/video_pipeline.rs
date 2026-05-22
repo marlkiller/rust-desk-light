@@ -14,7 +14,7 @@ pub(super) struct PendingVideoFrame {
 }
 
 #[derive(Default)]
-pub(super) struct VideoFrameCoalescer {
+pub(crate) struct VideoFrameCoalescer {
     state: Mutex<VideoFrameCoalescerState>,
 }
 

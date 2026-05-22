@@ -1,17 +1,16 @@
 use crate::app_event::{ClientEvent, ClientEventSink, ClientInput};
-use crate::audio_stream::{
-    audio_stream_loop, audio_udp_receive_loop, new_audio_udp_stream_id, voice_chat_capture_loop,
-    AudioUdpEndpoint, AudioUdpSender, AUDIO_STREAM_STOP_SETTLE_MS, AUDIO_UDP_RECV_TIMEOUT_MS,
+use crate::live_control::{
+    audio_stream_loop, audio_udp_receive_loop, new_audio_udp_stream_id,
+    payload::{
+        desktop_input_reply_payload, desktop_payload_is_transient_input, detail_value,
+        remote_desktop_action, video_control_action, video_source_command,
+    },
+    realtime_video::latest_video_channel,
+    video_stream_loop, voice_chat_capture_loop, AudioUdpEndpoint, AudioUdpSender,
+    DesktopStreamState, AUDIO_STREAM_STOP_SETTLE_MS, AUDIO_UDP_RECV_TIMEOUT_MS,
 };
-use crate::live_control::realtime_video::latest_video_channel;
-use crate::live_video_stream::video_stream_loop;
 use crate::outbound::{self, queue_file_transfer_reply, queue_message};
-use crate::payload::{
-    desktop_input_reply_payload, desktop_payload_is_transient_input, detail_value,
-    remote_desktop_action, video_control_action, video_source_command,
-};
-use crate::reverse_proxy::{client_proxy_stream_loop, ClientProxyStream};
-use crate::stream_state::DesktopStreamState;
+use crate::remote_management::{client_proxy_stream_loop, ClientProxyStream};
 use crate::{
     commands,
     runtime::{hostname, os_label, username, Config, LocalIdentity},
@@ -136,7 +135,7 @@ fn client_connection_once(
     let mut voice_chat_invite_udp_endpoint: Option<AudioUdpEndpoint> = None;
     let mut voice_chat_udp_stop: Option<Arc<AtomicBool>> = None;
     let mut proxy_streams = HashMap::<u64, ClientProxyStream>::new();
-    let mut p2p_sessions = HashMap::<u64, crate::p2p::P2pTestSession>::new();
+    let mut p2p_sessions = HashMap::<u64, crate::tools::P2pTestSession>::new();
     let (proxy_done_tx, proxy_done_rx) = mpsc::channel::<u64>();
     loop {
         while let Ok(stream_id) = proxy_done_rx.try_recv() {
@@ -924,7 +923,7 @@ fn client_connection_once(
                             session.stop();
                         }
                         let fallback_server_udp_addr = format!("{}:{}", config.ip, config.port);
-                        let session = crate::p2p::start_test(
+                        let session = crate::tools::start_test(
                             identity.id.clone(),
                             session_id,
                             nonce,

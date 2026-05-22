@@ -11,7 +11,6 @@ mod command_result;
 pub(crate) mod event;
 mod file_transfer;
 mod network;
-mod p2p_test;
 mod payload;
 mod settings;
 mod status_bar;
@@ -19,6 +18,9 @@ mod toast;
 mod ui;
 mod video_pipeline;
 mod window_dispatch;
+
+pub(crate) use self::client_state::{client_status_display, ClientRow, ClientStatus};
+pub(crate) use self::ui::{cell_label, centered_cell, compact_id, table_header, timestamped_log};
 
 use self::{
     audio_udp::{
@@ -32,7 +34,7 @@ use self::{
     client_state::{
         client_commands_disabled_text, client_identity_label, client_location_label,
         client_mode_label, client_mode_search_tokens, client_online_notice, client_os_label,
-        client_status_display, client_status_text, ClientOnlineToast, ClientRow, ClientStatus,
+        client_status_text, ClientOnlineToast,
     },
     command_result::{
         command_status_notice, command_title, command_window_identity_title,
@@ -51,9 +53,8 @@ use self::{
     payload::{payload_field, video_stream_payload},
     settings::{parse_connection_settings, SettingsAction, SettingsState},
     ui::{
-        activity_context_menu, apply_admin_theme, cell_label, centered_cell, empty_state, panel,
-        prune_activity_logs, section_title, table_header, timestamped_log, COLOR_BAD, COLOR_GOOD,
-        COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        activity_context_menu, apply_admin_theme, empty_state, panel, prune_activity_logs,
+        section_title, COLOR_BAD, COLOR_GOOD, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
     },
     video_pipeline::{PendingVideoFrame, VideoDecodeWorkers, VideoFrameCoalescer},
 };
@@ -62,6 +63,7 @@ use crate::{
     i18n::{self, t, tf},
     live_control, remote_management,
     runtime::Config,
+    tools::p2p_test,
     user_interaction, windowing,
 };
 use eframe::egui;
