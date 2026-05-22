@@ -666,6 +666,8 @@ fn zh(key: &'static str) -> &'static str {
         "Title" => "标题",
         "Token" => "令牌",
         "Token cannot be empty." => "令牌不能为空。",
+        "Hide token" => "隐藏令牌",
+        "Show token" => "显示令牌",
         "Transfer" => "传输",
         "Transfers" => "传输",
         "Trigger" => "触发器",

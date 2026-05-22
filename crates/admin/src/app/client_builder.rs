@@ -1,4 +1,6 @@
-use super::ui::{COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, TOOLBAR_CONTROL_HEIGHT};
+use super::ui::{
+    token_text_edit, COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, TOOLBAR_CONTROL_HEIGHT,
+};
 use crate::{
     client_binary::detect_binary_format,
     i18n::{self, t, Language},
@@ -22,6 +24,7 @@ pub(super) struct ClientBuilderState {
     server_ip: String,
     server_port: String,
     auth_token: String,
+    auth_token_visible: bool,
     template_detail: String,
     build_status: BuildStatus,
     template_status: TemplateStatus,
@@ -64,6 +67,7 @@ impl ClientBuilderState {
             server_ip: config.ip.clone(),
             server_port: config.port.to_string(),
             auth_token: config.auth_token.clone(),
+            auth_token_visible: false,
             template_detail: String::new(),
             build_status: BuildStatus::Idle,
             template_status: TemplateStatus::Unknown(t("Template not loaded").to_string()),
@@ -121,12 +125,11 @@ impl ClientBuilderState {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     form_label(ui, t("Token"));
-                    ui.add_sized(
-                        [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-                        egui::TextEdit::singleline(&mut self.auth_token)
-                            .password(true)
-                            .hint_text(t("Optional client auth token"))
-                            .vertical_align(egui::Align::Center),
+                    token_text_edit(
+                        ui,
+                        &mut self.auth_token,
+                        &mut self.auth_token_visible,
+                        t("Optional client auth token"),
                     );
                 });
 

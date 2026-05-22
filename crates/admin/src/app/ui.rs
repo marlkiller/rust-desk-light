@@ -135,6 +135,57 @@ pub(super) fn form_label(ui: &mut egui::Ui, label: &str) {
     ui.label(crate::theme::muted_text(label).strong());
 }
 
+pub(super) fn token_text_edit(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    visible: &mut bool,
+    hint: &str,
+) {
+    let row_width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(row_width, TOOLBAR_CONTROL_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let gap = ui.spacing().item_spacing.x;
+    let button_width = TOOLBAR_CONTROL_HEIGHT;
+    let button_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.max.x - button_width, rect.min.y),
+        egui::vec2(button_width, TOOLBAR_CONTROL_HEIGHT),
+    );
+    let text_rect = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2((button_rect.min.x - gap).max(rect.min.x), rect.max.y),
+    );
+
+    ui.put(
+        text_rect,
+        egui::TextEdit::singleline(value)
+            .password(!*visible)
+            .hint_text(hint)
+            .vertical_align(egui::Align::Center),
+    );
+
+    let (icon, hover_text) = if *visible {
+        ("🔒", t("Hide token"))
+    } else {
+        ("👁", t("Show token"))
+    };
+    let response = ui
+        .put(button_rect, egui::Button::new(""))
+        .on_hover_text(hover_text);
+    let icon_color = ui.style().interact(&response).fg_stroke.color;
+    ui.painter().text(
+        button_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        egui::FontId::proportional(TOOLBAR_CONTROL_HEIGHT),
+        icon_color,
+    );
+    if response.clicked() {
+        *visible = !*visible;
+    }
+}
+
 pub(super) fn centered_cell(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.with_layout(
         egui::Layout::left_to_right(egui::Align::Center),

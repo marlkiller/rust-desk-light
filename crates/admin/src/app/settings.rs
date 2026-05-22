@@ -5,12 +5,16 @@ use crate::{
 };
 use eframe::egui;
 
-use super::{ui::form_label, COLOR_BAD, COLOR_GOOD, TOOLBAR_CONTROL_HEIGHT};
+use super::{
+    ui::{form_label, token_text_edit},
+    COLOR_BAD, COLOR_GOOD, TOOLBAR_CONTROL_HEIGHT,
+};
 
 pub(super) struct SettingsState {
     pub(super) server_ip: String,
     pub(super) server_port: String,
     pub(super) auth_token: String,
+    auth_token_visible: bool,
     theme: ThemeKind,
     language: Language,
     open: bool,
@@ -25,6 +29,7 @@ impl SettingsState {
             server_ip: config.ip.clone(),
             server_port: config.port.to_string(),
             auth_token: config.auth_token.clone(),
+            auth_token_visible: false,
             theme: ThemeKind::from_config(&config.theme),
             language: Language::from_config(&config.language),
             open: false,
@@ -191,12 +196,11 @@ fn render_connection_settings(
     ui.add_space(6.0);
 
     form_label(ui, t("Token"));
-    ui.add_sized(
-        [ui.available_width(), TOOLBAR_CONTROL_HEIGHT],
-        egui::TextEdit::singleline(&mut state.auth_token)
-            .password(true)
-            .hint_text(t("Auth token"))
-            .vertical_align(egui::Align::Center),
+    token_text_edit(
+        ui,
+        &mut state.auth_token,
+        &mut state.auth_token_visible,
+        t("Auth token"),
     );
 
     ui.add_space(8.0);

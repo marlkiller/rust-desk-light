@@ -1,14 +1,10 @@
-# rust-desk-light
+# Rust Desk Light - Remote Administration Tool (RAT)
 
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
 ![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-blue)
 ![License](https://img.shields.io/badge/license-Apache--2.0-green)
 
-`rust-desk-light` is a lightweight Rust remote assistance toolkit with a GUI
-operator console, a CLI relay server, GUI and CLI endpoint clients, and a compact
-binary protocol. It supports device discovery, remote management, file transfer,
-remote desktop, camera preview, audio listening, and duplex voice chat across
-Windows, Linux, and macOS.
+**rust-desk-light** is a lightweight Rust **remote administration tool (RAT)**. It packs a GUI operator console, a CLI relay server, GUI & CLI endpoint clients, and a compact binary protocol. The toolkit supports device discovery, **remote management**, file transfer, remote desktop, camera preview, audio listening, and duplex voice chat – all running smoothly on Windows, Linux, and macOS.
 
 > Intended for authorized remote assistance, lab administration, and
 > development/testing environments. Current transport is not end-to-end
