@@ -16,3 +16,9 @@ version = "0.7.0"
 authors = ["marlkiller <marlkiller369@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/marlkiller/rust-desk-light"
+
+[profile.release]
+opt-level = "z"
+strip = "symbols"
+lto = true
+codegen-units = 1
