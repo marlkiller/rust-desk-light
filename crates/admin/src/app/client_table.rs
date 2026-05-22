@@ -198,6 +198,7 @@ impl AdminApp {
                                     command_menu::render_context_menu(
                                         ui,
                                         &client.id,
+                                        &client.os,
                                         client.gui_available,
                                         &mut |client_id, command| {
                                             queued_command = Some((client_id.to_string(), command));

@@ -8,13 +8,14 @@ const SUBMENU_MIN_WIDTH: f32 = 240.0;
 pub fn render_context_menu(
     ui: &mut egui::Ui,
     client_id: &str,
+    client_os: &str,
     gui_available: bool,
     send_command: &mut impl FnMut(&str, CommandKind),
     edit_alias: &mut impl FnMut(&str),
 ) {
     prepare_menu_ui(ui, CONTEXT_MENU_MIN_WIDTH);
     render_session(ui, client_id, send_command, edit_alias);
-    render_remote_management(ui, client_id, send_command);
+    render_remote_management(ui, client_id, client_os, send_command);
     render_live_control(ui, client_id, send_command);
     render_user_interaction(ui, client_id, gui_available, send_command);
     render_system_info(ui, client_id, send_command);
@@ -174,6 +175,7 @@ fn render_identity_session(
 fn render_remote_management(
     ui: &mut egui::Ui,
     client_id: &str,
+    client_os: &str,
     send_command: &mut impl FnMut(&str, CommandKind),
 ) {
     ui.menu_button(menu_title("🛠", "Remote Management"), |ui| {
@@ -214,11 +216,13 @@ fn render_remote_management(
             CommandKind::StartupManager,
             send_command,
         );
-        menu_command(
+        menu_command_enabled(
             ui,
             client_id,
             "Registry Manager",
             CommandKind::RegistryManager,
+            client_os_is_windows(client_os),
+            "Disabled: Registry Manager is only available on Windows clients",
             send_command,
         );
         menu_command(
@@ -259,6 +263,10 @@ fn render_remote_management(
             send_command,
         );
     });
+}
+
+fn client_os_is_windows(client_os: &str) -> bool {
+    client_os.to_ascii_lowercase().contains("windows")
 }
 
 fn render_live_control(

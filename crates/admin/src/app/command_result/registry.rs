@@ -60,6 +60,7 @@ pub(super) fn render_result(
     table_filter: &Arc<Mutex<String>>,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
 ) {
     let filter = table_filter
         .lock()
@@ -90,12 +91,14 @@ pub(super) fn render_result(
         &selected_state,
         table_selected_row,
         registry_key_requested,
+        registry_expanded_keys,
     );
 }
 
 struct RegistryGroup {
     hive: String,
     path: String,
+    can_expand: bool,
     rows: Vec<DisplayTableRow>,
 }
 
@@ -119,8 +122,10 @@ fn render_registry_browser(
     selected_state: &Option<String>,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
 ) {
     let tree_width = (ui.available_width() * 0.34).clamp(260.0, 360.0);
+    let tree_scroll_height = (ui.clip_rect().height() - 96.0).clamp(180.0, 420.0);
     ui.horizontal_top(|ui| {
         render_registry_tree_panel(
             ui,
@@ -128,7 +133,9 @@ fn render_registry_browser(
             selected_group_index,
             table_selected_row,
             registry_key_requested,
+            registry_expanded_keys,
             tree_width,
+            tree_scroll_height,
         );
         ui.add_space(8.0);
         if let Some(group) = groups.get(selected_group_index) {
@@ -143,7 +150,9 @@ fn render_registry_tree_panel(
     selected_group_index: usize,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
     width: f32,
+    scroll_height: f32,
 ) {
     egui::Frame::default()
         .fill(crate::theme::palette().panel_subtle)
@@ -153,33 +162,30 @@ fn render_registry_tree_panel(
         .show(ui, |ui| {
             ui.set_min_width(width);
             ui.set_max_width(width);
+            ui.spacing_mut().item_spacing.y = 1.0;
             ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(t("Registry"))
-                        .size(12.0)
-                        .color(crate::theme::palette().text)
-                        .strong(),
-                );
-                ui.add_space(6.0);
-                egui::CollapsingHeader::new(
-                    egui::RichText::new(t("Computer"))
-                        .size(12.0)
-                        .color(crate::theme::palette().text),
-                )
-                .id_salt("registry_tree_computer")
-                .default_open(true)
-                .show(ui, |ui| {
-                    for root in registry_tree(groups) {
-                        render_registry_tree_root(
-                            ui,
-                            groups,
-                            &root,
-                            selected_group_index,
-                            table_selected_row,
-                            registry_key_requested,
-                        );
-                    }
-                });
+                ui.label(registry_tree_label(t("Registry"), true));
+                ui.add_space(3.0);
+                egui::ScrollArea::both()
+                    .id_salt("registry_tree_scroll")
+                    .max_height(scroll_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.set_min_width((width - 24.0).max(180.0));
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(registry_tree_label(t("Computer"), false));
+                        for root in registry_tree(groups) {
+                            render_registry_tree_root(
+                                ui,
+                                groups,
+                                &root,
+                                selected_group_index,
+                                table_selected_row,
+                                registry_key_requested,
+                                registry_expanded_keys,
+                            );
+                        }
+                    });
             });
         });
 }
@@ -191,15 +197,28 @@ fn render_registry_tree_root(
     selected_group_index: usize,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
 ) {
-    let response = egui::CollapsingHeader::new(
-        egui::RichText::new(registry_display_hive(&root.hive))
-            .size(12.0)
-            .color(crate::theme::palette().text),
-    )
-    .id_salt(("registry_tree_root", &root.hive))
-    .default_open(true)
-    .show(ui, |ui| {
+    let path = registry_display_hive(&root.hive);
+    let root_open = registry_path_expanded(registry_expanded_keys, &path);
+    let can_expand = registry_tree_root_can_expand(groups, root);
+    let selected = root
+        .group_index
+        .map(|index| index == selected_group_index)
+        .unwrap_or(false);
+    render_registry_tree_row(
+        ui,
+        registry_expanded_keys,
+        table_selected_row,
+        registry_key_requested,
+        &path,
+        &root.hive,
+        selected,
+        can_expand,
+        0,
+    );
+
+    if root_open {
         for node in &root.children {
             render_registry_tree_node(
                 ui,
@@ -208,23 +227,12 @@ fn render_registry_tree_root(
                 selected_group_index,
                 table_selected_row,
                 registry_key_requested,
+                registry_expanded_keys,
                 &root.hive,
+                1,
             );
         }
-    });
-    if response.header_response.clicked() {
-        if let Some(group_index) = root.group_index.and_then(|index| groups.get(index)) {
-            queue_registry_key_request(table_selected_row, registry_key_requested, group_index);
-        } else {
-            queue_registry_path_request(registry_key_requested, &root.hive, "-");
-        }
     }
-    response.header_response.context_menu(|ui| {
-        if ui.button(t("Copy Path")).clicked() {
-            ui.ctx().copy_text(registry_display_hive(&root.hive));
-            ui.close();
-        }
-    });
 }
 
 fn render_registry_tree_node(
@@ -234,7 +242,9 @@ fn render_registry_tree_node(
     selected_group_index: usize,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
     id_prefix: &str,
+    depth: usize,
 ) {
     if node.children.is_empty() {
         if let Some(group_index) = node.group_index {
@@ -245,20 +255,33 @@ fn render_registry_tree_node(
                 selected_group_index,
                 table_selected_row,
                 registry_key_requested,
+                registry_expanded_keys,
+                depth,
             );
         }
         return;
     }
 
     let id = format!("{id_prefix}\\{}", node.name);
-    let response = egui::CollapsingHeader::new(
-        egui::RichText::new(&node.name)
-            .size(12.0)
-            .color(crate::theme::palette().text),
-    )
-    .id_salt(("registry_tree_node", id.clone()))
-    .default_open(true)
-    .show(ui, |ui| {
+    let node_open = registry_path_expanded(registry_expanded_keys, &id);
+    let can_expand = registry_tree_node_can_expand(groups, node);
+    let selected = node
+        .group_index
+        .map(|index| index == selected_group_index)
+        .unwrap_or(false);
+    render_registry_tree_row(
+        ui,
+        registry_expanded_keys,
+        table_selected_row,
+        registry_key_requested,
+        &id,
+        &node.name,
+        selected,
+        can_expand,
+        depth,
+    );
+
+    if node_open {
         for child in &node.children {
             render_registry_tree_node(
                 ui,
@@ -267,22 +290,132 @@ fn render_registry_tree_node(
                 selected_group_index,
                 table_selected_row,
                 registry_key_requested,
+                registry_expanded_keys,
                 &id,
+                depth + 1,
             );
         }
-    });
-    if response.header_response.clicked() {
-        if let Some(group_index) = node.group_index.and_then(|index| groups.get(index)) {
-            queue_registry_key_request(table_selected_row, registry_key_requested, group_index);
-        }
     }
-    response.header_response.context_menu(|ui| {
-        if ui.button(t("Copy Path")).clicked() {
-            ui.ctx()
-                .copy_text(registry_display_path(id_prefix, &node.name));
-            ui.close();
+}
+
+fn registry_tree_label(label: impl Into<String>, strong: bool) -> egui::RichText {
+    let text = egui::RichText::new(label)
+        .size(11.0)
+        .color(crate::theme::palette().text);
+    if strong {
+        text.strong()
+    } else {
+        text
+    }
+}
+
+fn render_registry_tree_row(
+    ui: &mut egui::Ui,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
+    table_selected_row: &Arc<Mutex<Option<String>>>,
+    registry_key_requested: &Arc<Mutex<Option<String>>>,
+    display_path: &str,
+    label: &str,
+    selected: bool,
+    can_expand: bool,
+    depth: usize,
+) {
+    let expanded = registry_path_expanded(registry_expanded_keys, display_path);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if depth > 0 {
+            ui.add_space(depth as f32 * 14.0);
         }
+        let toggle_text = if !can_expand {
+            "   "
+        } else if expanded {
+            "[-]"
+        } else {
+            "[+]"
+        };
+        let toggle = egui::Label::new(
+            egui::RichText::new(toggle_text)
+                .size(11.0)
+                .monospace()
+                .color(crate::theme::palette().muted),
+        )
+        .sense(if toggle_text.trim().is_empty() {
+            egui::Sense::hover()
+        } else {
+            egui::Sense::click()
+        });
+        let toggle_response = ui.add_sized([24.0, 15.0], toggle);
+        if toggle_response.hovered() && !toggle_text.trim().is_empty() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if toggle_response.clicked() && can_expand {
+            if expanded {
+                collapse_registry_path(registry_expanded_keys, display_path);
+            } else {
+                expand_registry_path(registry_expanded_keys, display_path);
+                queue_registry_display_path_select_and_request(
+                    table_selected_row,
+                    registry_key_requested,
+                    display_path,
+                );
+            }
+        }
+
+        let palette = crate::theme::palette();
+        let text = egui::RichText::new(label).size(11.0).color(if selected {
+            palette.accent
+        } else {
+            palette.text
+        });
+        let text = if selected { text.strong() } else { text };
+        let response = ui.add(
+            egui::Label::new(text)
+                .sense(egui::Sense::click())
+                .wrap_mode(egui::TextWrapMode::Extend),
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            queue_registry_display_path_select_and_request(
+                table_selected_row,
+                registry_key_requested,
+                display_path,
+            );
+        }
+        response.on_hover_text(display_path).context_menu(|ui| {
+            if ui.button(t("Copy Path")).clicked() {
+                ui.ctx().copy_text(display_path.to_string());
+                ui.close();
+            }
+        });
     });
+}
+
+fn registry_path_expanded(
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
+    display_path: &str,
+) -> bool {
+    registry_expanded_keys
+        .lock()
+        .map(|keys| keys.contains(display_path))
+        .unwrap_or(false)
+}
+
+fn expand_registry_path(registry_expanded_keys: &Arc<Mutex<HashSet<String>>>, display_path: &str) {
+    if let Ok(mut keys) = registry_expanded_keys.lock() {
+        keys.insert(display_path.to_string());
+    }
+}
+
+fn collapse_registry_path(
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
+    display_path: &str,
+) {
+    if let Ok(mut keys) = registry_expanded_keys.lock() {
+        let descendant_prefix = format!("{display_path}\\");
+        keys.retain(|key| key != display_path && !key.starts_with(&descendant_prefix));
+    }
 }
 
 fn render_registry_tree_leaf(
@@ -292,6 +425,8 @@ fn render_registry_tree_leaf(
     selected_group_index: usize,
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
+    registry_expanded_keys: &Arc<Mutex<HashSet<String>>>,
+    depth: usize,
 ) {
     let Some(group) = groups.get(group_index) else {
         return;
@@ -299,23 +434,17 @@ fn render_registry_tree_leaf(
     let label = registry_path_leaf(&group.path)
         .map(str::to_string)
         .unwrap_or_else(|| registry_display_hive(&group.hive));
-    let response = ui.selectable_label(
+    render_registry_tree_row(
+        ui,
+        registry_expanded_keys,
+        table_selected_row,
+        registry_key_requested,
+        &registry_group_display_path(group),
+        &label,
         selected_group_index == group_index,
-        egui::RichText::new(&label)
-            .size(12.0)
-            .color(crate::theme::palette().text),
+        group.can_expand,
+        depth,
     );
-    let response = response.on_hover_text(registry_display_path(&group.hive, &group.path));
-    if response.clicked() {
-        queue_registry_key_request(table_selected_row, registry_key_requested, group);
-    }
-    response.context_menu(|ui| {
-        if ui.button(t("Copy Path")).clicked() {
-            ui.ctx()
-                .copy_text(registry_display_path(&group.hive, &group.path));
-            ui.close();
-        }
-    });
 }
 
 fn render_registry_values_panel(
@@ -471,16 +600,20 @@ fn registry_groups(table: &ResultTable, filter: &str) -> Vec<RegistryGroup> {
         let path = table_value(&table.headers, &row.cells, "path")
             .unwrap_or("-")
             .to_string();
+        let can_expand = registry_canonical_hive(&hive).is_some()
+            && registry_row_is_key(&table.headers, &row.cells);
 
         if let Some(group) = groups
             .iter_mut()
             .find(|group| group.hive == hive && group.path == path)
         {
+            group.can_expand |= can_expand;
             group.rows.push(row);
         } else {
             groups.push(RegistryGroup {
                 hive,
                 path,
+                can_expand,
                 rows: vec![row],
             });
         }
@@ -511,6 +644,24 @@ fn registry_tree(groups: &[RegistryGroup]) -> Vec<RegistryTreeRoot> {
         }
     }
     roots
+}
+
+fn registry_tree_root_can_expand(groups: &[RegistryGroup], root: &RegistryTreeRoot) -> bool {
+    !root.children.is_empty()
+        || root
+            .group_index
+            .and_then(|index| groups.get(index))
+            .map(|group| group.can_expand)
+            .unwrap_or(false)
+}
+
+fn registry_tree_node_can_expand(groups: &[RegistryGroup], node: &RegistryTreeNode) -> bool {
+    !node.children.is_empty()
+        || node
+            .group_index
+            .and_then(|index| groups.get(index))
+            .map(|group| group.can_expand)
+            .unwrap_or(false)
 }
 
 fn insert_registry_tree_node(
@@ -554,6 +705,15 @@ fn registry_group_key(group: &RegistryGroup) -> String {
     format!("registry_group\t{}\t{}", group.hive, group.path)
 }
 
+fn registry_group_key_from_display_path(display_path: &str) -> Option<String> {
+    let (hive, path) = registry_display_path_parts(display_path)?;
+    Some(format!("registry_group\t{hive}\t{path}"))
+}
+
+fn registry_group_display_path(group: &RegistryGroup) -> String {
+    registry_display_path(&group.hive, &group.path)
+}
+
 fn registry_display_path(hive: &str, path: &str) -> String {
     let hive = registry_display_hive(hive);
     let path = path.trim();
@@ -568,6 +728,16 @@ fn registry_display_hive(hive: &str) -> String {
     registry_canonical_hive(hive).unwrap_or(hive).to_string()
 }
 
+fn registry_display_path_parts(display_path: &str) -> Option<(&'static str, String)> {
+    let (hive, path) = match display_path.split_once('\\') {
+        Some((hive, path)) => (hive, path.trim()),
+        None => (display_path, "-"),
+    };
+    let hive = registry_canonical_hive(hive)?;
+    let path = if path.is_empty() { "-" } else { path };
+    Some((hive, path.to_string()))
+}
+
 fn registry_canonical_hive(hive: &str) -> Option<&'static str> {
     match hive.trim().to_ascii_uppercase().as_str() {
         "HKCR" | "HKEY_CLASSES_ROOT" => Some("HKEY_CLASSES_ROOT"),
@@ -579,15 +749,27 @@ fn registry_canonical_hive(hive: &str) -> Option<&'static str> {
     }
 }
 
-fn queue_registry_key_request(
+fn queue_registry_display_path_select_and_request(
     table_selected_row: &Arc<Mutex<Option<String>>>,
     registry_key_requested: &Arc<Mutex<Option<String>>>,
-    group: &RegistryGroup,
+    display_path: &str,
 ) {
-    if let Ok(mut selected) = table_selected_row.lock() {
-        *selected = Some(registry_group_key(group));
+    if let Some(group_key) = registry_group_key_from_display_path(display_path) {
+        if let Ok(mut selected) = table_selected_row.lock() {
+            *selected = Some(group_key);
+        }
     }
-    queue_registry_path_request(registry_key_requested, &group.hive, &group.path);
+    queue_registry_display_path_request(registry_key_requested, display_path);
+}
+
+fn queue_registry_display_path_request(
+    registry_key_requested: &Arc<Mutex<Option<String>>>,
+    display_path: &str,
+) {
+    let Some((hive, path)) = registry_display_path_parts(display_path) else {
+        return;
+    };
+    queue_registry_path_request(registry_key_requested, hive, &path);
 }
 
 fn queue_registry_path_request(

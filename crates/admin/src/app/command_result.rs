@@ -11,6 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use eframe::egui;
 use egui_extras::Column;
 use rdl_protocol::CommandKind;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -37,6 +38,7 @@ pub(super) struct CommandResultWindow {
     pub(super) command: CommandKind,
     pub(super) status: CommandResultStatus,
     pub(super) detail: String,
+    pub(super) status_notice: Option<String>,
     pub(super) open: bool,
     pub(super) close_requested: Arc<AtomicBool>,
     pub(super) refresh_requested: Arc<AtomicBool>,
@@ -47,6 +49,7 @@ pub(super) struct CommandResultWindow {
     pub(super) startup_delete_confirm: Arc<Mutex<Option<StartupDeleteConfirm>>>,
     pub(super) startup_action_requested: Arc<Mutex<Option<String>>>,
     pub(super) registry_key_requested: Arc<Mutex<Option<String>>>,
+    pub(super) registry_expanded_keys: Arc<Mutex<HashSet<String>>>,
     pub(super) startup_add_form: Arc<Mutex<StartupAddForm>>,
     pub(super) table_filter: Arc<Mutex<String>>,
     pub(super) table_sort: Arc<Mutex<Option<TableSort>>>,
@@ -99,6 +102,37 @@ pub(super) fn update_command_window(
     } else {
         CommandResultStatus::Failed
     };
+    if matches!(window.command, CommandKind::StartupManager) {
+        if let Some(message) = startup_action_error_message(&detail) {
+            window.status = CommandResultStatus::Failed;
+            window.status_notice = Some(format!("{}: {message}", t("Startup action failed")));
+            if parse_result_table(&window.detail).is_some() {
+                window.hostname = hostname;
+                window.username = username;
+                window.open = true;
+                return;
+            }
+        } else {
+            window.status_notice = None;
+        }
+    } else if matches!(window.command, CommandKind::RegistryManager) {
+        if let Some(message) =
+            registry_action_error_message(&detail).or_else(|| plain_action_error_message(&detail))
+        {
+            window.status = CommandResultStatus::Failed;
+            window.status_notice = Some(format!("{}: {message}", t("Registry action failed")));
+            if parse_result_table(&window.detail).is_some() {
+                window.hostname = hostname;
+                window.username = username;
+                window.open = true;
+                return;
+            }
+        } else {
+            window.status_notice = None;
+        }
+    } else {
+        window.status_notice = None;
+    }
     window.detail = if accepted && window.command == CommandKind::RegistryManager {
         registry::merge_details(&window.detail, &detail).unwrap_or(detail)
     } else {
@@ -126,6 +160,7 @@ pub(super) fn refresh_command_window(
         && !window.detail.trim().is_empty()
         && !performance_monitor_pending_detail(&window.detail);
     window.status = CommandResultStatus::Pending;
+    window.status_notice = None;
     if !keep_existing_performance_detail {
         window.detail = detail.to_string();
     }
@@ -214,6 +249,59 @@ pub(super) fn command_status_notice(
     None
 }
 
+fn startup_action_error_message(detail: &str) -> Option<String> {
+    let table = parse_result_table(detail)?;
+    for row in table.rows {
+        let status = table_value(&table.headers, &row, "status").unwrap_or_default();
+        let name = table_value(&table.headers, &row, "name").unwrap_or_default();
+        if status.eq_ignore_ascii_case("error") && name == "Startup action failed" {
+            let message = table_value(&table.headers, &row, "command")
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "-")
+                .unwrap_or("Command failed");
+            return Some(message.to_string());
+        }
+    }
+    None
+}
+
+fn registry_action_error_message(detail: &str) -> Option<String> {
+    let table = parse_result_table(detail)?;
+    for row in table.rows {
+        let name = table_value(&table.headers, &row, "name").unwrap_or_default();
+        let type_name = table_value(&table.headers, &row, "type").unwrap_or_default();
+        if name.eq_ignore_ascii_case("error") || type_name.eq_ignore_ascii_case("error") {
+            let message = table_value(&table.headers, &row, "value")
+                .or_else(|| table_value(&table.headers, &row, "message"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "-")
+                .unwrap_or("Command failed");
+            return Some(message.to_string());
+        }
+    }
+    None
+}
+
+fn plain_action_error_message(detail: &str) -> Option<String> {
+    if parse_result_table(detail).is_some() {
+        return None;
+    }
+    let text = detail.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    if lower.contains(" failed:")
+        || lower.contains(" exited with error")
+        || lower.contains(" timed out")
+        || lower.contains(" refused")
+        || lower.contains(" requires ")
+    {
+        return Some(text.replace(['\t', '\r', '\n'], " "));
+    }
+    None
+}
+
 fn command_expects_result_table(command: &CommandKind) -> bool {
     matches!(
         command,
@@ -282,6 +370,7 @@ pub(super) struct CommandResultRenderState<'a> {
     pub(super) startup_delete_confirm: &'a Arc<Mutex<Option<StartupDeleteConfirm>>>,
     pub(super) startup_action_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) registry_key_requested: &'a Arc<Mutex<Option<String>>>,
+    pub(super) registry_expanded_keys: &'a Arc<Mutex<HashSet<String>>>,
     pub(super) startup_add_form: &'a Arc<Mutex<StartupAddForm>>,
 }
 
@@ -330,6 +419,7 @@ pub(super) fn render_command_result(
                     state.table_filter,
                     state.table_selected_row,
                     state.registry_key_requested,
+                    state.registry_expanded_keys,
                 );
                 return;
             }
@@ -967,6 +1057,10 @@ struct DisplayTableRow {
     cells: Vec<String>,
 }
 
+pub(super) fn detail_has_result_table(detail: &str) -> bool {
+    parse_result_table(detail).is_some()
+}
+
 fn parse_result_table(detail: &str) -> Option<ResultTable> {
     let normalized = detail.replace("`t", "\t");
     let body = normalized
@@ -1401,25 +1495,26 @@ fn startup_client_autostart_style(
 }
 
 fn startup_client_autostart_status(table: &ResultTable) -> StartupClientAutostartStatus {
+    let mut saw_enabled = false;
     let mut saw_disabled = false;
+    let mut saw_unknown = false;
     for row in &table.rows {
         if !startup_row_is_client_autostart(&table.headers, row) {
             continue;
         }
         match startup_row_status(&table.headers, row) {
-            Some(StartupClientAutostartStatus::Enabled) => {
-                return StartupClientAutostartStatus::Enabled;
-            }
+            Some(StartupClientAutostartStatus::Enabled) => saw_enabled = true,
             Some(StartupClientAutostartStatus::Disabled) => saw_disabled = true,
+            Some(StartupClientAutostartStatus::Unknown) => saw_unknown = true,
             _ => {}
         }
     }
 
-    if saw_disabled {
+    if saw_enabled {
+        StartupClientAutostartStatus::Enabled
+    } else if saw_disabled {
         StartupClientAutostartStatus::Disabled
-    } else if table.rows.iter().any(|row| {
-        startup_row_status(&table.headers, row) == Some(StartupClientAutostartStatus::Unknown)
-    }) {
+    } else if saw_unknown {
         StartupClientAutostartStatus::Unknown
     } else {
         StartupClientAutostartStatus::Disabled
@@ -1449,7 +1544,9 @@ fn startup_row_status(headers: &[String], row: &[String]) -> Option<StartupClien
         "enabled" | "registry" | "file" | "present" | "desktopentry" => {
             Some(StartupClientAutostartStatus::Enabled)
         }
-        "disabled" => Some(StartupClientAutostartStatus::Disabled),
+        "disabled" | "mismatch" | "outdated" | "stale" => {
+            Some(StartupClientAutostartStatus::Disabled)
+        }
         "error" => Some(StartupClientAutostartStatus::Unknown),
         _ => None,
     }
@@ -1502,9 +1599,8 @@ fn startup_row_action(
 
     let (action, label) = match status_key.as_str() {
         "disabled" => ("enable", "Enable Startup Item"),
-        "enabled" | "registry" | "file" | "present" | "desktopentry" => {
-            ("disable", "Disable Startup Item")
-        }
+        "enabled" | "registry" | "file" | "present" | "desktopentry" | "mismatch" | "outdated"
+        | "stale" => ("disable", "Disable Startup Item"),
         _ => return None,
     };
 
@@ -1539,9 +1635,10 @@ fn startup_row_delete_payload(
 
     let source = table_value(headers, row, "source")?;
     let name = table_value(headers, row, "name")?;
+    let is_client_autostart = startup_row_is_client_autostart(headers, row);
     if !startup_cell_is_actionable(source)
         || !startup_cell_is_actionable(name)
-        || !startup_row_is_deleteable(source, name)
+        || !startup_row_is_deleteable(source, name, is_client_autostart)
     {
         return None;
     }
@@ -1565,11 +1662,11 @@ fn startup_delete_confirm(payload: String) -> StartupDeleteConfirm {
     }
 }
 
-fn startup_row_is_deleteable(source: &str, name: &str) -> bool {
+fn startup_row_is_deleteable(source: &str, name: &str, is_client_autostart: bool) -> bool {
     let source = source.trim();
     let name = name.trim();
     if matches!(source, "systemd" | "systemd-user") {
-        return false;
+        return is_client_autostart && name == "rust-desk-light-client.service";
     }
     !source.is_empty() && source != "-" && !name.is_empty() && name != "-"
 }

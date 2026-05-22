@@ -35,12 +35,12 @@ use self::{
         client_status_display, client_status_text, ClientOnlineToast, ClientRow, ClientStatus,
     },
     command_result::{
-        command_status_notice, command_title, command_window_identity_title, detail_status,
-        kill_target_process_succeeded, performance_auto_refresh_due,
-        quiet_user_interaction_command, refresh_command_window, render_command_result,
-        render_command_window_status_bar, session_command_requires_confirmation,
-        update_command_window, CommandResultRenderState, CommandResultStatus, CommandResultWindow,
-        StartupAddForm,
+        command_status_notice, command_title, command_window_identity_title,
+        detail_has_result_table, detail_status, kill_target_process_succeeded,
+        performance_auto_refresh_due, quiet_user_interaction_command, refresh_command_window,
+        render_command_result, render_command_window_status_bar,
+        session_command_requires_confirmation, update_command_window, CommandResultRenderState,
+        CommandResultStatus, CommandResultWindow, StartupAddForm,
     },
     event::{AdminEvent, AdminEventSink, AdminInput, ReconnectEndpoint},
     file_transfer::{
@@ -1223,6 +1223,7 @@ impl AdminApp {
             command,
             status: CommandResultStatus::Pending,
             detail: t("Waiting for client result...").to_string(),
+            status_notice: None,
             open: true,
             close_requested: Arc::new(AtomicBool::new(false)),
             refresh_requested: Arc::new(AtomicBool::new(false)),
@@ -1233,6 +1234,7 @@ impl AdminApp {
             startup_delete_confirm: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
             registry_key_requested: Arc::new(Mutex::new(None)),
+            registry_expanded_keys: Arc::new(Mutex::new(HashSet::new())),
             startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
             table_filter: Arc::new(Mutex::new(String::new())),
             table_sort: Arc::new(Mutex::new(None)),
@@ -1449,6 +1451,7 @@ impl AdminApp {
                 window.detail = detail;
                 window.hostname = hostname;
                 window.username = username;
+                window.status_notice = None;
                 window.open = false;
                 window.auto_refresh_enabled.store(false, Ordering::Relaxed);
                 window.last_auto_refresh_at = None;
@@ -1469,11 +1472,23 @@ impl AdminApp {
         }
 
         if command == CommandKind::KillTargetProcess {
+            let succeeded = accepted && kill_target_process_succeeded(&detail);
+            if let Some(window) = self.command_windows.iter_mut().rev().find(|window| {
+                window.client_id == client_id && window.command == CommandKind::ProcessManager
+            }) {
+                window.status = if succeeded {
+                    CommandResultStatus::Accepted
+                } else {
+                    CommandResultStatus::Failed
+                };
+                window.status_notice = Some(kill_target_process_notice(succeeded, &detail));
+                window.open = true;
+            }
             self.push_log(format!(
                 "kill target process result client={} accepted={} detail={}",
                 client_id, accepted, detail
             ));
-            if accepted && kill_target_process_succeeded(&detail) {
+            if succeeded {
                 self.refresh_process_window(&client_id);
                 self.refresh_window_manager_window(&client_id);
             }
@@ -1492,6 +1507,7 @@ impl AdminApp {
                 CommandResultStatus::Failed
             },
             detail,
+            status_notice: None,
             open: true,
             close_requested: Arc::new(AtomicBool::new(false)),
             refresh_requested: Arc::new(AtomicBool::new(false)),
@@ -1502,6 +1518,7 @@ impl AdminApp {
             startup_delete_confirm: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
             registry_key_requested: Arc::new(Mutex::new(None)),
+            registry_expanded_keys: Arc::new(Mutex::new(HashSet::new())),
             startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
             table_filter: Arc::new(Mutex::new(String::new())),
             table_sort: Arc::new(Mutex::new(None)),
@@ -1694,7 +1711,10 @@ impl AdminApp {
             payload: String::new(),
         });
         window.status = CommandResultStatus::Pending;
-        window.detail = pending_detail.to_string();
+        window.status_notice = Some(pending_detail.to_string());
+        if !detail_has_result_table(&window.detail) {
+            window.detail = pending_detail.to_string();
+        }
         window.open = true;
         self.push_log(format!(
             "refresh command={} to {client_id}",
@@ -1828,7 +1848,7 @@ impl AdminApp {
                         payload,
                     });
                     window.status = CommandResultStatus::Pending;
-                    window.detail = t("Waiting for client result...").to_string();
+                    window.status_notice = Some(t("Waiting for client result...").to_string());
                     window.open = true;
                     pending_logs.push(format!(
                         "startup manager {} on {}",
@@ -1849,6 +1869,7 @@ impl AdminApp {
                         payload,
                     });
                     window.status = CommandResultStatus::Pending;
+                    window.status_notice = Some(t("Waiting for client result...").to_string());
                     window.open = true;
                     pending_logs.push(format!("registry key request on {}", window.client_id));
                 }
@@ -1864,6 +1885,9 @@ impl AdminApp {
                     command: CommandKind::KillTargetProcess,
                     payload: process_id.clone(),
                 });
+                window.status = CommandResultStatus::Pending;
+                window.status_notice = Some(t("Waiting for client result...").to_string());
+                window.open = true;
                 pending_logs.push(format!(
                     "kill target process pid={} on {}",
                     process_id, window.client_id
@@ -1889,6 +1913,7 @@ impl AdminApp {
             let command = window.command.clone();
             let status = window.status;
             let detail = window.detail.clone();
+            let explicit_status_notice = window.status_notice.clone();
             let close_requested = window.close_requested.clone();
             let refresh_requested = window.refresh_requested.clone();
             let auto_refresh_enabled = window.auto_refresh_enabled.clone();
@@ -1897,11 +1922,13 @@ impl AdminApp {
             let startup_delete_confirm = window.startup_delete_confirm.clone();
             let startup_action_requested = window.startup_action_requested.clone();
             let registry_key_requested = window.registry_key_requested.clone();
+            let registry_expanded_keys = window.registry_expanded_keys.clone();
             let startup_add_form = window.startup_add_form.clone();
             let table_filter = window.table_filter.clone();
             let table_sort = window.table_sort.clone();
             let table_selected_row = window.table_selected_row.clone();
-            let status_notice = command_status_notice(&command, status, &detail);
+            let status_notice =
+                explicit_status_notice.or_else(|| command_status_notice(&command, status, &detail));
 
             ctx.show_viewport_immediate(viewport_id, builder, move |ui, _class| {
                 if ui.ctx().input(|input| input.viewport().close_requested()) {
@@ -1938,6 +1965,7 @@ impl AdminApp {
                                             startup_delete_confirm: &startup_delete_confirm,
                                             startup_action_requested: &startup_action_requested,
                                             registry_key_requested: &registry_key_requested,
+                                            registry_expanded_keys: &registry_expanded_keys,
                                             startup_add_form: &startup_add_form,
                                         };
                                         render_command_result(
@@ -2538,4 +2566,27 @@ impl eframe::App for AdminApp {
 
 fn command_requires_client_ui(command: &CommandKind) -> bool {
     matches!(command, CommandKind::TextChat | CommandKind::VoiceChat)
+}
+
+fn kill_target_process_notice(succeeded: bool, detail: &str) -> String {
+    let title = if succeeded {
+        t("Kill process completed")
+    } else {
+        t("Kill process failed")
+    };
+    let message = compact_command_detail(detail);
+    if message.is_empty() {
+        title.to_string()
+    } else {
+        format!("{title}: {message}")
+    }
+}
+
+fn compact_command_detail(detail: &str) -> String {
+    detail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.ends_with(':'))
+        .collect::<Vec<_>>()
+        .join(" ")
 }

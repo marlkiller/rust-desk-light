@@ -299,19 +299,111 @@ fi
 }
 
 fn windows_startup_manager() -> String {
-    run_powershell(
-        r#"
+    let current_exe = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let script = r#"
+function Decode($value) {
+  [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($value))
+}
 function Clean($value) {
   if ($null -eq $value) { return "-" }
   $text = [string]$value
   $text = $text -replace "`r|`n|`t", " "
   if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
 }
+$currentExe = Decode "__CURRENT_EXE_B64__"
 Write-Output "Scope`tSource`tName`tCommand`tStatus"
 $count = 0
 function EmitRow($scope, $source, $name, $command, $status) {
   $script:count += 1
   "{0}`t{1}`t{2}`t{3}`t{4}" -f (Clean $scope),(Clean $source),(Clean $name),(Clean $command),(Clean $status)
+}
+function Compact($value) {
+  if ($null -eq $value) { return "" }
+  [regex]::Replace(([string]$value).ToLowerInvariant(), "[^a-z0-9]", "")
+}
+function IsClientAutostart($name) {
+  $id = Compact $name
+  @(
+    "rustdesklightclient",
+    "rustdesklightclientdesktop",
+    "rustdesklightclientdesktopdisabled",
+    "rustdesklightclientservice"
+  ) -contains $id
+}
+function NormalizePath($path) {
+  if ([string]::IsNullOrWhiteSpace($path)) { return "" }
+  $expanded = [Environment]::ExpandEnvironmentVariables([string]$path)
+  try { [System.IO.Path]::GetFullPath($expanded) } catch { $expanded }
+}
+function ExistingPath($path) {
+  $normalized = NormalizePath $path
+  if ([string]::IsNullOrWhiteSpace($normalized)) { return "" }
+  try {
+    (Get-Item -LiteralPath $normalized -ErrorAction Stop).FullName
+  } catch {
+    $normalized
+  }
+}
+function CommandExecutable($command) {
+  if ([string]::IsNullOrWhiteSpace($command)) { return "" }
+  $text = [Environment]::ExpandEnvironmentVariables(([string]$command).Trim())
+  if ($text.StartsWith('"')) {
+    $end = $text.IndexOf('"', 1)
+    if ($end -gt 1) { return $text.Substring(1, $end - 1) }
+  }
+  $parts = $text -split "\s+", 2
+  if ($parts.Length -gt 0) { return $parts[0] }
+  ""
+}
+function ShortcutTarget($path) {
+  if ([string]::IsNullOrWhiteSpace($path) -or !$path.EndsWith(".lnk", [StringComparison]::OrdinalIgnoreCase)) {
+    return $path
+  }
+  try {
+    $shell = New-Object -ComObject WScript.Shell
+    $target = $shell.CreateShortcut($path).TargetPath
+    if (![string]::IsNullOrWhiteSpace($target)) { return $target }
+  } catch {}
+  $path
+}
+function StartupExecutable($source, $name, $command) {
+  if ($source -match "^HK(CU|LM):\\") {
+    $target = CommandExecutable $command
+  } else {
+    $target = $command
+  }
+  ShortcutTarget $target
+}
+function SameFile($left, $right) {
+  $leftPath = ExistingPath $left
+  $rightPath = ExistingPath $right
+  if ([string]::IsNullOrWhiteSpace($leftPath) -or [string]::IsNullOrWhiteSpace($rightPath)) {
+    return $false
+  }
+  if (!(Test-Path -LiteralPath $leftPath -PathType Leaf) -or !(Test-Path -LiteralPath $rightPath -PathType Leaf)) {
+    return $false
+  }
+  if ([string]::Equals($leftPath, $rightPath, [StringComparison]::OrdinalIgnoreCase)) {
+    return $true
+  }
+  try {
+    $leftHash = (Get-FileHash -LiteralPath $leftPath -Algorithm SHA256 -ErrorAction Stop).Hash
+    $rightHash = (Get-FileHash -LiteralPath $rightPath -Algorithm SHA256 -ErrorAction Stop).Hash
+    return (![string]::IsNullOrWhiteSpace($leftHash) -and [string]::Equals($leftHash, $rightHash, [StringComparison]::OrdinalIgnoreCase))
+  } catch {
+    return $false
+  }
+}
+function StartupRowStatus($source, $name, $command, $status) {
+  if ($status -eq "Enabled" -and (IsClientAutostart $name) -and ![string]::IsNullOrWhiteSpace($currentExe)) {
+    $startupExe = StartupExecutable $source $name $command
+    if ([string]::IsNullOrWhiteSpace($startupExe) -or !(SameFile $currentExe $startupExe)) {
+      return "Mismatch"
+    }
+  }
+  $status
 }
 $runKeys = @(
   @{ Scope = "CurrentUser"; Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"; Status = "Enabled" },
@@ -327,7 +419,8 @@ foreach ($entry in $runKeys) {
   if (Test-Path $entry.Path) {
     $props = Get-ItemProperty -Path $entry.Path
     $props.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' } | ForEach-Object {
-      EmitRow $entry.Scope $entry.Path $_.Name $_.Value $entry.Status
+      $status = StartupRowStatus $entry.Path $_.Name $_.Value $entry.Status
+      EmitRow $entry.Scope $entry.Path $_.Name $_.Value $status
     }
   }
 }
@@ -339,16 +432,18 @@ foreach ($folder in $folders) {
   if ($folder.Path -and (Test-Path $folder.Path)) {
     Get-ChildItem -Path $folder.Path -File -ErrorAction SilentlyContinue | ForEach-Object {
       $status = if ($_.Name.EndsWith(".disabled")) { "Disabled" } else { "Enabled" }
-      EmitRow $folder.Scope $folder.Path $_.Name $_.FullName $status
+      $command = ShortcutTarget $_.FullName
+      $status = StartupRowStatus $folder.Path $_.Name $command $status
+      EmitRow $folder.Scope $folder.Path $_.Name $command $status
     }
   }
 }
 if ($count -eq 0) {
   EmitRow "-" "-" "No startup items found" "-" "Info"
 }
-"#,
-        300,
-    )
+"#
+    .replace("__CURRENT_EXE_B64__", &STANDARD.encode(current_exe));
+    run_powershell(&script, 300)
 }
 
 fn windows_add_startup_item(name: &str, command: &str) -> Result<(), String> {
@@ -479,7 +574,10 @@ Write-Output "ok"
 }
 
 fn macos_startup_manager() -> String {
-    run_command(
+    let current_exe = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    run_command_with_env(
         "sh",
         &[
             "-lc",
@@ -489,6 +587,67 @@ count=0
 emit() {
   count=$((count + 1))
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
+}
+real_file() {
+  [ -n "$1" ] || return 0
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$1" 2>/dev/null && return 0
+  fi
+  case "$1" in
+    /*) path="$1" ;;
+    *) path="$(pwd)/$1" ;;
+  esac
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  if [ -d "$dir" ]; then
+    (cd "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") || printf '%s\n' "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+same_file() {
+  left="$(real_file "$1")"
+  right="$(real_file "$2")"
+  [ -n "$left" ] && [ -n "$right" ] || return 1
+  [ -f "$left" ] && [ -f "$right" ] || return 1
+  [ "$left" = "$right" ] || cmp -s "$left" "$right"
+}
+compact_identity() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]'
+}
+is_client_autostart() {
+  case "$(compact_identity "$1")" in
+    rustdesklightclient|rustdesklightclientdesktop|rustdesklightclientdesktopdisabled|rustdesklightclientservice|comrustdesklightclientplist|comrustdesklightclientplistdisabled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+plist_program_file() {
+  file="$1"
+  value=""
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    value="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$file" 2>/dev/null || true)"
+    [ -n "$value" ] || value="$(/usr/libexec/PlistBuddy -c 'Print :Program' "$file" 2>/dev/null || true)"
+  fi
+  if [ -z "$value" ]; then
+    value="$(awk '
+      /<key>Program<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }
+      /<key>ProgramArguments<\/key>/ { in_args=1; next }
+      in_args && /<string>/ { gsub(/.*<string>|<\/string>.*/, ""); print; exit }
+    ' "$file" 2>/dev/null)"
+  fi
+  printf '%s\n' "$value"
+}
+startup_status() {
+  name="$1"
+  command="$2"
+  status="$3"
+  if [ "$status" = "Enabled" ] && [ -n "$RDL_CURRENT_EXE" ] && is_client_autostart "$name"; then
+    if [ -z "$command" ] || ! same_file "$RDL_CURRENT_EXE" "$command"; then
+      printf 'Mismatch'
+      return 0
+    fi
+  fi
+  printf '%s' "$status"
 }
 for dir in "$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons" "/System/Library/LaunchAgents" "/System/Library/LaunchDaemons"; do
   [ -d "$dir" ] || continue
@@ -504,7 +663,10 @@ for dir in "$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/Launch
       *.disabled) status="Disabled" ;;
       *) status="Enabled" ;;
     esac
-    emit "$scope" "$dir" "$name" "$file" "$status"
+    command="$(plist_program_file "$file")"
+    [ -n "$command" ] || command="$file"
+    status="$(startup_status "$name" "$command" "$status")"
+    emit "$scope" "$dir" "$name" "$command" "$status"
   done
 done
 if [ "$count" -eq 0 ]; then
@@ -512,6 +674,7 @@ if [ "$count" -eq 0 ]; then
 fi
 "#,
         ],
+        &[("RDL_CURRENT_EXE", current_exe.as_str())],
         300,
     )
 }
@@ -555,7 +718,10 @@ fn macos_set_startup_item_enabled(source: &str, name: &str, enabled: bool) -> Re
 }
 
 fn linux_startup_manager() -> String {
-    run_command(
+    let current_exe = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    run_command_with_env(
         "sh",
         &[
             "-lc",
@@ -566,15 +732,104 @@ emit() {
   count=$((count + 1))
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
 }
+real_file() {
+  [ -n "$1" ] || return 0
+  readlink -f -- "$1" 2>/dev/null || printf '%s\n' "$1"
+}
+same_file() {
+  left="$(real_file "$1")"
+  right="$(real_file "$2")"
+  [ -n "$left" ] && [ -n "$right" ] || return 1
+  [ -f "$left" ] && [ -f "$right" ] || return 1
+  [ "$left" = "$right" ] || cmp -s "$left" "$right"
+}
+command_file() {
+  value="$1"
+  [ -n "$value" ] || return 0
+  case "$value" in
+    \"*)
+      path="$(printf '%s\n' "$value" | sed -n 's/^"\([^"]*\)".*/\1/p' | head -n 1)"
+      [ -n "$path" ] && printf '%s\n' "$path" && return 0
+      ;;
+  esac
+  set -- $value
+  printf '%s\n' "$1"
+}
+compact_identity() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]'
+}
+is_client_autostart() {
+  case "$(compact_identity "$1")" in
+    rustdesklightclient|rustdesklightclientdesktop|rustdesklightclientdesktopdisabled|rustdesklightclientservice) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+startup_status() {
+  name="$1"
+  command="$2"
+  status="$3"
+  if [ "$status" = "Enabled" ] && [ -n "$RDL_CURRENT_EXE" ] && is_client_autostart "$name"; then
+    startup_file="$(command_file "$command")"
+    if [ -z "$startup_file" ] || ! same_file "$RDL_CURRENT_EXE" "$startup_file"; then
+      printf 'Mismatch'
+      return 0
+    fi
+  fi
+  printf '%s' "$status"
+}
+systemd_show_value() {
+  property="$1"
+  shift
+  systemctl "$@" show rust-desk-light-client.service -p "$property" --value 2>/dev/null | head -n 1
+}
+systemd_exec_file() {
+  value="$1"
+  [ -n "$value" ] || return 0
+  path="$(printf '%s\n' "$value" | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -n 1)"
+  if [ -n "$path" ]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  set -- $value
+  printf '%s\n' "$1"
+}
+systemd_display_command() {
+  value="$1"
+  if [ -z "$value" ]; then
+    printf '-'
+    return 0
+  fi
+  argv="$(printf '%s\n' "$value" | sed -n 's/.*argv\[\]=\(.*\) ;.*/\1/p' | head -n 1)"
+  if [ -n "$argv" ]; then
+    printf '%s' "$argv"
+  else
+    printf '%s' "$value"
+  fi
+}
+systemd_process_file() {
+  pid="$(systemd_show_value MainPID "$@" | tr -dc '0-9')"
+  [ -n "$pid" ] && [ "$pid" != "0" ] || return 0
+  readlink "/proc/$pid/exe" 2>/dev/null || true
+}
 emit_systemd_client_unit() {
   scope="$1"
   source="$2"
   shift 2
   status="$(systemctl "$@" is-enabled rust-desk-light-client.service 2>/dev/null || true)"
+  row_status=""
   case "$status" in
-    enabled|enabled-runtime|linked|linked-runtime) emit "$scope" "$source" "rust-desk-light-client.service" "-" "Enabled" ;;
-    disabled|masked) emit "$scope" "$source" "rust-desk-light-client.service" "-" "Disabled" ;;
+    enabled|enabled-runtime|linked|linked-runtime) row_status="Enabled" ;;
+    disabled|masked) row_status="Disabled" ;;
   esac
+  [ -n "$row_status" ] || return 0
+  exec_value="$(systemd_show_value ExecStart "$@")"
+  command="$(systemd_display_command "$exec_value")"
+  service_file="$(systemd_exec_file "$exec_value")"
+  [ -n "$service_file" ] || service_file="$(systemd_process_file "$@")"
+  if [ "$row_status" = "Enabled" ] && [ -n "$RDL_CURRENT_EXE" ] && { [ -z "$service_file" ] || ! same_file "$RDL_CURRENT_EXE" "$service_file"; }; then
+    row_status="Mismatch"
+  fi
+  emit "$scope" "$source" "rust-desk-light-client.service" "$command" "$row_status"
 }
 for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
   [ -d "$dir" ] || continue
@@ -592,6 +847,7 @@ for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
     case "$name:$hidden:$autostart_enabled" in
       *.disabled:*|*:true:*|*:*:false) status="Disabled" ;;
     esac
+    status="$(startup_status "$name" "$command" "$status")"
     emit "$scope" "$dir" "$name" "${command:-$file}" "$status"
   done
 done
@@ -616,6 +872,7 @@ if [ "$count" -eq 0 ]; then
 fi
 "#,
         ],
+        &[("RDL_CURRENT_EXE", current_exe.as_str())],
         300,
     )
 }
@@ -669,7 +926,7 @@ fn linux_set_startup_item_enabled(source: &str, name: &str, enabled: bool) -> Re
 
 fn linux_delete_startup_item(source: &str, name: &str) -> Result<(), String> {
     match source {
-        "systemd" | "systemd-user" => Err(format!("delete is unsupported for {source} units")),
+        "systemd" | "systemd-user" => linux_delete_systemd_client_unit(source, name),
         _ if name.ends_with(".desktop")
             || name.ends_with(".desktop.disabled")
             || source.ends_with("/autostart") =>
@@ -678,6 +935,58 @@ fn linux_delete_startup_item(source: &str, name: &str) -> Result<(), String> {
         }
         _ => Err(format!("unsupported Linux startup source: {source}")),
     }
+}
+
+fn linux_delete_systemd_client_unit(source: &str, name: &str) -> Result<(), String> {
+    if name != "rust-desk-light-client.service" {
+        return Err(format!("delete is unsupported for {source} unit {name}"));
+    }
+
+    let (service_path, disable_args, reload_args) = match source {
+        "systemd" => (
+            PathBuf::from("/etc/systemd/system").join(name),
+            vec!["disable", name],
+            vec!["daemon-reload"],
+        ),
+        "systemd-user" => (
+            linux_user_systemd_dir()?.join(name),
+            vec!["--user", "disable", name],
+            vec!["--user", "daemon-reload"],
+        ),
+        _ => return Err(format!("unsupported Linux startup source: {source}")),
+    };
+
+    startup_command_result(
+        run_command("systemctl", &disable_args, 40),
+        "disable systemd startup service",
+    )?;
+    if !service_path.exists() {
+        return Err(format!(
+            "systemd startup service not found: {}",
+            service_path.display()
+        ));
+    }
+    fs::remove_file(&service_path).map_err(|error| {
+        format!(
+            "delete systemd startup service {} failed: {error}",
+            service_path.display()
+        )
+    })?;
+    startup_command_result(
+        run_command("systemctl", &reload_args, 40),
+        "reload systemd units",
+    )
+}
+
+fn linux_user_systemd_dir() -> Result<PathBuf, String> {
+    let config_home = match std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.to_string_lossy().is_empty())
+        .map(PathBuf::from)
+    {
+        Some(path) => path,
+        None => home_dir()?.join(".config"),
+    };
+    Ok(config_home.join("systemd").join("user"))
 }
 
 fn windows_driver_manager() -> String {

@@ -270,6 +270,9 @@ fn zh(key: &'static str) -> &'static str {
         "Disable" => "禁用",
         "Disable Startup Item" => "禁用启动项",
         "Disabled: selected client has no client UI" => "已禁用：选中的客户端没有客户端界面",
+        "Disabled: Registry Manager is only available on Windows clients" => {
+            "\u{5df2}\u{7981}\u{7528}\u{ff1a}\u{6ce8}\u{518c}\u{8868}\u{7ba1}\u{7406}\u{4ec5}\u{652f}\u{6301} Windows \u{5ba2}\u{6237}\u{7aef}"
+        }
         "Dismiss" => "关闭",
         "Done" => "完成",
         "Download" => "下载",
@@ -347,6 +350,8 @@ fn zh(key: &'static str) -> &'static str {
         "Jump" => "跳转",
         "Keyboard" => "键盘",
         "Killed by admin" => "管理员已结束",
+        "Kill process completed" => "\u{8fdb}\u{7a0b}\u{5df2}\u{7ed3}\u{675f}",
+        "Kill process failed" => "\u{7ed3}\u{675f}\u{8fdb}\u{7a0b}\u{5931}\u{8d25}",
         "Kill Process" => "结束进程",
         "Kill this process?" => "结束这个进程？",
         "Known" => "已知",
@@ -464,6 +469,7 @@ fn zh(key: &'static str) -> &'static str {
         "Refreshing..." => "正在刷新...",
         "Resolve proxy endpoint failed: {error}" => "解析代理端点失败：{error}",
         "Registry" => "注册表",
+        "Registry action failed" => "\u{6ce8}\u{518c}\u{8868}\u{64cd}\u{4f5c}\u{5931}\u{8d25}",
         "Registry Manager" => "注册表管理",
         "Rejected" => "已拒绝",
         "Reload Devices" => "重新加载设备",
@@ -791,6 +797,7 @@ fn zh(key: &'static str) -> &'static str {
         "Waiting for client config snapshot before changes are enabled." => {
             "等待客户端配置快照返回后才可修改。"
         }
+        "Startup action failed" => "\u{542f}\u{52a8}\u{9879}\u{64cd}\u{4f5c}\u{5931}\u{8d25}",
         _ => key,
     }
 }
