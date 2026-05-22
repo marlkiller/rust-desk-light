@@ -143,7 +143,7 @@ impl AdminApp {
                     .column(egui_extras::Column::initial(86.0).at_least(64.0).clip(true))
                     .header(crate::theme::TABLE_HEADER_HEIGHT, |mut header| {
                         header.col(|ui| table_header(ui, t("Status")));
-                        header.col(|ui| table_header(ui, t("Name")));
+                        header.col(|ui| table_header(ui, t("Alias")));
                         header.col(|ui| table_header(ui, t("IP")));
                         header.col(|ui| table_header(ui, t("Location")));
                         header.col(|ui| table_header(ui, t("Host")));
@@ -264,7 +264,6 @@ impl AdminApp {
     fn client_list_csv(&self, clients: &[ClientRow]) -> String {
         let headers = [
             t("Status"),
-            t("Name"),
             t("Alias"),
             t("Group"),
             t("Client Mode"),
@@ -281,7 +280,6 @@ impl AdminApp {
             let client = &row.info;
             let fields = [
                 client_status_display(row.status).0.to_string(),
-                self.client_display_label(row),
                 self.client_display_label(row),
                 self.client_group(&client.id).to_string(),
                 client_mode_label(client.gui_available).to_string(),
