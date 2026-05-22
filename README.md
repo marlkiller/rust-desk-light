@@ -15,10 +15,10 @@
 
 | Binary | Type | Purpose |
 | --- | --- | --- |
-| `rdl-admin-gui` | GUI | Operator console for online clients, command dispatch, live control, file transfer, and remote terminals. |
-| `rdl-server-cli` | CLI | Relay server for peer registration, session tokens, presence, routing, and UDP audio relay. |
-| `rdl-client-gui` | GUI | Full graphical endpoint client with a status window, live control, media capture, desktop interaction, and terminal fallback. |
-| `rdl-client-cli` | CLI | Command-line endpoint client with most GUI-client capabilities, including live control, media capture, and desktop interaction, but without the local client UI. |
+| `rdl-admin-gui` | GUI | Operator console for clients, commands, live control, files, and terminals. |
+| `rdl-server-cli` | CLI | Relay for registration, sessions, presence, routing, and UDP audio. |
+| `rdl-client-gui` | GUI | Graphical endpoint for status, live control, media capture, desktop access, and terminal fallback. |
+| `rdl-client-cli` | CLI | Command-line endpoint with live control, media capture, and desktop access. |
 
 Linux desktop control targets X11 tools such as `maim`, ImageMagick `import`,
 and `xdotool`. macOS remote control needs Accessibility permission for the app
@@ -29,12 +29,12 @@ permission.
 
 | Area | Features |
 | --- | --- |
-| Device management | Online list, search and filtering, host information, heartbeat reconnects, offline cleanup. |
-| Remote management | File management, directory transfer, remote terminal, process/window/startup/driver management. |
-| System diagnostics | Registry snapshots, event logs, active connections, performance monitoring, computer information. |
-| Live control | Remote desktop, mouse and keyboard input, camera preview, audio listening, two-way voice. |
-| Interaction tools | Message boxes, system notifications, text chat, clipboard read/write, file/code execution, command presets. |
-| Admin utilities | Client Builder for preconfigured endpoints and GeoIP-backed client map. |
+| Device management | Online list, search, host info, reconnects, and cleanup. |
+| Remote management | Files, directories, terminal, processes, windows, startup, and drivers. |
+| System diagnostics | Registry, event logs, connections, performance, and computer info. |
+| Live control | Remote desktop, input, camera, audio, and two-way voice. |
+| Interaction tools | Messages, notifications, chat, clipboard, execution, and presets. |
+| Admin utilities | Client Builder and GeoIP-backed client map. |
 
 ## Screenshots
 
