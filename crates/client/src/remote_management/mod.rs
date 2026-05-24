@@ -579,6 +579,7 @@ fn macos_startup_manager() -> String {
     let current_exe = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_default();
+
     run_command_with_env(
         "sh",
         &[
@@ -590,80 +591,119 @@ emit() {
   count=$((count + 1))
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
 }
-real_file() {
-  [ -n "$1" ] || return 0
-  if command -v realpath >/dev/null 2>&1; then
-    realpath "$1" 2>/dev/null && return 0
-  fi
-  case "$1" in
-    /*) path="$1" ;;
-    *) path="$(pwd)/$1" ;;
-  esac
-  dir="$(dirname "$path")"
-  base="$(basename "$path")"
-  if [ -d "$dir" ]; then
-    (cd "$dir" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$base") || printf '%s\n' "$path"
-  else
-    printf '%s\n' "$path"
-  fi
-}
-same_file() {
-  left="$(real_file "$1")"
-  right="$(real_file "$2")"
-  [ -n "$left" ] && [ -n "$right" ] || return 1
-  [ -f "$left" ] && [ -f "$right" ] || return 1
-  [ "$left" = "$right" ] || cmp -s "$left" "$right"
-}
+
 compact_identity() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]'
 }
+
 is_client_autostart() {
   case "$(compact_identity "$1")" in
-    rustdesklightclient|rustdesklightclientdesktop|rustdesklightclientdesktopdisabled|rustdesklightclientservice|comrustdesklightclientplist|comrustdesklightclientplistdisabled) return 0 ;;
-    *) return 1 ;;
+    rustdesklightclient|\
+    rustdesklightclientdesktop|\
+    rustdesklightclientdesktopdisabled|\
+    rustdesklightclientservice|\
+    comrustdesklightclientplist|\
+    comrustdesklightclientplistdisabled)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
+
+real_file() {
+  [ -n "$1" ] || return 0
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$1" 2>/dev/null || printf '%s\n' "$1"
+    return 0
+  fi
+  case "$1" in
+    /*)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      printf '%s/%s\n' "$(pwd)" "$1"
+      ;;
+  esac
+}
+
+CURRENT_REAL=""
+if [ -n "$RDL_CURRENT_EXE" ]; then
+  CURRENT_REAL="$(real_file "$RDL_CURRENT_EXE")"
+fi
+
 plist_program_file() {
   file="$1"
-  value=""
-  if [ -x /usr/libexec/PlistBuddy ]; then
-    value="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$file" 2>/dev/null || true)"
-    [ -n "$value" ] || value="$(/usr/libexec/PlistBuddy -c 'Print :Program' "$file" 2>/dev/null || true)"
-  fi
-  if [ -z "$value" ]; then
-    value="$(awk '
-      /<key>Program<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }
-      /<key>ProgramArguments<\/key>/ { in_args=1; next }
-      in_args && /<string>/ { gsub(/.*<string>|<\/string>.*/, ""); print; exit }
-    ' "$file" 2>/dev/null)"
-  fi
-  printf '%s\n' "$value"
+  awk '
+    /<key>Program<\/key>/ {
+      getline
+      gsub(/.*<string>|<\/string>.*/, "")
+      print
+      exit
+    }
+    /<key>ProgramArguments<\/key>/ {
+      in_args=1
+      next
+    }
+    in_args && /<string>/ {
+      gsub(/.*<string>|<\/string>.*/, "")
+      print
+      exit
+    }
+  ' "$file" 2>/dev/null
 }
+
 startup_status() {
   name="$1"
   command="$2"
   status="$3"
-  if [ "$status" = "Enabled" ] && [ -n "$RDL_CURRENT_EXE" ] && is_client_autostart "$name"; then
-    if [ -z "$command" ] || ! same_file "$RDL_CURRENT_EXE" "$command"; then
+  if [ "$status" = "Enabled" ] \
+    && [ -n "$CURRENT_REAL" ] \
+    && is_client_autostart "$name"; then
+    startup_real="$(real_file "$command")"
+    if [ -z "$startup_real" ]; then
+      printf 'Mismatch'
+      return 0
+    fi
+    current_hash="$(shasum -a 256 "$CURRENT_REAL" 2>/dev/null | awk '{print $1}')"
+    startup_hash="$(shasum -a 256 "$startup_real" 2>/dev/null | awk '{print $1}')"
+    if [ -z "$current_hash" ] || [ -z "$startup_hash" ] || [ "$current_hash" != "$startup_hash" ]; then
       printf 'Mismatch'
       return 0
     fi
   fi
   printf '%s' "$status"
 }
-for dir in "$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons" "/System/Library/LaunchAgents" "/System/Library/LaunchDaemons"; do
+for dir in \
+  "$HOME/Library/LaunchAgents" \
+  "/Library/LaunchAgents" \
+  "/Library/LaunchDaemons" \
+  "/System/Library/LaunchAgents" \
+  "/System/Library/LaunchDaemons"
+do
   [ -d "$dir" ] || continue
   case "$dir" in
-    "$HOME"/*) scope="CurrentUser" ;;
-    /System/*) scope="System" ;;
-    *) scope="LocalMachine" ;;
+    "$HOME"/*)
+      scope="CurrentUser"
+      ;;
+    /System/*)
+      scope="System"
+      ;;
+    *)
+      scope="LocalMachine"
+      ;;
   esac
   for file in "$dir"/*.plist "$dir"/*.plist.disabled; do
     [ -e "$file" ] || continue
     name="$(basename "$file")"
     case "$name" in
-      *.disabled) status="Disabled" ;;
-      *) status="Enabled" ;;
+      *.disabled)
+        status="Disabled"
+        ;;
+      *)
+        status="Enabled"
+        ;;
     esac
     command="$(plist_program_file "$file")"
     [ -n "$command" ] || command="$file"
@@ -739,11 +779,13 @@ real_file() {
   readlink -f -- "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 same_file() {
-  left="$(real_file "$1")"
-  right="$(real_file "$2")"
+  left="$1"
+  right="$2"
   [ -n "$left" ] && [ -n "$right" ] || return 1
   [ -f "$left" ] && [ -f "$right" ] || return 1
-  [ "$left" = "$right" ] || cmp -s "$left" "$right"
+  left_hash="$(sha256sum "$left" 2>/dev/null | awk '{print $1}')"
+  right_hash="$(sha256sum "$right" 2>/dev/null | awk '{print $1}')"
+  [ -n "$left_hash" ] && [ -n "$right_hash" ] && [ "$left_hash" = "$right_hash" ]
 }
 command_file() {
   value="$1"
