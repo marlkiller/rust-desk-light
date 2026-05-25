@@ -515,8 +515,17 @@ fn client_connection_once(
                 }
                 let worker_tx = out_tx.clone();
                 let worker_token = session_token.clone();
+                let worker_event_sink = event_sink.clone();
                 thread::spawn(move || {
+                    let started = std::time::Instant::now();
                     let reply = commands::handle_command(&command, &payload, gui_mode);
+                    let elapsed_ms = started.elapsed().as_millis();
+                    worker_event_sink.send(ClientEvent::Log(format!(
+                        "<< command={} elapsed={}ms accepted={}",
+                        command.as_str(),
+                        elapsed_ms,
+                        reply.accepted
+                    )));
                     let _ = queue_message(
                         &worker_tx,
                         &worker_token,

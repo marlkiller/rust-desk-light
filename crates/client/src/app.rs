@@ -155,7 +155,7 @@ fn run_terminal(config: Config, print_startup_notice: bool) -> io::Result<()> {
             ClientEvent::Connected => println!("connected"),
             ClientEvent::Disconnected => println!("disconnected"),
             ClientEvent::Command { command, payload } => {
-                println!("command={} payload={payload}", command.as_str());
+                println!(">> command={} payload={payload}", command.as_str());
             }
             ClientEvent::ChatMessage { text } => println!("text_chat={text}"),
             ClientEvent::VoiceChatInvite => println!("voice_chat=incoming"),
@@ -228,7 +228,7 @@ impl ClientApp {
                 }
                 ClientEvent::Command { command, payload } => {
                     self.push_log(format!(
-                        "received command={} payload={payload}",
+                        ">> command={} payload={payload}",
                         command.as_str()
                     ));
                 }
