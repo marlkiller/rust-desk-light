@@ -334,77 +334,7 @@ function IsClientAutostart($name) {
     "rustdesklightclientservice"
   ) -contains $id
 }
-function NormalizePath($path) {
-  if ([string]::IsNullOrWhiteSpace($path)) { return "" }
-  $expanded = [Environment]::ExpandEnvironmentVariables([string]$path)
-  try { [System.IO.Path]::GetFullPath($expanded) } catch { $expanded }
-}
-function ExistingPath($path) {
-  $normalized = NormalizePath $path
-  if ([string]::IsNullOrWhiteSpace($normalized)) { return "" }
-  try {
-    (Get-Item -LiteralPath $normalized -ErrorAction Stop).FullName
-  } catch {
-    $normalized
-  }
-}
-function CommandExecutable($command) {
-  if ([string]::IsNullOrWhiteSpace($command)) { return "" }
-  $text = [Environment]::ExpandEnvironmentVariables(([string]$command).Trim())
-  if ($text.StartsWith('"')) {
-    $end = $text.IndexOf('"', 1)
-    if ($end -gt 1) { return $text.Substring(1, $end - 1) }
-  }
-  $parts = $text -split "\s+", 2
-  if ($parts.Length -gt 0) { return $parts[0] }
-  ""
-}
-function ShortcutTarget($path) {
-  if ([string]::IsNullOrWhiteSpace($path) -or !$path.EndsWith(".lnk", [StringComparison]::OrdinalIgnoreCase)) {
-    return $path
-  }
-  try {
-    $shell = New-Object -ComObject WScript.Shell
-    $target = $shell.CreateShortcut($path).TargetPath
-    if (![string]::IsNullOrWhiteSpace($target)) { return $target }
-  } catch {}
-  $path
-}
-function StartupExecutable($source, $name, $command) {
-  if ($source -match "^HK(CU|LM):\\") {
-    $target = CommandExecutable $command
-  } else {
-    $target = $command
-  }
-  ShortcutTarget $target
-}
-function SameFile($left, $right) {
-  $leftPath = ExistingPath $left
-  $rightPath = ExistingPath $right
-  if ([string]::IsNullOrWhiteSpace($leftPath) -or [string]::IsNullOrWhiteSpace($rightPath)) {
-    return $false
-  }
-  if (!(Test-Path -LiteralPath $leftPath -PathType Leaf) -or !(Test-Path -LiteralPath $rightPath -PathType Leaf)) {
-    return $false
-  }
-  if ([string]::Equals($leftPath, $rightPath, [StringComparison]::OrdinalIgnoreCase)) {
-    return $true
-  }
-  try {
-    $leftHash = (Get-FileHash -LiteralPath $leftPath -Algorithm SHA256 -ErrorAction Stop).Hash
-    $rightHash = (Get-FileHash -LiteralPath $rightPath -Algorithm SHA256 -ErrorAction Stop).Hash
-    return (![string]::IsNullOrWhiteSpace($leftHash) -and [string]::Equals($leftHash, $rightHash, [StringComparison]::OrdinalIgnoreCase))
-  } catch {
-    return $false
-  }
-}
 function StartupRowStatus($source, $name, $command, $status) {
-  if ($status -eq "Enabled" -and (IsClientAutostart $name) -and ![string]::IsNullOrWhiteSpace($currentExe)) {
-    $startupExe = StartupExecutable $source $name $command
-    if ([string]::IsNullOrWhiteSpace($startupExe) -or !(SameFile $currentExe $startupExe)) {
-      return "Mismatch"
-    }
-  }
   $status
 }
 $runKeys = @(
@@ -612,27 +542,6 @@ is_client_autostart() {
   esac
 }
 
-real_file() {
-  [ -n "$1" ] || return 0
-  if command -v realpath >/dev/null 2>&1; then
-    realpath "$1" 2>/dev/null || printf '%s\n' "$1"
-    return 0
-  fi
-  case "$1" in
-    /*)
-      printf '%s\n' "$1"
-      ;;
-    *)
-      printf '%s/%s\n' "$(pwd)" "$1"
-      ;;
-  esac
-}
-
-CURRENT_REAL=""
-if [ -n "$RDL_CURRENT_EXE" ]; then
-  CURRENT_REAL="$(real_file "$RDL_CURRENT_EXE")"
-fi
-
 plist_program_file() {
   file="$1"
   awk '
@@ -658,21 +567,6 @@ startup_status() {
   name="$1"
   command="$2"
   status="$3"
-  if [ "$status" = "Enabled" ] \
-    && [ -n "$CURRENT_REAL" ] \
-    && is_client_autostart "$name"; then
-    startup_real="$(real_file "$command")"
-    if [ -z "$startup_real" ]; then
-      printf 'Mismatch'
-      return 0
-    fi
-    current_hash="$(shasum -a 256 "$CURRENT_REAL" 2>/dev/null | awk '{print $1}')"
-    startup_hash="$(shasum -a 256 "$startup_real" 2>/dev/null | awk '{print $1}')"
-    if [ -z "$current_hash" ] || [ -z "$startup_hash" ] || [ "$current_hash" != "$startup_hash" ]; then
-      printf 'Mismatch'
-      return 0
-    fi
-  fi
   printf '%s' "$status"
 }
 for dir in \
@@ -774,34 +668,11 @@ emit() {
   count=$((count + 1))
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5"
 }
-real_file() {
-  [ -n "$1" ] || return 0
-  readlink -f -- "$1" 2>/dev/null || printf '%s\n' "$1"
-}
-same_file() {
-  left="$1"
-  right="$2"
-  [ -n "$left" ] && [ -n "$right" ] || return 1
-  [ -f "$left" ] && [ -f "$right" ] || return 1
-  left_hash="$(sha256sum "$left" 2>/dev/null | awk '{print $1}')"
-  right_hash="$(sha256sum "$right" 2>/dev/null | awk '{print $1}')"
-  [ -n "$left_hash" ] && [ -n "$right_hash" ] && [ "$left_hash" = "$right_hash" ]
-}
-command_file() {
-  value="$1"
-  [ -n "$value" ] || return 0
-  case "$value" in
-    \"*)
-      path="$(printf '%s\n' "$value" | sed -n 's/^"\([^"]*\)".*/\1/p' | head -n 1)"
-      [ -n "$path" ] && printf '%s\n' "$path" && return 0
-      ;;
-  esac
-  set -- $value
-  printf '%s\n' "$1"
-}
+
 compact_identity() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]'
 }
+
 is_client_autostart() {
   case "$(compact_identity "$1")" in
     rustdesklightclient|rustdesklightclientdesktop|rustdesklightclientdesktopdisabled|rustdesklightclientservice) return 0 ;;
@@ -812,13 +683,6 @@ startup_status() {
   name="$1"
   command="$2"
   status="$3"
-  if [ "$status" = "Enabled" ] && [ -n "$RDL_CURRENT_EXE" ] && is_client_autostart "$name"; then
-    startup_file="$(command_file "$command")"
-    if [ -z "$startup_file" ] || ! same_file "$RDL_CURRENT_EXE" "$startup_file"; then
-      printf 'Mismatch'
-      return 0
-    fi
-  fi
   printf '%s' "$status"
 }
 systemd_show_value() {
@@ -868,11 +732,6 @@ emit_systemd_client_unit() {
   [ -n "$row_status" ] || return 0
   exec_value="$(systemd_show_value ExecStart "$@")"
   command="$(systemd_display_command "$exec_value")"
-  service_file="$(systemd_exec_file "$exec_value")"
-  [ -n "$service_file" ] || service_file="$(systemd_process_file "$@")"
-  if [ "$row_status" = "Enabled" ] && [ -n "$RDL_CURRENT_EXE" ] && { [ -z "$service_file" ] || ! same_file "$RDL_CURRENT_EXE" "$service_file"; }; then
-    row_status="Mismatch"
-  fi
   emit "$scope" "$source" "rust-desk-light-client.service" "$command" "$row_status"
 }
 for dir in "$HOME/.config/autostart" "/etc/xdg/autostart"; do
