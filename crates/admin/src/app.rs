@@ -977,9 +977,9 @@ impl AdminApp {
         });
         self.open_command_window(client_id, command.clone());
         self.push_log(format!(
-            "sent command={} to {}",
+            ">> command={} to {}",
             command.as_str(),
-            client_id
+            self.client_display_name(client_id)
         ));
     }
 
@@ -1166,6 +1166,15 @@ impl AdminApp {
             .unwrap_or_else(|| client_id.to_string())
     }
 
+    fn client_display_name(&self, client_id: &str) -> String {
+        let name = self
+            .client_aliases
+            .get(client_id)
+            .cloned()
+            .unwrap_or_else(|| self.default_client_alias(client_id));
+        format!("[{}]", name)
+    }
+
     fn open_move_group_window(&mut self, client_id: &str) {
         let label = self
             .clients
@@ -1311,13 +1320,6 @@ impl AdminApp {
         accepted: bool,
         detail: String,
     ) {
-        self.push_log(format!(
-            "ack client={} command={} accepted={}",
-            client_id,
-            command.as_str(),
-            accepted
-        ));
-
         if accepted && detail == "forwarded" {
             user_interaction::handle_ack(
                 &mut self.interaction_command_windows,
@@ -1328,6 +1330,13 @@ impl AdminApp {
             );
             return;
         }
+
+        self.push_log(format!(
+            "<< command={} from {} accepted={}",
+            command.as_str(),
+            self.client_display_name(&client_id),
+            accepted
+        ));
 
         if command == CommandKind::TextChat {
             self.handle_chat_ack(&client_id, accepted, detail);
@@ -2099,9 +2108,9 @@ impl AdminApp {
                 payload: outbound.payload,
             });
             self.push_log(format!(
-                "sent command={} to {}",
+                ">> command={} to {}",
                 outbound.command.as_str(),
-                outbound.client_id
+                self.client_display_name(&outbound.client_id)
             ));
         }
     }
@@ -2126,9 +2135,9 @@ impl AdminApp {
             payload: outbound.payload,
         });
         self.push_log(format!(
-            "sent command={} to {}",
+            ">> command={} to {}",
             outbound.command.as_str(),
-            outbound.client_id
+            self.client_display_name(&outbound.client_id)
         ));
     }
 
@@ -2196,9 +2205,9 @@ impl AdminApp {
                 payload: outbound.payload,
             });
             self.push_log(format!(
-                "sent command={} to {}",
+                ">> command={} to {}",
                 outbound.command.as_str(),
-                outbound.client_id
+                self.client_display_name(&outbound.client_id)
             ));
         }
     }
