@@ -201,6 +201,8 @@ struct AdminApp {
     clients: Vec<ClientRow>,
     client_aliases: HashMap<String, String>,
     client_groups: HashMap<String, String>,
+    force_deleted_client_ids: HashSet<String>,
+    force_delete_client_confirm: Option<String>,
     alias_window: AliasWindow,
     move_group_window: MoveGroupWindow,
     client_filter: String,
@@ -279,6 +281,8 @@ impl AdminApp {
             clients: Vec::new(),
             client_aliases: client_aliases::load_client_aliases(),
             client_groups: client_groups::load_client_groups(),
+            force_deleted_client_ids: HashSet::new(),
+            force_delete_client_confirm: None,
             alias_window: AliasWindow::default(),
             move_group_window: MoveGroupWindow::default(),
             client_filter: String::new(),
@@ -879,6 +883,79 @@ impl AdminApp {
         prune_activity_logs(&mut self.log_lines);
     }
 
+    fn open_force_delete_client_confirm(&mut self, client_id: &str) {
+        self.force_delete_client_confirm = Some(client_id.to_string());
+    }
+
+    fn force_delete_client(&mut self, client_id: &str) {
+        let label = self.client_display_name(client_id);
+        self.force_deleted_client_ids.insert(client_id.to_string());
+        self.remove_client_row(client_id);
+        let alias_removed = self.client_aliases.remove(client_id).is_some();
+        let group_removed = self.client_groups.remove(client_id).is_some();
+        if alias_removed {
+            if let Err(error) = client_aliases::save_client_aliases(&self.client_aliases) {
+                self.push_log(format!("force delete client alias cleanup failed: {error}"));
+            }
+        }
+        if group_removed {
+            if let Err(error) = client_groups::save_client_groups(&self.client_groups) {
+                self.push_log(format!("force delete client group cleanup failed: {error}"));
+            }
+        }
+        self.push_log(format!("force deleted offline client {label}"));
+    }
+
+    fn render_force_delete_client_confirm(&mut self, ctx: &egui::Context) {
+        let Some(client_id) = self.force_delete_client_confirm.clone() else {
+            return;
+        };
+        let label = self.client_display_name(&client_id);
+
+        egui::Window::new(t("Confirm Delete Client"))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(t(
+                        "Remove this offline client from the admin list?",
+                    ))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(crate::theme::muted_text(t("Client")));
+                    ui.label(crate::theme::body_text(&label));
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(t(
+                        "This only removes the saved admin row. It cannot delete the remote client identity until the client reconnects.",
+                    ))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(t("Delete Client"))
+                                .color(COLOR_BAD)
+                                .strong(),
+                        ))
+                        .clicked()
+                    {
+                        self.force_delete_client(&client_id);
+                        self.force_delete_client_confirm = None;
+                    }
+                    if ui.button(t("Cancel")).clicked() {
+                        self.force_delete_client_confirm = None;
+                    }
+                });
+            });
+    }
+
     fn send_command(&mut self, client_id: &str, command: CommandKind) {
         if command == CommandKind::MoveToGroup {
             self.open_move_group_window(client_id);
@@ -890,6 +967,10 @@ impl AdminApp {
             .map(ClientStatus::can_receive_commands)
             .unwrap_or(false)
         {
+            if command == CommandKind::DeleteClient {
+                self.open_force_delete_client_confirm(client_id);
+                return;
+            }
             self.push_log(format!(
                 "blocked command={} to {}: client is offline",
                 command.as_str(),
@@ -1243,6 +1324,7 @@ impl AdminApp {
             process_kill_confirm: Arc::new(Mutex::new(None)),
             process_kill_requested: Arc::new(Mutex::new(None)),
             startup_delete_confirm: Arc::new(Mutex::new(None)),
+            startup_detail: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
             registry_key_requested: Arc::new(Mutex::new(None)),
             registry_expanded_keys: Arc::new(Mutex::new(HashSet::new())),
@@ -1527,6 +1609,7 @@ impl AdminApp {
             process_kill_confirm: Arc::new(Mutex::new(None)),
             process_kill_requested: Arc::new(Mutex::new(None)),
             startup_delete_confirm: Arc::new(Mutex::new(None)),
+            startup_detail: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
             registry_key_requested: Arc::new(Mutex::new(None)),
             registry_expanded_keys: Arc::new(Mutex::new(HashSet::new())),
@@ -1931,6 +2014,7 @@ impl AdminApp {
             let process_kill_confirm = window.process_kill_confirm.clone();
             let process_kill_requested = window.process_kill_requested.clone();
             let startup_delete_confirm = window.startup_delete_confirm.clone();
+            let startup_detail = window.startup_detail.clone();
             let startup_action_requested = window.startup_action_requested.clone();
             let registry_key_requested = window.registry_key_requested.clone();
             let registry_expanded_keys = window.registry_expanded_keys.clone();
@@ -1974,6 +2058,7 @@ impl AdminApp {
                                             process_kill_confirm: &process_kill_confirm,
                                             process_kill_requested: &process_kill_requested,
                                             startup_delete_confirm: &startup_delete_confirm,
+                                            startup_detail: &startup_detail,
                                             startup_action_requested: &startup_action_requested,
                                             registry_key_requested: &registry_key_requested,
                                             registry_expanded_keys: &registry_expanded_keys,

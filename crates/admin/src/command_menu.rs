@@ -89,6 +89,14 @@ pub fn render_unavailable_client_menu(
     ui.menu_button(menu_title("🔐", "Session"), |ui| {
         prepare_menu_ui(ui, SUBMENU_MIN_WIDTH);
         render_identity_session(ui, client_id, send_command, edit_alias);
+        ui.separator();
+        menu_command(
+            ui,
+            client_id,
+            "Delete Client",
+            CommandKind::DeleteClient,
+            send_command,
+        );
     });
 }
 

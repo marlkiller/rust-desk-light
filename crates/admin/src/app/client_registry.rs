@@ -16,6 +16,11 @@ impl AdminApp {
     pub(super) fn merge_clients(&mut self, clients: Vec<ClientInfo>) {
         let notify_online_changes = self.client_list_initialized;
         let online_ids: HashSet<String> = clients.iter().map(|client| client.id.clone()).collect();
+        for client_id in &online_ids {
+            self.force_deleted_client_ids.remove(client_id);
+        }
+        self.clients
+            .retain(|row| !self.force_deleted_client_ids.contains(&row.info.id));
         let mut online_notices = Vec::new();
         for client in clients {
             if let Some(existing) = self.clients.iter_mut().find(|row| row.info.id == client.id) {

@@ -25,6 +25,7 @@ impl AdminApp {
         ) {
             self.apply_move_group_action(action);
         }
+        self.render_force_delete_client_confirm(ctx);
         self.render_settings_window(ctx);
         self.render_about_window(ctx);
     }
