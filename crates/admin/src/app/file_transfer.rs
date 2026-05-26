@@ -1,5 +1,7 @@
 use super::event::AdminInput;
-use rdl_protocol::{FileTransferAction, FileTransferDirection, Message};
+use rdl_protocol::{
+    file_transfer_message, FileTransferAction, FileTransferDirection, Message,
+};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -26,19 +28,6 @@ pub(super) fn should_log_admin_file_transfer_event(
     ) || !message.trim().is_empty()
 }
 
-pub(super) fn sanitize_log_value(value: &str) -> String {
-    let mut value = value
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect::<String>();
-    const MAX_LOG_VALUE_LEN: usize = 180;
-    if value.len() > MAX_LOG_VALUE_LEN {
-        value.truncate(MAX_LOG_VALUE_LEN);
-        value.push_str("...");
-    }
-    value
-}
-
 pub(super) fn run_file_upload_transfer(
     input_tx: &SyncSender<AdminInput>,
     client_id: &str,
@@ -49,10 +38,7 @@ pub(super) fn run_file_upload_transfer(
 ) -> io::Result<()> {
     let source = PathBuf::from(local_path);
     let metadata = fs::metadata(&source)?;
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
-    collect_upload_entries(&source, Path::new(""), &metadata, &mut dirs, &mut files)?;
-    let total_bytes = files.iter().map(|file| file.size).sum::<u64>();
+    let total_bytes = compute_total_bytes(&source, &metadata)?;
     let mut transferred_bytes = 0u64;
 
     send_file_transfer_input_cancelable(
@@ -74,38 +60,44 @@ pub(super) fn run_file_upload_transfer(
         &cancel_flag,
     )?;
 
-    for dir in dirs {
+    let mut file_entries = Vec::new();
+    walk_upload_entries(&source, Path::new(""), &metadata, &mut |abs, rel, is_dir, size| {
         if cancel_flag.load(Ordering::Relaxed) {
-            return send_upload_cancel(input_tx, client_id, transfer_id, remote_path);
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
-        send_file_transfer_input_cancelable(
-            input_tx,
-            file_transfer_message(
-                client_id.to_string(),
-                transfer_id,
-                FileTransferDirection::Upload,
-                FileTransferAction::Directory,
-                remote_path.to_string(),
-                protocol_relative_path(&dir),
-                total_bytes,
-                transferred_bytes,
-                0,
-                0,
-                Vec::new(),
-                String::new(),
-            ),
-            &cancel_flag,
-        )?;
-    }
+        if is_dir {
+            send_file_transfer_input_cancelable(
+                input_tx,
+                file_transfer_message(
+                    client_id.to_string(),
+                    transfer_id,
+                    FileTransferDirection::Upload,
+                    FileTransferAction::Directory,
+                    remote_path.to_string(),
+                    protocol_relative_path(rel),
+                    total_bytes,
+                    transferred_bytes,
+                    0,
+                    0,
+                    Vec::new(),
+                    String::new(),
+                ),
+                &cancel_flag,
+            )?;
+        } else {
+            file_entries.push((abs.to_path_buf(), rel.to_path_buf(), size));
+        }
+        Ok(())
+    })?;
 
     let mut buffer = vec![0u8; FILE_TRANSFER_CHUNK_SIZE];
-    for file in files {
+    for (abs_path, rel_path, file_size) in &file_entries {
         if cancel_flag.load(Ordering::Relaxed) {
             return send_upload_cancel(input_tx, client_id, transfer_id, remote_path);
         }
-        let mut input = File::open(&file.path)?;
+        let mut input = File::open(abs_path)?;
         let mut offset = 0u64;
-        let relative_path = protocol_relative_path(&file.relative);
+        let relative = protocol_relative_path(rel_path);
         loop {
             if cancel_flag.load(Ordering::Relaxed) {
                 return send_upload_cancel(input_tx, client_id, transfer_id, remote_path);
@@ -123,10 +115,10 @@ pub(super) fn run_file_upload_transfer(
                     FileTransferDirection::Upload,
                     FileTransferAction::Chunk,
                     remote_path.to_string(),
-                    relative_path.clone(),
+                    relative.clone(),
                     total_bytes,
                     transferred_bytes,
-                    file.size,
+                    *file_size,
                     offset,
                     buffer[..count].to_vec(),
                     String::new(),
@@ -182,37 +174,50 @@ pub(super) fn send_upload_cancel(
     )
 }
 
-#[derive(Clone)]
-struct UploadFileEntry {
-    path: PathBuf,
-    relative: PathBuf,
-    size: u64,
-}
-
-fn collect_upload_entries(
+fn walk_upload_entries<F>(
     path: &Path,
     relative: &Path,
     metadata: &fs::Metadata,
-    dirs: &mut Vec<PathBuf>,
-    files: &mut Vec<UploadFileEntry>,
-) -> io::Result<()> {
+    f: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(&Path, &Path, bool, u64) -> io::Result<()>,
+{
     if metadata.is_dir() {
-        dirs.push(relative.to_path_buf());
+        f(path, relative, true, 0)?;
         let mut children = fs::read_dir(path)?.flatten().collect::<Vec<_>>();
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             let child_metadata = child.metadata()?;
             let child_relative = relative.join(child.file_name());
-            collect_upload_entries(&child.path(), &child_relative, &child_metadata, dirs, files)?;
+            walk_upload_entries(&child.path(), &child_relative, &child_metadata, f)?;
         }
     } else {
-        files.push(UploadFileEntry {
-            path: path.to_path_buf(),
-            relative: relative.to_path_buf(),
-            size: metadata.len(),
-        });
+        f(path, relative, false, metadata.len())?;
     }
     Ok(())
+}
+
+fn compute_total_bytes(path: &Path, metadata: &fs::Metadata) -> io::Result<u64> {
+    if metadata.is_dir() {
+        let mut total = 0u64;
+        fn walk_size(path: &Path, total: &mut u64) -> io::Result<()> {
+            for entry in fs::read_dir(path)? {
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                if meta.is_dir() {
+                    walk_size(&entry.path(), total)?;
+                } else {
+                    *total = total.saturating_add(meta.len());
+                }
+            }
+            Ok(())
+        }
+        walk_size(path, &mut total)?;
+        Ok(total)
+    } else {
+        Ok(metadata.len())
+    }
 }
 
 fn protocol_relative_path(path: &Path) -> String {
@@ -261,36 +266,5 @@ fn send_file_transfer_input_cancelable(
                 ));
             }
         }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn file_transfer_message(
-    target_id: String,
-    transfer_id: u64,
-    direction: FileTransferDirection,
-    action: FileTransferAction,
-    path: String,
-    relative_path: String,
-    total_bytes: u64,
-    transferred_bytes: u64,
-    file_size: u64,
-    offset: u64,
-    bytes: Vec<u8>,
-    message: String,
-) -> Message {
-    Message::FileTransfer {
-        target_id,
-        transfer_id,
-        direction,
-        action,
-        path,
-        relative_path,
-        total_bytes,
-        transferred_bytes,
-        file_size,
-        offset,
-        bytes,
-        message,
     }
 }

@@ -1,4 +1,7 @@
-use rdl_protocol::{FileTransferAction, FileTransferDirection, Message, TEMP_UPDATE_PATH_PREFIX};
+use rdl_protocol::{
+    file_transfer_message, sanitize_log_value, FileTransferAction, FileTransferDirection, Message,
+    TEMP_UPDATE_PATH_PREFIX,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -288,13 +291,27 @@ fn upload_file(path: &str, hex: &str) -> String {
 fn download_file(path: &str) -> String {
     let path = resolve_path(path);
     let cwd = parent_or_current(&path);
-    match fs::read(&path) {
-        Ok(bytes) => format!(
-            "download\ncwd={}\npath={}\nvalue={}",
-            cwd.display(),
-            path.display(),
-            encode_hex(&bytes)
+    const MAX_DOWNLOAD_SIZE: u64 = 50 * 1024 * 1024;
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.len() > MAX_DOWNLOAD_SIZE => file_error(
+            cwd.display().to_string(),
+            &format!(
+                "download failed: file too large ({} bytes), use stream download instead",
+                metadata.len()
+            ),
         ),
+        Ok(_) => match fs::read(&path) {
+            Ok(bytes) => format!(
+                "download\ncwd={}\npath={}\nvalue={}",
+                cwd.display(),
+                path.display(),
+                encode_hex(&bytes)
+            ),
+            Err(error) => file_error(
+                cwd.display().to_string(),
+                &format!("download failed: {error}"),
+            ),
+        },
         Err(error) => file_error(
             cwd.display().to_string(),
             &format!("download failed: {error}"),
@@ -514,7 +531,7 @@ where
         transfer_id,
         sanitize_log_value(&root.display().to_string())
     );
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         FileTransferDirection::Download,
@@ -571,7 +588,7 @@ where
         total_bytes
     );
 
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         FileTransferDirection::Download,
@@ -616,7 +633,7 @@ where
 
     let metadata = fs::metadata(path)?;
     if metadata.is_dir() {
-        send(transfer_message(
+        send(file_transfer_message(
             context.client_id.to_string(),
             context.transfer_id,
             FileTransferDirection::Download,
@@ -694,7 +711,7 @@ where
             break;
         }
         *transferred_bytes = (*transferred_bytes).saturating_add(count as u64);
-        send(transfer_message(
+        send(file_transfer_message(
             context.client_id.to_string(),
             context.transfer_id,
             FileTransferDirection::Download,
@@ -734,7 +751,7 @@ where
             transfer_id,
             sanitize_log_value(&path)
         );
-        send(transfer_message(
+        send(file_transfer_message(
             client_id.to_string(),
             transfer_id,
             FileTransferDirection::Download,
@@ -755,7 +772,7 @@ where
             transfer_id,
             sanitize_log_value(&path)
         );
-        send(transfer_message(
+        send(file_transfer_message(
             client_id.to_string(),
             transfer_id,
             FileTransferDirection::Download,
@@ -792,7 +809,7 @@ where
     if let Ok(mut transfers) = upload_transfers().lock() {
         transfers.insert(transfer_id, state);
     }
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         FileTransferDirection::Upload,
@@ -892,7 +909,7 @@ where
     }
 
     let transferred = update_upload_progress(transfer_id, bytes.len() as u64, total_bytes);
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         FileTransferDirection::Upload,
@@ -945,7 +962,7 @@ where
             ),
         ));
     }
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         FileTransferDirection::Upload,
@@ -981,7 +998,7 @@ where
     if let Some(state) = state {
         state.cancelled.store(true, Ordering::Relaxed);
     }
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         FileTransferDirection::Upload,
@@ -1086,7 +1103,7 @@ fn send_cancelled<F>(
 where
     F: FnMut(Message) -> io::Result<()>,
 {
-    send(transfer_message(
+    send(file_transfer_message(
         client_id.to_string(),
         transfer_id,
         direction,
@@ -1110,7 +1127,7 @@ fn transfer_error(
     relative_path: String,
     message: String,
 ) -> Message {
-    transfer_message(
+    file_transfer_message(
         target_id,
         transfer_id,
         direction,
@@ -1124,50 +1141,6 @@ fn transfer_error(
         Vec::new(),
         message,
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn transfer_message(
-    target_id: String,
-    transfer_id: u64,
-    direction: FileTransferDirection,
-    action: FileTransferAction,
-    path: String,
-    relative_path: String,
-    total_bytes: u64,
-    transferred_bytes: u64,
-    file_size: u64,
-    offset: u64,
-    bytes: Vec<u8>,
-    message: String,
-) -> Message {
-    Message::FileTransfer {
-        target_id,
-        transfer_id,
-        direction,
-        action,
-        path,
-        relative_path,
-        total_bytes,
-        transferred_bytes,
-        file_size,
-        offset,
-        bytes,
-        message,
-    }
-}
-
-fn sanitize_log_value(value: &str) -> String {
-    let mut value = value
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect::<String>();
-    const MAX_LOG_VALUE_LEN: usize = 180;
-    if value.len() > MAX_LOG_VALUE_LEN {
-        value.truncate(MAX_LOG_VALUE_LEN);
-        value.push_str("...");
-    }
-    value
 }
 
 fn upload_transfers() -> &'static Mutex<HashMap<u64, UploadTransferState>> {

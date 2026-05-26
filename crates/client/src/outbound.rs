@@ -1,6 +1,7 @@
 use crate::live_control::realtime_video::RealtimeVideoReceiver;
 use rdl_protocol::{
-    write_envelope_with_token, FileTransferAction, FileTransferDirection, Message, Role,
+    sanitize_log_value, write_envelope_with_token, FileTransferAction, FileTransferDirection,
+    Message, Role,
 };
 use std::io;
 use std::net::TcpStream;
@@ -88,19 +89,6 @@ fn log_client_file_transfer_queue(queue: &str, message: &Message) {
         total_bytes,
         sanitize_log_value(message)
     );
-}
-
-fn sanitize_log_value(value: &str) -> String {
-    let mut value = value
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect::<String>();
-    const MAX_LOG_VALUE_LEN: usize = 180;
-    if value.len() > MAX_LOG_VALUE_LEN {
-        value.truncate(MAX_LOG_VALUE_LEN);
-        value.push_str("...");
-    }
-    value
 }
 
 pub(crate) fn writer_loop(
