@@ -93,9 +93,18 @@ pub(crate) fn video_stream_loop(
     }
     let mut seq = stream_sequence_base(generation);
     let mut consecutive_frame_errors = 0u32;
+    let mut consecutive_idle_frames: u32 = 0;
+    let mut skip_next: bool = false;
+    let base_interval = interval;
     while stream_state.running.load(Ordering::Relaxed)
         && stream_state.generation.load(Ordering::Relaxed) == generation
     {
+        if skip_next {
+            skip_next = false;
+            let started = Instant::now();
+            sleep_until_next_frame(started, interval);
+            continue;
+        }
         let started = Instant::now();
         let frame = match &source {
             VideoSource::RemoteDesktop => {
@@ -142,6 +151,7 @@ pub(crate) fn video_stream_loop(
         match frame {
             Ok(Some(message)) => {
                 consecutive_frame_errors = 0;
+                consecutive_idle_frames = 0;
                 if try_queue_realtime_message(&realtime_tx, &session_token, message).is_err() {
                     stream_state.running.store(false, Ordering::Relaxed);
                     break;
@@ -150,6 +160,7 @@ pub(crate) fn video_stream_loop(
             }
             Ok(None) => {
                 consecutive_frame_errors = 0;
+                consecutive_idle_frames = consecutive_idle_frames.saturating_add(1);
             }
             Err(error) => {
                 consecutive_frame_errors = consecutive_frame_errors.saturating_add(1);
@@ -173,7 +184,20 @@ pub(crate) fn video_stream_loop(
                 break;
             }
         }
-        sleep_until_next_frame(started, interval);
+        // 优化1: 画面无变化时退避休眠 — idle 帧越多，间隔越长
+        if consecutive_idle_frames > 0 {
+            let backoff = (1.5f32.powi(consecutive_idle_frames.min(5) as i32)).min(5.0);
+            let idle_interval =
+                Duration::from_millis((base_interval.as_millis() as f32 * backoff) as u64).max(interval);
+            sleep_until_next_frame(started, idle_interval);
+        } else {
+            sleep_until_next_frame(started, interval);
+        }
+        // 优化2: 编码/发送超时自动跳帧 — 避免帧堆积导致CPU打满
+        let elapsed = started.elapsed();
+        if elapsed > interval.mul_f32(0.9) {
+            skip_next = true;
+        }
     }
 }
 
@@ -181,8 +205,6 @@ fn sleep_until_next_frame(started: Instant, interval: Duration) {
     let elapsed = started.elapsed();
     if elapsed < interval {
         thread::sleep(interval - elapsed);
-    } else {
-        thread::sleep(Duration::from_millis(1));
     }
 }
 

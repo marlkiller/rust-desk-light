@@ -12,7 +12,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const DEFAULT_QUALITY: &str = "medium";
-const DEFAULT_TARGET_FPS: u32 = 5;
+const DEFAULT_TARGET_FPS: u32 = 10;
 const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::COMPACT_CONTROL_HEIGHT;
 const QUALITY_DROPDOWN_WIDTH: f32 = 92.0;
 const FPS_DROPDOWN_WIDTH: f32 = 74.0;
@@ -691,7 +691,7 @@ fn render_toolbar(
                 !is_running,
                 |ui| {
                     ui.set_min_width(FPS_DROPDOWN_WIDTH);
-                    for option in [2_u32, 5, 8, 10, 12] {
+                    for option in [2_u32, 5, 8, 10, 12, 15, 20] {
                         if ui
                             .selectable_value(&mut selected_fps, option, fps_label(option))
                             .clicked()

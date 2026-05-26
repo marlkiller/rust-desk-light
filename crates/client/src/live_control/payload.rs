@@ -62,8 +62,8 @@ pub(crate) fn video_fps_from_payload(payload: &str, quality: &str) -> u64 {
 fn quality_fps(value: &str) -> u64 {
     match value {
         "low" => 10,
-        "high" => 2,
-        _ => 5,
+        "high" => 10,
+        _ => 10,
     }
 }
 
