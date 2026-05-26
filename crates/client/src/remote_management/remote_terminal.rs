@@ -166,7 +166,14 @@ where
                 stream,
                 chunk,
                 cwd.display().to_string(),
-            )?;
+            )
+            .or_else(|e| {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            })?;
         }
 
         let status = child
@@ -189,7 +196,16 @@ where
             stream,
             chunk,
             cwd.display().to_string(),
-        )?;
+        )
+        .or_else(|e| {
+            if e.kind() == io::ErrorKind::WouldBlock {
+                // don't drop data — keep trying until it goes through
+                thread::sleep(Duration::from_millis(25));
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
     }
     clear_running_command(&child);
 
@@ -603,12 +619,16 @@ fn terminate_unix_process_group(child: &mut Child) {
     let group = format!("-{pid}");
     let _ = Command::new("kill").args(["-TERM", &group]).status();
     thread::sleep(Duration::from_millis(150));
-    match child.try_wait() {
-        Ok(Some(_)) => {}
-        _ => {
-            let _ = Command::new("kill").args(["-KILL", &group]).status();
-            let _ = child.kill();
-        }
+    // Don't call child.try_wait() here — that would consume the exit status
+    // and prevent the owning loop from detecting the child has exited.
+    // Use external kill -0 to check liveness instead.
+    let alive = Command::new("kill")
+        .args(["-0", &group])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if alive {
+        let _ = Command::new("kill").args(["-KILL", &group]).status();
     }
 }
 
