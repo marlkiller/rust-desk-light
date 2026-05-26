@@ -369,7 +369,7 @@ pub(crate) fn table_cell_label(
 fn table_label_with_cursor(
     ui: &mut egui::Ui,
     text: impl Into<egui::WidgetText>,
-    _align: egui::Align,
+    align: egui::Align,
     sense: egui::Sense,
     cursor: egui::CursorIcon,
 ) -> egui::Response {
@@ -379,7 +379,7 @@ fn table_label_with_cursor(
     let mut child_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Min)),
+            .layout(egui::Layout::left_to_right(align).with_cross_align(egui::Align::Center)),
     );
 
     child_ui.add(
