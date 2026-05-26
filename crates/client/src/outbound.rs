@@ -22,11 +22,18 @@ pub(crate) fn queue_message(
     message: Message,
 ) -> io::Result<()> {
     out_tx
-        .send(ClientOutbound {
+        .try_send(ClientOutbound {
             session_token: session_token.to_string(),
             message,
         })
-        .map_err(|error| io::Error::new(io::ErrorKind::BrokenPipe, error.to_string()))
+        .map_err(|error| match error {
+            mpsc::TrySendError::Full(..) => {
+                io::Error::new(io::ErrorKind::WouldBlock, "outbound channel full")
+            }
+            mpsc::TrySendError::Disconnected(..) => {
+                io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel disconnected")
+            }
+        })
 }
 
 pub(crate) fn queue_file_transfer_reply(

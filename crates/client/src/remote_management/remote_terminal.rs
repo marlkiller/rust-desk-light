@@ -146,7 +146,14 @@ where
                     stream,
                     chunk,
                     cwd.display().to_string(),
-                )?;
+                )
+                .or_else(|e| {
+                    if e.kind() == io::ErrorKind::WouldBlock {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                })?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => thread::sleep(Duration::from_millis(25)),
@@ -519,34 +526,35 @@ fn cancel_running_command<F>(mut send: F) -> io::Result<()>
 where
     F: FnMut(TerminalOutput) -> io::Result<()>,
 {
-    let child = {
-        let running = running_command_lock()
+    // atomically take ownership — clears the slot so next command can start
+    let running = {
+        let mut lock = running_command_lock()
             .lock()
             .map_err(|_| io::Error::other("terminal process lock poisoned"))?;
-        let Some(running) = running.as_ref() else {
-            let mut sequence = 1;
-            return send_final(
-                &mut send,
-                0,
-                &mut sequence,
-                current_dir_label(),
-                "no running terminal command",
-                true,
-            );
-        };
-        running.child.clone()
+        lock.take()
     };
-    if let Ok(mut child) = child.lock() {
+    let Some(running) = running else {
+        let mut sequence = 1;
+        return send_final(
+            &mut send,
+            0,
+            &mut sequence,
+            current_dir_label(),
+            "no running terminal command",
+            true,
+        );
+    };
+    if let Ok(mut child) = running.child.lock() {
         terminate_child(&mut child);
     }
     let mut sequence = 1;
-    send_chunk(
+    send_final(
         &mut send,
         0,
         &mut sequence,
-        CommandOutputStream::Status,
-        "cancel requested\n".to_string(),
         current_dir_label(),
+        "cancel requested",
+        false,
     )
 }
 
