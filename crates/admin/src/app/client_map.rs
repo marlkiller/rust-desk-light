@@ -1,6 +1,7 @@
 mod world_map_data;
 
-use super::{client_state::client_identity_label, ui, ClientRow};
+use super::client_state::client_identity_label;
+use super::{ui, ClientRow};
 use crate::{
     i18n::{t, tf},
     windowing,
@@ -530,9 +531,9 @@ fn draw_map_cluster(painter: &egui::Painter, cluster: &MapCluster, selected: boo
     let count = cluster.client_ids.len();
     let radius = cluster_radius(cluster);
     let fill = if selected {
-        ui::COLOR_ACCENT
+        ui::color_accent()
     } else {
-        ui::COLOR_GOOD
+        ui::color_good()
     };
     painter.circle_filled(
         cluster.pos,
@@ -554,7 +555,7 @@ fn draw_map_cluster(painter: &egui::Painter, cluster: &MapCluster, selected: boo
         painter.circle_stroke(
             cluster.pos,
             radius + 4.0,
-            egui::Stroke::new(2.0, ui::COLOR_ACCENT.gamma_multiply(0.55)),
+            egui::Stroke::new(2.0, ui::color_accent().gamma_multiply(0.55)),
         );
     }
     if count > 1 {
@@ -581,7 +582,7 @@ fn draw_map_cluster_label(
         crate::theme::map_palette().cluster_label_bg
     };
     let stroke = if selected {
-        egui::Stroke::new(1.0, ui::COLOR_ACCENT.gamma_multiply(0.55))
+        egui::Stroke::new(1.0, ui::color_accent().gamma_multiply(0.55))
     } else {
         egui::Stroke::new(1.0, crate::theme::map_palette().summary_border)
     };

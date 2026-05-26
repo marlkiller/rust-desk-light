@@ -1,7 +1,7 @@
 use super::{
     event::AdminInput,
     payload::payload_field,
-    ui::{COLOR_BAD, COLOR_GOOD, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT},
+    ui::{color_bad, color_good, color_warn, TOOLBAR_CONTROL_HEIGHT},
 };
 use crate::{
     i18n::{self, t},
@@ -222,9 +222,9 @@ fn command_window_status(
     status: &CommandResultStatus,
 ) -> (&'static str, &'static str, egui::Color32) {
     match status {
-        CommandResultStatus::Pending => (t("Pending"), t("Waiting for client result"), COLOR_WARN),
-        CommandResultStatus::Accepted => (t("Done"), t("Result received"), COLOR_GOOD),
-        CommandResultStatus::Failed => (t("Failed"), t("Command failed"), COLOR_BAD),
+        CommandResultStatus::Pending => (t("Pending"), t("Waiting for client result"), color_warn()),
+        CommandResultStatus::Accepted => (t("Done"), t("Result received"), color_good()),
+        CommandResultStatus::Failed => (t("Failed"), t("Command failed"), color_bad()),
     }
 }
 
@@ -596,7 +596,7 @@ fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
         detail,
         &["cpu_percent", "cpupercent", "LoadPercent", "LoadPercentage"],
     )
-    .map(|value| percent_metric(t("CPU"), value, crate::theme::COLOR_METRIC_CPU))
+    .map(|value| percent_metric(t("CPU"), value, crate::theme::color_metric_cpu()))
     .or_else(|| {
         let load = parse_load_average(detail)?;
         let cores = std::thread::available_parallelism()
@@ -607,7 +607,7 @@ fn parse_cpu_metric(detail: &str) -> Option<PerformanceMetric> {
             label: t("CPU Load"),
             percent: clamp_percent(load * 100.0 / cores),
             value: format!("{load:.2} load"),
-            color: crate::theme::COLOR_METRIC_CPU,
+            color: crate::theme::color_metric_cpu(),
         })
     })
 }
@@ -620,13 +620,13 @@ fn parse_memory_metric(detail: &str) -> Option<PerformanceMetric> {
     .or_else(|| parse_windows_memory_percent(detail))
     .or_else(|| parse_linux_memory_percent(detail))
     .or_else(|| parse_macos_memory_percent(detail))
-    .map(|value| percent_metric(t("Memory"), value, crate::theme::COLOR_METRIC_MEMORY))
+    .map(|value| percent_metric(t("Memory"), value, crate::theme::color_metric_memory()))
 }
 
 fn parse_disk_metric(detail: &str) -> Option<PerformanceMetric> {
     parse_named_number(detail, &["disk_percent", "diskpercent", "DiskPercent"])
         .or_else(|| parse_df_disk_percent(detail))
-        .map(|value| percent_metric(t("Disk"), value, crate::theme::COLOR_METRIC_DISK))
+        .map(|value| percent_metric(t("Disk"), value, crate::theme::color_metric_disk()))
 }
 
 fn percent_metric(label: &'static str, value: f32, color: egui::Color32) -> PerformanceMetric {
@@ -798,7 +798,7 @@ fn render_camera_result(ui: &mut egui::Ui, detail: &str) -> bool {
         Err(error) => {
             ui.label(
                 egui::RichText::new(format!("decode camera frame failed: {error}"))
-                    .color(COLOR_BAD),
+                    .color(color_bad()),
             );
             return true;
         }
@@ -807,7 +807,7 @@ fn render_camera_result(ui: &mut egui::Ui, detail: &str) -> bool {
         Ok(image) => image.to_rgba8(),
         Err(error) => {
             ui.label(
-                egui::RichText::new(format!("load camera frame failed: {error}")).color(COLOR_BAD),
+                egui::RichText::new(format!("load camera frame failed: {error}")).color(color_bad()),
             );
             return true;
         }
@@ -1012,7 +1012,7 @@ fn render_startup_add_form(
                 });
                 if !form.error.trim().is_empty() {
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new(&form.error).size(12.0).color(COLOR_BAD));
+                    ui.label(egui::RichText::new(&form.error).size(12.0).color(color_bad()));
                 } else if form.name.trim().is_empty() || form.command.trim().is_empty() {
                     ui.add_space(6.0);
                     ui.label(
@@ -1409,7 +1409,7 @@ fn render_process_kill_confirm(
                 if ui
                     .add(egui::Button::new(
                         egui::RichText::new(t("Kill Process"))
-                            .color(COLOR_BAD)
+                            .color(color_bad())
                             .strong(),
                     ))
                     .clicked()
@@ -1471,7 +1471,7 @@ fn render_startup_delete_confirm(
                 if ui
                     .add(egui::Button::new(
                         egui::RichText::new(t("Delete Startup Item"))
-                            .color(COLOR_BAD)
+                            .color(color_bad())
                             .strong(),
                     ))
                     .clicked()

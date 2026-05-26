@@ -28,7 +28,7 @@ impl AdminApp {
                                     egui::vec2(8.0, 8.0),
                                     egui::Sense::hover(),
                                 );
-                                ui.painter().circle_filled(rect.center(), 4.0, COLOR_GOOD);
+                                ui.painter().circle_filled(rect.center(), 4.0, color_good());
                                 ui.vertical(|ui| {
                                     ui.label(
                                         egui::RichText::new(title)

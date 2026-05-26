@@ -1,6 +1,11 @@
-use std::fmt;
 use std::io::{self, ErrorKind, Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod binary;
+mod error;
+pub use error::ProtocolError;
+
+use crate::binary::{BinaryReader, BinaryWriter};
 
 pub const DEFAULT_SERVER_IP: &str = "127.0.0.1";
 pub const DEFAULT_SERVER_PORT: u16 = 5169;
@@ -14,6 +19,7 @@ const HEADER_LEN: usize = 10;
 const ENVELOPE_FIXED_LEN: usize = 27;
 
 pub mod audio_udp {
+    use super::ProtocolError;
     pub const MAGIC: [u8; 4] = *b"RDU1";
     pub const FORMAT_PCM_S16LE: u8 = 1;
     pub const MAX_PACKET_BYTES: usize = 1400;
@@ -60,12 +66,12 @@ pub mod audio_udp {
         format: &str,
         bytes: &[u8],
         out: &mut Vec<u8>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), ProtocolError> {
         if format_code(format).is_none() {
-            return Err("unsupported audio udp format");
+            return Err(ProtocolError::AudioUdpProtocol("unsupported audio udp format"));
         }
         if AUDIO_HEADER_LEN + bytes.len() > MAX_PACKET_BYTES {
-            return Err("audio udp packet too large");
+            return Err(ProtocolError::AudioUdpProtocol("audio udp packet too large"));
         }
         out.clear();
         out.extend_from_slice(&MAGIC);
@@ -80,9 +86,9 @@ pub mod audio_udp {
         Ok(())
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Packet<'_>, &'static str> {
+    pub fn decode(bytes: &[u8]) -> Result<Packet<'_>, ProtocolError> {
         if bytes.len() < CONTROL_LEN || bytes[..4] != MAGIC {
-            return Err("invalid audio udp packet");
+            return Err(ProtocolError::AudioUdpProtocol("invalid audio udp packet"));
         }
         let packet_type = bytes[4];
         let stream_id = read_u64(bytes, 5)?;
@@ -91,14 +97,14 @@ pub mod audio_udp {
             TYPE_UNREGISTER => Ok(Packet::Unregister { stream_id }),
             TYPE_AUDIO => {
                 if bytes.len() < AUDIO_HEADER_LEN {
-                    return Err("truncated audio udp packet");
+                    return Err(ProtocolError::AudioUdpProtocol("truncated audio udp packet"));
                 }
                 let seq = read_u64(bytes, 13)?;
                 let capture_epoch_ms = read_u64(bytes, 21)?;
                 let sample_rate = read_u32(bytes, 29)?;
                 let channels = read_u16(bytes, 33)?;
-                let format = format_name(bytes.get(35).copied().ok_or("missing audio udp format")?)
-                    .ok_or("unsupported audio udp format")?;
+                let format = format_name(bytes.get(35).copied().ok_or(ProtocolError::AudioUdpProtocol("missing audio udp format"))?)
+                    .ok_or(ProtocolError::AudioUdpProtocol("unsupported audio udp format"))?;
                 Ok(Packet::Audio {
                     stream_id,
                     seq,
@@ -109,7 +115,7 @@ pub mod audio_udp {
                     bytes: &bytes[AUDIO_HEADER_LEN..],
                 })
             }
-            _ => Err("unknown audio udp packet type"),
+            _ => Err(ProtocolError::AudioUdpProtocol("unknown audio udp packet type")),
         }
     }
 
@@ -134,24 +140,24 @@ pub mod audio_udp {
         }
     }
 
-    fn read_u16(bytes: &[u8], start: usize) -> Result<u16, &'static str> {
+    fn read_u16(bytes: &[u8], start: usize) -> Result<u16, ProtocolError> {
         let raw = bytes
             .get(start..start + 2)
-            .ok_or("truncated audio udp u16")?;
+            .ok_or(ProtocolError::AudioUdpProtocol("truncated audio udp u16"))?;
         Ok(u16::from_be_bytes([raw[0], raw[1]]))
     }
 
-    fn read_u32(bytes: &[u8], start: usize) -> Result<u32, &'static str> {
+    fn read_u32(bytes: &[u8], start: usize) -> Result<u32, ProtocolError> {
         let raw = bytes
             .get(start..start + 4)
-            .ok_or("truncated audio udp u32")?;
+            .ok_or(ProtocolError::AudioUdpProtocol("truncated audio udp u32"))?;
         Ok(u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]))
     }
 
-    fn read_u64(bytes: &[u8], start: usize) -> Result<u64, &'static str> {
+    fn read_u64(bytes: &[u8], start: usize) -> Result<u64, ProtocolError> {
         let raw = bytes
             .get(start..start + 8)
-            .ok_or("truncated audio udp u64")?;
+            .ok_or(ProtocolError::AudioUdpProtocol("truncated audio udp u64"))?;
         Ok(u64::from_be_bytes([
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
         ]))
@@ -160,6 +166,7 @@ pub mod audio_udp {
 
 pub mod p2p_udp {
     use super::Role;
+    use crate::error::ProtocolError;
 
     pub const MAGIC: [u8; 4] = *b"RDP1";
     pub const VERSION: u8 = 1;
@@ -235,14 +242,14 @@ pub mod p2p_udp {
         );
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Packet, &'static str> {
+    pub fn decode(bytes: &[u8]) -> Result<Packet, ProtocolError> {
         if bytes.len() != PACKET_LEN || bytes[..4] != MAGIC {
-            return Err("invalid p2p udp packet");
+            return Err(ProtocolError::P2pUdpProtocol("invalid p2p udp packet"));
         }
         if bytes[4] != VERSION {
-            return Err("unsupported p2p udp version");
+            return Err(ProtocolError::P2pUdpProtocol("unsupported p2p udp version"));
         }
-        let role = role_from_code(bytes[6]).ok_or("invalid p2p udp role")?;
+        let role = role_from_code(bytes[6]).ok_or(ProtocolError::InvalidRole)?;
         let session_id = read_u64(bytes, 7)?;
         let nonce = read_u64(bytes, 15)?;
         let sequence = read_u64(bytes, 23)?;
@@ -267,7 +274,7 @@ pub mod p2p_udp {
                 sequence,
                 sent_epoch_ms,
             }),
-            _ => Err("unknown p2p udp packet type"),
+            _ => Err(ProtocolError::P2pUdpProtocol("unknown p2p udp packet type")),
         }
     }
 
@@ -309,17 +316,17 @@ pub mod p2p_udp {
         }
     }
 
-    fn read_u64(bytes: &[u8], start: usize) -> Result<u64, &'static str> {
-        let raw = bytes.get(start..start + 8).ok_or("truncated p2p udp u64")?;
+    fn read_u64(bytes: &[u8], start: usize) -> Result<u64, ProtocolError> {
+        let raw = bytes.get(start..start + 8).ok_or(ProtocolError::P2pUdpProtocol("truncated p2p udp u64"))?;
         Ok(u64::from_be_bytes([
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
         ]))
     }
 
-    fn read_u128(bytes: &[u8], start: usize) -> Result<u128, &'static str> {
+    fn read_u128(bytes: &[u8], start: usize) -> Result<u128, ProtocolError> {
         let raw = bytes
             .get(start..start + 16)
-            .ok_or("truncated p2p udp u128")?;
+            .ok_or(ProtocolError::P2pUdpProtocol("truncated p2p udp u128"))?;
         Ok(u128::from_be_bytes([
             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7], raw[8], raw[9],
             raw[10], raw[11], raw[12], raw[13], raw[14], raw[15],
@@ -1665,7 +1672,7 @@ pub fn write_envelope_with_token_and_version(
         session_token: session_token.to_string(),
         message,
     };
-    let frame = encode_envelope(&envelope).map_err(to_invalid_data)?;
+    let frame = encode_envelope(&envelope).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     writer.write_all(&frame)
 }
 
@@ -1673,18 +1680,18 @@ pub fn read_envelope(reader: &mut impl Read) -> io::Result<Envelope> {
     let mut header = [0u8; HEADER_LEN];
     reader.read_exact(&mut header)?;
     if header[0..4] != FRAME_MAGIC {
-        return Err(to_invalid_data(ProtocolError::InvalidMagic));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, ProtocolError::InvalidMagic));
     }
     let remaining_len = u32::from_be_bytes([header[6], header[7], header[8], header[9]]);
     if remaining_len > MAX_FRAME_LEN {
-        return Err(to_invalid_data(ProtocolError::FrameTooLarge));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, ProtocolError::FrameTooLarge));
     }
 
     let mut frame = Vec::with_capacity(HEADER_LEN + remaining_len as usize);
     frame.extend_from_slice(&header);
     frame.resize(HEADER_LEN + remaining_len as usize, 0);
     reader.read_exact(&mut frame[HEADER_LEN..])?;
-    decode_envelope(&frame).map_err(to_invalid_data)
+    decode_envelope(&frame).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 pub struct EnvelopeDecoder {
@@ -1720,7 +1727,7 @@ impl EnvelopeDecoder {
             return Ok(None);
         }
         if self.buffer[0..4] != FRAME_MAGIC {
-            return Err(to_invalid_data(ProtocolError::InvalidMagic));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, ProtocolError::InvalidMagic));
         }
         let remaining_len = u32::from_be_bytes([
             self.buffer[6],
@@ -1729,7 +1736,7 @@ impl EnvelopeDecoder {
             self.buffer[9],
         ]);
         if remaining_len > MAX_FRAME_LEN {
-            return Err(to_invalid_data(ProtocolError::FrameTooLarge));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, ProtocolError::FrameTooLarge));
         }
         let frame_len = HEADER_LEN + remaining_len as usize;
         if self.buffer.len() < frame_len {
@@ -1737,7 +1744,7 @@ impl EnvelopeDecoder {
         }
         let frame = self.buffer[..frame_len].to_vec();
         self.buffer.drain(..frame_len);
-        decode_envelope(&frame).map(Some).map_err(to_invalid_data)
+        decode_envelope(&frame).map(Some).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }
 
@@ -1746,53 +1753,6 @@ impl Default for EnvelopeDecoder {
         Self::new()
     }
 }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProtocolError {
-    InvalidMagic,
-    InvalidFrameLength,
-    TruncatedFrame,
-    FrameTooLarge,
-    InvalidRole,
-    InvalidCommand,
-    InvalidVideoSource,
-    InvalidAudioSource,
-    InvalidCommandOutputStream,
-    InvalidFileTransferDirection,
-    InvalidFileTransferAction,
-    InvalidP2pAction,
-    InvalidMessageKind(u16),
-    InvalidBool(u8),
-    InvalidUtf8,
-    TrailingBytes(usize),
-    UnexpectedEof,
-}
-
-impl fmt::Display for ProtocolError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidMagic => write!(f, "invalid frame magic"),
-            Self::InvalidFrameLength => write!(f, "invalid frame length"),
-            Self::TruncatedFrame => write!(f, "truncated frame"),
-            Self::FrameTooLarge => write!(f, "frame too large"),
-            Self::InvalidRole => write!(f, "invalid role"),
-            Self::InvalidCommand => write!(f, "invalid command"),
-            Self::InvalidVideoSource => write!(f, "invalid video source"),
-            Self::InvalidAudioSource => write!(f, "invalid audio source"),
-            Self::InvalidCommandOutputStream => write!(f, "invalid command output stream"),
-            Self::InvalidFileTransferDirection => write!(f, "invalid file transfer direction"),
-            Self::InvalidFileTransferAction => write!(f, "invalid file transfer action"),
-            Self::InvalidP2pAction => write!(f, "invalid p2p action"),
-            Self::InvalidMessageKind(kind) => write!(f, "invalid message kind: {kind}"),
-            Self::InvalidBool(value) => write!(f, "invalid bool byte: {value}"),
-            Self::InvalidUtf8 => write!(f, "invalid utf-8 string"),
-            Self::TrailingBytes(count) => write!(f, "payload has {count} trailing bytes"),
-            Self::UnexpectedEof => write!(f, "unexpected end of payload"),
-        }
-    }
-}
-
-impl std::error::Error for ProtocolError {}
 
 #[cfg(test)]
 mod tests {
@@ -1855,141 +1815,3 @@ pub fn now_epoch_ms() -> u128 {
         .unwrap_or_default()
 }
 
-fn to_invalid_data(error: ProtocolError) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
-}
-
-#[derive(Default)]
-struct BinaryWriter {
-    buffer: Vec<u8>,
-}
-
-impl BinaryWriter {
-    fn into_inner(self) -> Vec<u8> {
-        self.buffer
-    }
-
-    fn u8(&mut self, value: u8) {
-        self.buffer.push(value);
-    }
-
-    fn bool(&mut self, value: bool) {
-        self.u8(if value { 1 } else { 0 });
-    }
-
-    fn u16(&mut self, value: u16) {
-        self.buffer.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn i32(&mut self, value: i32) {
-        self.buffer.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn u32(&mut self, value: u32) {
-        self.buffer.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn u64(&mut self, value: u64) {
-        self.buffer.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn u128(&mut self, value: u128) {
-        self.buffer.extend_from_slice(&value.to_be_bytes());
-    }
-
-    fn string(&mut self, value: &str) {
-        self.u32(value.len() as u32);
-        self.buffer.extend_from_slice(value.as_bytes());
-    }
-
-    fn byte_vec(&mut self, value: &[u8]) {
-        self.u32(value.len() as u32);
-        self.buffer.extend_from_slice(value);
-    }
-}
-
-struct BinaryReader<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> BinaryReader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, offset: 0 }
-    }
-
-    fn finish(&self) -> Result<(), ProtocolError> {
-        let trailing = self.data.len().saturating_sub(self.offset);
-        if trailing == 0 {
-            Ok(())
-        } else {
-            Err(ProtocolError::TrailingBytes(trailing))
-        }
-    }
-
-    fn bytes(&mut self, len: usize) -> Result<&'a [u8], ProtocolError> {
-        let end = self
-            .offset
-            .checked_add(len)
-            .ok_or(ProtocolError::UnexpectedEof)?;
-        if end > self.data.len() {
-            return Err(ProtocolError::UnexpectedEof);
-        }
-        let bytes = &self.data[self.offset..end];
-        self.offset = end;
-        Ok(bytes)
-    }
-
-    fn u8(&mut self) -> Result<u8, ProtocolError> {
-        Ok(self.bytes(1)?[0])
-    }
-
-    fn bool(&mut self) -> Result<bool, ProtocolError> {
-        match self.u8()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            value => Err(ProtocolError::InvalidBool(value)),
-        }
-    }
-
-    fn u16(&mut self) -> Result<u16, ProtocolError> {
-        let bytes = self.bytes(2)?;
-        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn i32(&mut self) -> Result<i32, ProtocolError> {
-        let bytes = self.bytes(4)?;
-        Ok(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn u32(&mut self) -> Result<u32, ProtocolError> {
-        let bytes = self.bytes(4)?;
-        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn u64(&mut self) -> Result<u64, ProtocolError> {
-        let bytes = self.bytes(8)?;
-        Ok(u64::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        ]))
-    }
-
-    fn u128(&mut self) -> Result<u128, ProtocolError> {
-        let bytes = self.bytes(16)?;
-        Ok(u128::from_be_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ]))
-    }
-
-    fn string(&mut self) -> Result<String, ProtocolError> {
-        let len = self.u32()? as usize;
-        let bytes = self.bytes(len)?;
-        String::from_utf8(bytes.to_vec()).map_err(|_| ProtocolError::InvalidUtf8)
-    }
-
-    fn byte_vec(&mut self) -> Result<Vec<u8>, ProtocolError> {
-        let len = self.u32()? as usize;
-        Ok(self.bytes(len)?.to_vec())
-    }
-}

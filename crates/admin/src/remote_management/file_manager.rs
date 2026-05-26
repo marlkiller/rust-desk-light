@@ -1,6 +1,6 @@
 use crate::{
     i18n::{t, tf},
-    theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
+    theme::{color_bad, color_good, color_warn},
     windowing,
 };
 use chrono::{Local, TimeZone};
@@ -1543,11 +1543,11 @@ fn transfer_status_label(status: FileTransferStatus) -> &'static str {
 
 fn transfer_status_color(status: FileTransferStatus) -> egui::Color32 {
     match status {
-        FileTransferStatus::Scanning => COLOR_WARN,
-        FileTransferStatus::Running => COLOR_WARN,
-        FileTransferStatus::Cancelling => COLOR_WARN,
-        FileTransferStatus::Done => COLOR_GOOD,
-        FileTransferStatus::Failed => COLOR_BAD,
+        FileTransferStatus::Scanning => color_warn(),
+        FileTransferStatus::Running => color_warn(),
+        FileTransferStatus::Cancelling => color_warn(),
+        FileTransferStatus::Done => color_good(),
+        FileTransferStatus::Failed => color_bad(),
         FileTransferStatus::Cancelled => crate::theme::palette().muted,
     }
 }
@@ -1604,9 +1604,9 @@ fn render_status_bar(
     let notice = notice.lock().map(|value| value.clone()).unwrap_or_default();
     let (label, color) = match status {
         FileStatus::Ready => (t("Ready"), crate::theme::palette().muted),
-        FileStatus::Pending => (t("Pending"), COLOR_WARN),
-        FileStatus::Done => (t("Done"), COLOR_GOOD),
-        FileStatus::Failed => (t("Failed"), COLOR_BAD),
+        FileStatus::Pending => (t("Pending"), color_warn()),
+        FileStatus::Done => (t("Done"), color_good()),
+        FileStatus::Failed => (t("Failed"), color_bad()),
     };
     crate::theme::status_frame().show(ui, |ui| {
         ui.set_min_height(26.0);
@@ -1655,7 +1655,7 @@ fn render_pending_dialogs(
                 ui.horizontal(|ui| {
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new(t("Delete")).color(COLOR_BAD).strong(),
+                            egui::RichText::new(t("Delete")).color(color_bad()).strong(),
                         ))
                         .clicked()
                     {
@@ -1801,7 +1801,7 @@ fn render_pending_dialogs(
                 ui.horizontal(|ui| {
                     if ui
                         .add(egui::Button::new(
-                            egui::RichText::new(t("Delete")).color(COLOR_BAD).strong(),
+                            egui::RichText::new(t("Delete")).color(color_bad()).strong(),
                         ))
                         .clicked()
                     {

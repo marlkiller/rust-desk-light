@@ -1,6 +1,6 @@
 use crate::{
     i18n::t,
-    theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
+    theme::{color_bad, color_good, color_warn},
     windowing,
 };
 use eframe::egui;
@@ -1350,9 +1350,9 @@ fn set_last_mouse_target(
 fn render_status_bar(ui: &mut egui::Ui, status: DesktopStatus, notice: &str, stats: &DesktopStats) {
     let (label, color) = match status {
         DesktopStatus::Ready => (t("Ready"), crate::theme::palette().muted),
-        DesktopStatus::Pending => (t("Pending"), COLOR_WARN),
-        DesktopStatus::Live => (t("Live"), COLOR_GOOD),
-        DesktopStatus::Failed => (t("Failed"), COLOR_BAD),
+        DesktopStatus::Pending => (t("Pending"), color_warn()),
+        DesktopStatus::Live => (t("Live"), color_good()),
+        DesktopStatus::Failed => (t("Failed"), color_bad()),
     };
     crate::theme::status_frame().show(ui, |ui| {
         crate::theme::render_status_line(ui, label, color, notice, |ui| {

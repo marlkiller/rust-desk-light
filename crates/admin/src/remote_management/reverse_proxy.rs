@@ -2,7 +2,7 @@ use crate::{
     app::event::AdminInput,
     i18n::{t, tf},
     theme::{
-        COLOR_BAD, COLOR_GOOD, COLOR_WARN, COMPACT_CONTROL_HEIGHT, PANEL_MARGIN, SECTION_GAP,
+        color_bad, color_good, color_warn, COMPACT_CONTROL_HEIGHT, PANEL_MARGIN, SECTION_GAP,
         TABLE_HEADER_HEIGHT, TABLE_ROW_HEIGHT,
     },
     windowing,
@@ -1408,10 +1408,10 @@ fn render_status_bar(
     let status = locked_status(status);
     let (label, color) = match status {
         ProxyStatus::Stopped => (t("Stopped"), crate::theme::palette().muted),
-        ProxyStatus::Starting => (t("Starting"), COLOR_WARN),
-        ProxyStatus::Listening => (t("Listening"), COLOR_GOOD),
-        ProxyStatus::Stopping => (t("Stopping"), COLOR_WARN),
-        ProxyStatus::Error => (t("Error"), COLOR_BAD),
+        ProxyStatus::Starting => (t("Starting"), color_warn()),
+        ProxyStatus::Listening => (t("Listening"), color_good()),
+        ProxyStatus::Stopping => (t("Stopping"), color_warn()),
+        ProxyStatus::Error => (t("Error"), color_bad()),
     };
     let progress = locked_string(notice);
     crate::theme::status_frame().show(ui, |ui| {

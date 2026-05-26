@@ -1,6 +1,9 @@
 mod about;
 mod audio_udp;
 mod client_aliases;
+mod window_manager;
+
+use window_manager::WindowVec;
 mod client_builder;
 mod client_groups;
 mod client_map;
@@ -55,7 +58,7 @@ use self::{
     settings::{parse_connection_settings, SettingsAction, SettingsState},
     ui::{
         activity_context_menu, apply_admin_theme, empty_state, panel, prune_activity_logs,
-        section_title, COLOR_BAD, COLOR_GOOD, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        section_title, color_bad, color_good, color_warn, TOOLBAR_CONTROL_HEIGHT,
     },
     video_pipeline::{PendingVideoFrame, VideoDecodeWorkers, VideoFrameCoalescer},
 };
@@ -211,22 +214,22 @@ struct AdminApp {
     client_builder: ClientBuilderState,
     client_map_window: ClientMapWindow,
     selected_client_id: Option<String>,
-    command_windows: Vec<CommandResultWindow>,
-    file_manager_windows: Vec<remote_management::file_manager::FileManagerWindow>,
-    desktop_windows: Vec<live_control::remote_desktop::RemoteDesktopWindow>,
-    camera_windows: Vec<live_control::camera::CameraWindow>,
+    command_windows: WindowVec<CommandResultWindow>,
+    file_manager_windows: WindowVec<remote_management::file_manager::FileManagerWindow>,
+    desktop_windows: WindowVec<live_control::remote_desktop::RemoteDesktopWindow>,
+    camera_windows: WindowVec<live_control::camera::CameraWindow>,
     video_decode_workers: VideoDecodeWorkers,
-    audio_windows: Vec<live_control::audio_listen::AudioListenWindow>,
+    audio_windows: WindowVec<live_control::audio_listen::AudioListenWindow>,
     audio_udp_sessions: HashMap<String, AudioUdpSession>,
     audio_udp_next_stream_id: u64,
-    terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
-    proxy_windows: Vec<remote_management::reverse_proxy::ReverseProxyWindow>,
+    terminal_windows: WindowVec<remote_management::remote_terminal::TerminalWindow>,
+    proxy_windows: WindowVec<remote_management::reverse_proxy::ReverseProxyWindow>,
     p2p_test: p2p_test::P2pTestWindow,
-    chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
-    voice_chat_windows: Vec<user_interaction::voice_chat::VoiceChatWindow>,
-    interaction_command_windows: Vec<user_interaction::InteractionCommandWindow>,
-    session_command_windows: Vec<crate::session::SessionCommandWindow>,
-    execute_windows: Vec<crate::execute::ExecuteWindow>,
+    chat_windows: WindowVec<user_interaction::text_chat::ChatWindow>,
+    voice_chat_windows: WindowVec<user_interaction::voice_chat::VoiceChatWindow>,
+    interaction_command_windows: WindowVec<user_interaction::InteractionCommandWindow>,
+    session_command_windows: WindowVec<crate::session::SessionCommandWindow>,
+    execute_windows: WindowVec<crate::execute::ExecuteWindow>,
     voice_udp_sessions: HashMap<String, AudioUdpSession>,
     voice_udp_senders: Arc<Mutex<HashMap<String, AudioUdpSender>>>,
     voice_udp_endpoints: Arc<Mutex<HashMap<String, AudioUdpEndpoint>>>,
@@ -291,23 +294,23 @@ impl AdminApp {
             client_builder,
             client_map_window: ClientMapWindow::new(),
             selected_client_id: None,
-            command_windows: Vec::new(),
-            file_manager_windows: Vec::new(),
-            desktop_windows: Vec::new(),
-            camera_windows: Vec::new(),
+            command_windows: WindowVec::new(),
+            file_manager_windows: WindowVec::new(),
+            desktop_windows: WindowVec::new(),
+            camera_windows: WindowVec::new(),
             video_decode_workers: VideoDecodeWorkers::default(),
-            audio_windows: Vec::new(),
+            audio_windows: WindowVec::new(),
             audio_udp_sessions: HashMap::new(),
             audio_udp_next_stream_id: initial_stream_id(),
-            terminal_windows: Vec::new(),
-            proxy_windows: Vec::new(),
+            terminal_windows: WindowVec::new(),
+            proxy_windows: WindowVec::new(),
             p2p_test: p2p_test::P2pTestWindow::default(),
-            chat_windows: Vec::new(),
-            voice_chat_windows: Vec::new(),
+            chat_windows: WindowVec::new(),
+            voice_chat_windows: WindowVec::new(),
             voice_audio_tx,
-            interaction_command_windows: Vec::new(),
-            session_command_windows: Vec::new(),
-            execute_windows: Vec::new(),
+            interaction_command_windows: WindowVec::new(),
+            session_command_windows: WindowVec::new(),
+            execute_windows: WindowVec::new(),
             voice_udp_sessions: HashMap::new(),
             voice_udp_senders,
             voice_udp_endpoints,
@@ -942,7 +945,7 @@ impl AdminApp {
                     if ui
                         .add(egui::Button::new(
                             egui::RichText::new(t("Delete Client"))
-                                .color(COLOR_BAD)
+                                .color(color_bad())
                                 .strong(),
                         ))
                         .clicked()

@@ -1,6 +1,6 @@
 use crate::{
     i18n::t,
-    theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
+    theme::{color_bad, color_good, color_warn},
     windowing,
 };
 use eframe::egui;
@@ -576,9 +576,9 @@ fn render_status_bar(
         .unwrap_or_default();
     let (label, color) = match status {
         TerminalStatus::Ready => (t("Ready"), crate::theme::palette().muted),
-        TerminalStatus::Running => (t("Running"), COLOR_WARN),
-        TerminalStatus::Done => (t("Done"), COLOR_GOOD),
-        TerminalStatus::Failed => (t("Failed"), COLOR_BAD),
+        TerminalStatus::Running => (t("Running"), color_warn()),
+        TerminalStatus::Done => (t("Done"), color_good()),
+        TerminalStatus::Failed => (t("Failed"), color_bad()),
     };
     let progress_text = if current_dir.trim().is_empty() {
         t("cwd: resolving...").to_string()

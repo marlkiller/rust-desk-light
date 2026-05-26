@@ -1,4 +1,4 @@
-use super::{COLOR_BAD, COLOR_GOOD, COLOR_WARN};
+use super::{color_bad, color_good, color_warn};
 use crate::i18n::t;
 use eframe::egui;
 use rdl_protocol::ClientInfo;
@@ -44,9 +44,9 @@ pub(super) fn client_status_text(ui: &mut egui::Ui, status: ClientStatus) {
 
 pub(crate) fn client_status_display(status: ClientStatus) -> (&'static str, egui::Color32) {
     match status {
-        ClientStatus::Online => (t("Online"), COLOR_GOOD),
-        ClientStatus::Stale => (t("Stale"), COLOR_WARN),
-        ClientStatus::Offline => (t("Offline"), COLOR_BAD),
+        ClientStatus::Online => (t("Online"), color_good()),
+        ClientStatus::Stale => (t("Stale"), color_warn()),
+        ClientStatus::Offline => (t("Offline"), color_bad()),
     }
 }
 
