@@ -23,6 +23,8 @@ pub(super) struct TileDiffEncoder {
     keyframe_burst_remaining: u8,
     last_sent_rgb: Vec<u8>,
     last_sent_at: Option<Instant>,
+    tile_buffer: Vec<u8>,         
+    encoded_tiles: Vec<EncodedTile>, 
 }
 
 impl TileDiffEncoder {
@@ -38,6 +40,8 @@ impl TileDiffEncoder {
             keyframe_burst_remaining: 0,
             last_sent_rgb: Vec::new(),
             last_sent_at: None,
+            tile_buffer: Vec::new(),
+            encoded_tiles: Vec::new(),
         }
     }
 
@@ -67,13 +71,15 @@ impl TileDiffEncoder {
             return Ok(None);
         }
 
-        let tiles = collect_delta_tiles(
+        collect_delta_tiles(
             rgb,
             &self.base_rgb,
             width,
             height,
             self.tile_size,
             quality,
+            &mut self.encoded_tiles,
+            &mut self.tile_buffer,
         )?;
         let payload = encode_payload(
             FRAME_TYPE_DELTA,
@@ -81,7 +87,7 @@ impl TileDiffEncoder {
             self.tile_size,
             width,
             height,
-            &tiles,
+            &self.encoded_tiles,
         )?;
         self.last_sent_rgb.clear();
         self.last_sent_rgb.extend_from_slice(rgb);
@@ -116,14 +122,14 @@ impl TileDiffEncoder {
         reason: KeyframeReason,
     ) -> Result<Option<Vec<u8>>, String> {
         self.base_id = next_base_id(self.base_id);
-        let tiles = collect_keyframe_tiles(rgb, width, height, self.tile_size, quality)?;
+        collect_keyframe_tiles(rgb, width, height, self.tile_size, quality, &mut self.encoded_tiles, &mut self.tile_buffer)?;
         let payload = encode_payload(
             FRAME_TYPE_KEYFRAME,
             self.base_id,
             self.tile_size,
             width,
             height,
-            &tiles,
+            &self.encoded_tiles,
         )?;
         self.base_rgb.clear();
         self.base_rgb.extend_from_slice(rgb);
@@ -165,8 +171,10 @@ fn collect_keyframe_tiles(
     height: u32,
     tile_size: u32,
     quality: u8,
-) -> Result<Vec<EncodedTile>, String> {
-    collect_tiles(rgb, None, width, height, tile_size, quality)
+    tiles: &mut Vec<EncodedTile>,
+    tile_buffer: &mut Vec<u8>,
+) -> Result<(), String> {
+    collect_tiles(rgb, None, width, height, tile_size, quality, tiles, tile_buffer)
 }
 
 fn collect_delta_tiles(
@@ -176,8 +184,10 @@ fn collect_delta_tiles(
     height: u32,
     tile_size: u32,
     quality: u8,
-) -> Result<Vec<EncodedTile>, String> {
-    collect_tiles(rgb, Some(base_rgb), width, height, tile_size, quality)
+    tiles: &mut Vec<EncodedTile>,
+    tile_buffer: &mut Vec<u8>,
+) -> Result<(), String> {
+    collect_tiles(rgb, Some(base_rgb), width, height, tile_size, quality, tiles, tile_buffer)
 }
 
 fn collect_tiles(
@@ -187,14 +197,16 @@ fn collect_tiles(
     height: u32,
     tile_size: u32,
     quality: u8,
-) -> Result<Vec<EncodedTile>, String> {
+    tiles: &mut Vec<EncodedTile>,
+    tile_rgb_buffer: &mut Vec<u8>,
+) -> Result<(), String> {
     if tile_size == 0 {
         return Err("tile size is invalid".to_string());
     }
     if let Some(base_rgb) = base_rgb {
         validate_rgb_frame(base_rgb, width, height)?;
     }
-    let mut tiles = Vec::new();
+    tiles.clear();
     let mut y = 0;
     while y < height {
         let tile_height = tile_size.min(height - y);
@@ -205,20 +217,21 @@ fn collect_tiles(
                 .map(|base| tile_differs(rgb, base, width, x, y, tile_width, tile_height))
                 .unwrap_or(true);
             if changed {
-                let tile_rgb = copy_tile_rgb(rgb, width, x, y, tile_width, tile_height)?;
+                copy_tile_rgb(rgb, width, x, y, tile_width, tile_height, tile_rgb_buffer)?;
+                let rgb_for_jpeg = std::mem::take(tile_rgb_buffer);
                 tiles.push(EncodedTile {
                     x,
                     y,
                     width: tile_width,
                     height: tile_height,
-                    bytes: encode_tile_jpeg(tile_rgb, tile_width, tile_height, quality)?,
+                    bytes: encode_tile_jpeg(rgb_for_jpeg, tile_width, tile_height, quality)?,
                 });
             }
             x += tile_size;
         }
         y += tile_size;
     }
-    Ok(tiles)
+    Ok(())
 }
 
 fn tile_differs(
@@ -248,20 +261,16 @@ fn copy_tile_rgb(
     y: u32,
     tile_width: u32,
     tile_height: u32,
-) -> Result<Vec<u8>, String> {
+    out: &mut Vec<u8>,
+) -> Result<(), String> {
     let row_len = tile_width as usize * 3;
-    let mut tile = Vec::with_capacity(
-        tile_width
-            .checked_mul(tile_height)
-            .and_then(|pixels| pixels.checked_mul(3))
-            .ok_or_else(|| "tile is too large".to_string())? as usize,
-    );
+    out.clear();
     for row in 0..tile_height {
         let start = ((y + row) as usize * frame_width as usize + x as usize) * 3;
         let end = start + row_len;
-        tile.extend_from_slice(&rgb[start..end]);
+        out.extend_from_slice(&rgb[start..end]);
     }
-    Ok(tile)
+    Ok(())
 }
 
 fn encode_tile_jpeg(

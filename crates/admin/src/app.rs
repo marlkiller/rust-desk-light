@@ -1,3 +1,5 @@
+use rdl_protocol::{file_transfer_message, sanitize_log_value};
+
 mod about;
 mod audio_udp;
 mod client_aliases;
@@ -50,7 +52,7 @@ use self::{
     },
     event::{AdminEvent, AdminEventSink, AdminInput, ReconnectEndpoint},
     file_transfer::{
-        file_transfer_message, run_file_upload_transfer, sanitize_log_value,
+        run_file_upload_transfer,
         send_file_transfer_input, send_upload_cancel, should_log_admin_file_transfer_event,
     },
     network::admin_network_loop,
@@ -241,6 +243,11 @@ struct AdminApp {
     settings: SettingsState,
     about_open: bool,
     applied_theme: Option<(crate::theme::ThemeKind, crate::theme::ResolvedTheme)>,
+    drain_latest_desktop_frames: HashMap<String, String>,
+    drain_latest_camera_frames: HashMap<String, String>,
+    drain_latest_desktop_video_frames: HashMap<String, PendingVideoFrame>,
+    drain_latest_camera_video_frames: HashMap<String, PendingVideoFrame>,
+    drain_pending_audio_frames: HashMap<(String, u8), VecDeque<PendingAudioFrame>>,
 }
 
 impl AdminApp {
@@ -322,16 +329,21 @@ impl AdminApp {
             settings,
             about_open: false,
             applied_theme: None,
+            drain_latest_desktop_frames: HashMap::new(),
+            drain_latest_camera_frames: HashMap::new(),
+            drain_latest_desktop_video_frames: HashMap::new(),
+            drain_latest_camera_video_frames: HashMap::new(),
+            drain_pending_audio_frames: HashMap::new(),
         }
     }
 
     fn drain_events(&mut self) -> bool {
         let mut changed = false;
-        let mut latest_desktop_frames = HashMap::<String, String>::new();
-        let mut latest_camera_frames = HashMap::<String, String>::new();
-        let mut latest_desktop_video_frames = HashMap::<String, PendingVideoFrame>::new();
-        let mut latest_camera_video_frames = HashMap::<String, PendingVideoFrame>::new();
-        let mut pending_audio_frames = HashMap::<(String, u8), VecDeque<PendingAudioFrame>>::new();
+        self.drain_latest_desktop_frames.clear();
+        self.drain_latest_camera_frames.clear();
+        self.drain_latest_desktop_video_frames.clear();
+        self.drain_latest_camera_video_frames.clear();
+        self.drain_pending_audio_frames.clear();
         let mut processed_events = 0usize;
         while processed_events < MAX_GUI_EVENTS_PER_FRAME {
             let Ok(event) = self.event_rx.try_recv() else {
@@ -402,13 +414,13 @@ impl AdminApp {
                         && command == CommandKind::Camera
                         && detail.starts_with("camera_frame\n")
                     {
-                        latest_camera_frames.insert(client_id, detail);
+                        self.drain_latest_camera_frames.insert(client_id, detail);
                     } else {
                         self.handle_command_ack(client_id, command, accepted, detail);
                     }
                 }
                 AdminEvent::DesktopFrame { client_id, payload } => {
-                    latest_desktop_frames.insert(client_id, payload);
+                    self.drain_latest_desktop_frames.insert(client_id, payload);
                 }
                 AdminEvent::DecodedDesktopFrame {
                     client_id,
@@ -466,10 +478,10 @@ impl AdminApp {
                     };
                     match source {
                         VideoSource::RemoteDesktop => {
-                            latest_desktop_video_frames.insert(client_id, frame);
+                            self.drain_latest_desktop_video_frames.insert(client_id, frame);
                         }
                         VideoSource::Camera => {
-                            latest_camera_video_frames.insert(client_id, frame);
+                            self.drain_latest_camera_video_frames.insert(client_id, frame);
                         }
                     }
                 }
@@ -483,10 +495,10 @@ impl AdminApp {
                     };
                     match source {
                         VideoSource::RemoteDesktop => {
-                            latest_desktop_video_frames.insert(client_id, frame);
+                            self.drain_latest_desktop_video_frames.insert(client_id, frame);
                         }
                         VideoSource::Camera => {
-                            latest_camera_video_frames.insert(client_id, frame);
+                            self.drain_latest_camera_video_frames.insert(client_id, frame);
                         }
                     }
                 }
@@ -499,7 +511,7 @@ impl AdminApp {
                     format,
                     bytes,
                 } => push_pending_audio_frame(
-                    &mut pending_audio_frames,
+                    &mut self.drain_pending_audio_frames,
                     client_id,
                     PendingAudioFrame {
                         source,
@@ -669,19 +681,19 @@ impl AdminApp {
                 AdminEvent::Log(line) => self.push_log(line),
             }
         }
-        for (client_id, payload) in latest_desktop_frames {
+        for (client_id, payload) in std::mem::take(&mut self.drain_latest_desktop_frames) {
             self.handle_desktop_ack(&client_id, true, payload);
         }
-        for (client_id, payload) in latest_camera_frames {
+        for (client_id, payload) in std::mem::take(&mut self.drain_latest_camera_frames) {
             self.spawn_camera_frame_decode(client_id, payload);
         }
-        for (client_id, frame) in latest_desktop_video_frames {
+        for (client_id, frame) in std::mem::take(&mut self.drain_latest_desktop_video_frames) {
             self.spawn_video_frame_decode(client_id, VideoSource::RemoteDesktop, frame);
         }
-        for (client_id, frame) in latest_camera_video_frames {
+        for (client_id, frame) in std::mem::take(&mut self.drain_latest_camera_video_frames) {
             self.spawn_video_frame_decode(client_id, VideoSource::Camera, frame);
         }
-        for ((client_id, _), frames) in pending_audio_frames {
+        for ((client_id, _), frames) in std::mem::take(&mut self.drain_pending_audio_frames) {
             for frame in frames {
                 self.handle_pending_audio_frame(&client_id, frame);
             }

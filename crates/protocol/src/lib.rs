@@ -1808,6 +1808,108 @@ mod tests {
     }
 }
 
+pub struct FileTransferBuilder {
+    target_id: String,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    action: FileTransferAction,
+    path: String,
+    relative_path: String,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    file_size: u64,
+    offset: u64,
+    bytes: Vec<u8>,
+    message: String,
+}
+
+impl FileTransferBuilder {
+    pub fn new(target_id: String, transfer_id: u64, direction: FileTransferDirection, action: FileTransferAction) -> Self {
+        Self { target_id, transfer_id, direction, action, path: String::new(), relative_path: String::new(), total_bytes: 0, transferred_bytes: 0, file_size: 0, offset: 0, bytes: Vec::new(), message: String::new() }
+    }
+    pub fn path(mut self, v: String) -> Self { self.path = v; self }
+    pub fn relative_path(mut self, v: String) -> Self { self.relative_path = v; self }
+    pub fn total_bytes(mut self, v: u64) -> Self { self.total_bytes = v; self }
+    pub fn transferred_bytes(mut self, v: u64) -> Self { self.transferred_bytes = v; self }
+    pub fn file_size(mut self, v: u64) -> Self { self.file_size = v; self }
+    pub fn offset(mut self, v: u64) -> Self { self.offset = v; self }
+    pub fn bytes(mut self, v: Vec<u8>) -> Self { self.bytes = v; self }
+    pub fn message(mut self, v: String) -> Self { self.message = v; self }
+    pub fn build(self) -> Message {
+        Message::FileTransfer {
+            target_id: self.target_id,
+            transfer_id: self.transfer_id,
+            direction: self.direction,
+            action: self.action,
+            path: self.path,
+            relative_path: self.relative_path,
+            total_bytes: self.total_bytes,
+            transferred_bytes: self.transferred_bytes,
+            file_size: self.file_size,
+            offset: self.offset,
+            bytes: self.bytes,
+            message: self.message,
+        }
+    }
+}
+
+impl Message {
+    pub fn file_transfer(target_id: String, transfer_id: u64, direction: FileTransferDirection, action: FileTransferAction) -> FileTransferBuilder {
+        FileTransferBuilder::new(target_id, transfer_id, direction, action)
+    }
+}
+
+/// Create a `Message::FileTransfer` with the given fields.
+///
+/// This is a convenience constructor shared by the admin and client crates.
+#[allow(clippy::too_many_arguments)]
+pub fn file_transfer_message(
+    target_id: String,
+    transfer_id: u64,
+    direction: FileTransferDirection,
+    action: FileTransferAction,
+    path: String,
+    relative_path: String,
+    total_bytes: u64,
+    transferred_bytes: u64,
+    file_size: u64,
+    offset: u64,
+    bytes: Vec<u8>,
+    message: String,
+) -> Message {
+    Message::FileTransfer {
+        target_id,
+        transfer_id,
+        direction,
+        action,
+        path,
+        relative_path,
+        total_bytes,
+        transferred_bytes,
+        file_size,
+        offset,
+        bytes,
+        message,
+    }
+}
+
+/// Sanitize a value for logging: replace control characters with spaces
+/// and truncate to at most 180 characters.
+///
+/// Shared by the admin and client crates so each avoids a duplicate definition.
+pub fn sanitize_log_value(value: &str) -> String {
+    let mut value = value
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>();
+    const MAX_LOG_VALUE_LEN: usize = 180;
+    if value.len() > MAX_LOG_VALUE_LEN {
+        value.truncate(MAX_LOG_VALUE_LEN);
+        value.push_str("...");
+    }
+    value
+}
+
 pub fn now_epoch_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

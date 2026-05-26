@@ -1089,6 +1089,21 @@ fn parse_result_table(detail: &str) -> Option<ResultTable> {
     let body = normalized
         .lines()
         .skip_while(|line| line.trim().is_empty() || line.trim_end().ends_with(':'))
+        .skip_while(|line| {
+            // Skip section-title lines (e.g. "Active Connections", "Proto  Local Address...")
+            // that are not tabular column headers. A title line typically has <= 2 short
+            // whitespace-separated words with no numeric/symbol content.
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return true;
+            }
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            if words.len() > 2 {
+                return false; // 3+ words → likely a real table header
+            }
+            // 1-2 words: skip if every word is purely alphabetic (like a section title)
+            words.iter().all(|w| w.chars().all(|c| c.is_alphabetic()))
+        })
         .collect::<Vec<_>>();
     if body.len() < 2 {
         return None;

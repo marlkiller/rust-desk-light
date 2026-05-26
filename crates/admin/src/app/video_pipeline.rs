@@ -1,5 +1,7 @@
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+const MAX_COALESCER_CAPACITY: usize = 1024;
 use std::sync::{Condvar, MutexGuard};
 
 #[derive(Clone)]
@@ -21,6 +23,7 @@ pub(crate) struct VideoFrameCoalescer {
 #[derive(Default)]
 struct VideoFrameCoalescerState {
     frames: HashMap<VideoFrameKey, (VideoSource, PendingVideoFrame)>,
+    order: VecDeque<VideoFrameKey>,
     queued: HashSet<VideoFrameKey>,
 }
 
@@ -36,6 +39,15 @@ impl VideoFrameCoalescer {
             return true;
         };
         state.frames.insert(key.clone(), (source, frame));
+        state.order.push_back(key.clone());
+        if state.frames.len() > MAX_COALESCER_CAPACITY {
+            while let Some(oldest) = state.order.pop_front() {
+                if !state.queued.contains(&oldest) {
+                    state.frames.remove(&oldest);
+                    break;
+                }
+            }
+        }
         state.queued.insert(key)
     }
 
@@ -45,6 +57,7 @@ impl VideoFrameCoalescer {
             return None;
         };
         state.queued.remove(&key);
+        state.order.retain(|k| k != &key);
         state.frames.remove(&key).map(|(_, frame)| frame)
     }
 }
