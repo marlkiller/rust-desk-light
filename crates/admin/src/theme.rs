@@ -369,18 +369,26 @@ pub(crate) fn table_cell_label(
 fn table_label_with_cursor(
     ui: &mut egui::Ui,
     text: impl Into<egui::WidgetText>,
-    align: egui::Align,
+    _align: egui::Align,
     sense: egui::Sense,
     cursor: egui::CursorIcon,
 ) -> egui::Response {
-    let response = ui.add_sized(
-        [ui.available_width(), ui.available_height()],
+    let available_size = ui.available_size();
+    let (rect, response) = ui.allocate_exact_size(available_size, sense);
+
+    let mut child_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Min)),
+    );
+
+    child_ui.add(
         egui::Label::new(text)
             .selectable(false)
             .truncate()
-            .halign(align)
             .sense(sense),
     );
+
     if response.hovered() {
         response.ctx.set_cursor_icon(cursor);
     }
