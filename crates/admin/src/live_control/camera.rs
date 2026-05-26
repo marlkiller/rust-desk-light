@@ -1,6 +1,6 @@
 use crate::{
     i18n::t,
-    theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
+    theme::{color_bad, color_good, color_warn},
     windowing,
 };
 use base64::Engine;
@@ -627,9 +627,9 @@ fn render_frame(
 fn render_status_bar(ui: &mut egui::Ui, status: CameraStatus, notice: &str, stats: &CameraStats) {
     let (label, color) = match status {
         CameraStatus::Ready => (t("Ready"), crate::theme::palette().muted),
-        CameraStatus::Pending => (t("Pending"), COLOR_WARN),
-        CameraStatus::Live => (t("Live"), COLOR_GOOD),
-        CameraStatus::Failed => (t("Failed"), COLOR_BAD),
+        CameraStatus::Pending => (t("Pending"), color_warn()),
+        CameraStatus::Live => (t("Live"), color_good()),
+        CameraStatus::Failed => (t("Failed"), color_bad()),
     };
     crate::theme::status_frame().show(ui, |ui| {
         crate::theme::render_status_line(ui, label, color, notice, |ui| {

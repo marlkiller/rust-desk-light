@@ -7,7 +7,7 @@ use eframe::egui;
 
 use super::{
     ui::{form_label, token_text_edit},
-    COLOR_BAD, COLOR_GOOD, TOOLBAR_CONTROL_HEIGHT,
+    color_bad, color_good, TOOLBAR_CONTROL_HEIGHT,
 };
 
 pub(super) struct SettingsState {
@@ -282,14 +282,14 @@ fn render_status(ui: &mut egui::Ui, state: &SettingsState) {
         ui.label(
             egui::RichText::new(&state.error)
                 .size(12.0)
-                .color(COLOR_BAD),
+                .color(color_bad()),
         );
     } else if !state.notice.is_empty() {
         ui.add_space(8.0);
         ui.label(
             egui::RichText::new(&state.notice)
                 .size(12.0)
-                .color(COLOR_GOOD),
+                .color(color_good()),
         );
     } else {
         ui.add_space(8.0);

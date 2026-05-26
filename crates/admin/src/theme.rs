@@ -260,16 +260,16 @@ fn dark_map_palette() -> MapPalette {
     }
 }
 
-pub(crate) const COLOR_ACCENT: egui::Color32 = LIGHT_PALETTE.accent;
-pub(crate) const COLOR_GOOD: egui::Color32 = LIGHT_PALETTE.good;
-pub(crate) const COLOR_BAD: egui::Color32 = LIGHT_PALETTE.bad;
-pub(crate) const COLOR_WARN: egui::Color32 = LIGHT_PALETTE.warn;
-pub(crate) const COLOR_TEXT: egui::Color32 = LIGHT_PALETTE.text;
-pub(crate) const COLOR_MUTED: egui::Color32 = LIGHT_PALETTE.muted;
-pub(crate) const COLOR_METER_BG: egui::Color32 = LIGHT_PALETTE.meter_bg;
-pub(crate) const COLOR_METRIC_CPU: egui::Color32 = LIGHT_PALETTE.metric_cpu;
-pub(crate) const COLOR_METRIC_MEMORY: egui::Color32 = LIGHT_PALETTE.metric_memory;
-pub(crate) const COLOR_METRIC_DISK: egui::Color32 = LIGHT_PALETTE.metric_disk;
+pub(crate) fn color_accent() -> egui::Color32 { palette().accent }
+pub(crate) fn color_good() -> egui::Color32 { palette().good }
+pub(crate) fn color_bad() -> egui::Color32 { palette().bad }
+pub(crate) fn color_warn() -> egui::Color32 { palette().warn }
+pub(crate) fn color_text() -> egui::Color32 { palette().text }
+pub(crate) fn color_muted() -> egui::Color32 { palette().muted }
+pub(crate) fn color_meter_bg() -> egui::Color32 { palette().meter_bg }
+pub(crate) fn color_metric_cpu() -> egui::Color32 { palette().metric_cpu }
+pub(crate) fn color_metric_memory() -> egui::Color32 { palette().metric_memory }
+pub(crate) fn color_metric_disk() -> egui::Color32 { palette().metric_disk }
 
 pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
@@ -369,18 +369,26 @@ pub(crate) fn table_cell_label(
 fn table_label_with_cursor(
     ui: &mut egui::Ui,
     text: impl Into<egui::WidgetText>,
-    align: egui::Align,
+    _align: egui::Align,
     sense: egui::Sense,
     cursor: egui::CursorIcon,
 ) -> egui::Response {
-    let response = ui.add_sized(
-        [ui.available_width(), ui.available_height()],
+    let available_size = ui.available_size();
+    let (rect, response) = ui.allocate_exact_size(available_size, sense);
+
+    let mut child_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Min)),
+    );
+
+    child_ui.add(
         egui::Label::new(text)
             .selectable(false)
             .truncate()
-            .halign(align)
             .sense(sense),
     );
+
     if response.hovered() {
         response.ctx.set_cursor_icon(cursor);
     }

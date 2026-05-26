@@ -1,7 +1,7 @@
 use super::{balloon_tip, message_box, open_text_in_notepad};
 use crate::{
     i18n::{self, t},
-    theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
+    theme::{color_bad, color_good, color_warn},
     windowing,
 };
 use eframe::egui;
@@ -260,9 +260,9 @@ fn render_status_bar(
     let notice = notice.lock().map(|value| value.clone()).unwrap_or_default();
     let (label, default_notice, color) = match status {
         InteractionStatus::Ready => (t("Ready"), t("Ready"), crate::theme::palette().muted),
-        InteractionStatus::Sending => (t("Sending"), t("Waiting for client result"), COLOR_WARN),
-        InteractionStatus::Done => (t("Done"), t("Command sent"), COLOR_GOOD),
-        InteractionStatus::Failed => (t("Failed"), t("Command failed"), COLOR_BAD),
+        InteractionStatus::Sending => (t("Sending"), t("Waiting for client result"), color_warn()),
+        InteractionStatus::Done => (t("Done"), t("Command sent"), color_good()),
+        InteractionStatus::Failed => (t("Failed"), t("Command failed"), color_bad()),
     };
     let notice = if notice.trim().is_empty() {
         default_notice

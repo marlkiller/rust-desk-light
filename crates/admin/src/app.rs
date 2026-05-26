@@ -1,6 +1,9 @@
 mod about;
 mod audio_udp;
 mod client_aliases;
+mod window_manager;
+
+use window_manager::WindowVec;
 mod client_builder;
 mod client_groups;
 mod client_map;
@@ -41,8 +44,9 @@ use self::{
         detail_has_result_table, detail_status, kill_target_process_succeeded,
         performance_auto_refresh_due, quiet_user_interaction_command, refresh_command_window,
         render_command_result, render_command_window_status_bar,
-        session_command_requires_confirmation, update_command_window, CommandResultRenderState,
-        CommandResultStatus, CommandResultWindow, StartupAddForm,
+        session_command_requires_confirmation, startup_detail_result, update_command_window,
+        CommandResultRenderState, CommandResultStatus, CommandResultWindow, StartupAddForm,
+        StartupDetailDialog,
     },
     event::{AdminEvent, AdminEventSink, AdminInput, ReconnectEndpoint},
     file_transfer::{
@@ -54,7 +58,7 @@ use self::{
     settings::{parse_connection_settings, SettingsAction, SettingsState},
     ui::{
         activity_context_menu, apply_admin_theme, empty_state, panel, prune_activity_logs,
-        section_title, COLOR_BAD, COLOR_GOOD, COLOR_WARN, TOOLBAR_CONTROL_HEIGHT,
+        section_title, color_bad, color_good, color_warn, TOOLBAR_CONTROL_HEIGHT,
     },
     video_pipeline::{PendingVideoFrame, VideoDecodeWorkers, VideoFrameCoalescer},
 };
@@ -201,6 +205,8 @@ struct AdminApp {
     clients: Vec<ClientRow>,
     client_aliases: HashMap<String, String>,
     client_groups: HashMap<String, String>,
+    force_deleted_client_ids: HashSet<String>,
+    force_delete_client_confirm: Option<String>,
     alias_window: AliasWindow,
     move_group_window: MoveGroupWindow,
     client_filter: String,
@@ -208,22 +214,22 @@ struct AdminApp {
     client_builder: ClientBuilderState,
     client_map_window: ClientMapWindow,
     selected_client_id: Option<String>,
-    command_windows: Vec<CommandResultWindow>,
-    file_manager_windows: Vec<remote_management::file_manager::FileManagerWindow>,
-    desktop_windows: Vec<live_control::remote_desktop::RemoteDesktopWindow>,
-    camera_windows: Vec<live_control::camera::CameraWindow>,
+    command_windows: WindowVec<CommandResultWindow>,
+    file_manager_windows: WindowVec<remote_management::file_manager::FileManagerWindow>,
+    desktop_windows: WindowVec<live_control::remote_desktop::RemoteDesktopWindow>,
+    camera_windows: WindowVec<live_control::camera::CameraWindow>,
     video_decode_workers: VideoDecodeWorkers,
-    audio_windows: Vec<live_control::audio_listen::AudioListenWindow>,
+    audio_windows: WindowVec<live_control::audio_listen::AudioListenWindow>,
     audio_udp_sessions: HashMap<String, AudioUdpSession>,
     audio_udp_next_stream_id: u64,
-    terminal_windows: Vec<remote_management::remote_terminal::TerminalWindow>,
-    proxy_windows: Vec<remote_management::reverse_proxy::ReverseProxyWindow>,
+    terminal_windows: WindowVec<remote_management::remote_terminal::TerminalWindow>,
+    proxy_windows: WindowVec<remote_management::reverse_proxy::ReverseProxyWindow>,
     p2p_test: p2p_test::P2pTestWindow,
-    chat_windows: Vec<user_interaction::text_chat::ChatWindow>,
-    voice_chat_windows: Vec<user_interaction::voice_chat::VoiceChatWindow>,
-    interaction_command_windows: Vec<user_interaction::InteractionCommandWindow>,
-    session_command_windows: Vec<crate::session::SessionCommandWindow>,
-    execute_windows: Vec<crate::execute::ExecuteWindow>,
+    chat_windows: WindowVec<user_interaction::text_chat::ChatWindow>,
+    voice_chat_windows: WindowVec<user_interaction::voice_chat::VoiceChatWindow>,
+    interaction_command_windows: WindowVec<user_interaction::InteractionCommandWindow>,
+    session_command_windows: WindowVec<crate::session::SessionCommandWindow>,
+    execute_windows: WindowVec<crate::execute::ExecuteWindow>,
     voice_udp_sessions: HashMap<String, AudioUdpSession>,
     voice_udp_senders: Arc<Mutex<HashMap<String, AudioUdpSender>>>,
     voice_udp_endpoints: Arc<Mutex<HashMap<String, AudioUdpEndpoint>>>,
@@ -279,6 +285,8 @@ impl AdminApp {
             clients: Vec::new(),
             client_aliases: client_aliases::load_client_aliases(),
             client_groups: client_groups::load_client_groups(),
+            force_deleted_client_ids: HashSet::new(),
+            force_delete_client_confirm: None,
             alias_window: AliasWindow::default(),
             move_group_window: MoveGroupWindow::default(),
             client_filter: String::new(),
@@ -286,23 +294,23 @@ impl AdminApp {
             client_builder,
             client_map_window: ClientMapWindow::new(),
             selected_client_id: None,
-            command_windows: Vec::new(),
-            file_manager_windows: Vec::new(),
-            desktop_windows: Vec::new(),
-            camera_windows: Vec::new(),
+            command_windows: WindowVec::new(),
+            file_manager_windows: WindowVec::new(),
+            desktop_windows: WindowVec::new(),
+            camera_windows: WindowVec::new(),
             video_decode_workers: VideoDecodeWorkers::default(),
-            audio_windows: Vec::new(),
+            audio_windows: WindowVec::new(),
             audio_udp_sessions: HashMap::new(),
             audio_udp_next_stream_id: initial_stream_id(),
-            terminal_windows: Vec::new(),
-            proxy_windows: Vec::new(),
+            terminal_windows: WindowVec::new(),
+            proxy_windows: WindowVec::new(),
             p2p_test: p2p_test::P2pTestWindow::default(),
-            chat_windows: Vec::new(),
-            voice_chat_windows: Vec::new(),
+            chat_windows: WindowVec::new(),
+            voice_chat_windows: WindowVec::new(),
             voice_audio_tx,
-            interaction_command_windows: Vec::new(),
-            session_command_windows: Vec::new(),
-            execute_windows: Vec::new(),
+            interaction_command_windows: WindowVec::new(),
+            session_command_windows: WindowVec::new(),
+            execute_windows: WindowVec::new(),
             voice_udp_sessions: HashMap::new(),
             voice_udp_senders,
             voice_udp_endpoints,
@@ -879,6 +887,79 @@ impl AdminApp {
         prune_activity_logs(&mut self.log_lines);
     }
 
+    fn open_force_delete_client_confirm(&mut self, client_id: &str) {
+        self.force_delete_client_confirm = Some(client_id.to_string());
+    }
+
+    fn force_delete_client(&mut self, client_id: &str) {
+        let label = self.client_display_name(client_id);
+        self.force_deleted_client_ids.insert(client_id.to_string());
+        self.remove_client_row(client_id);
+        let alias_removed = self.client_aliases.remove(client_id).is_some();
+        let group_removed = self.client_groups.remove(client_id).is_some();
+        if alias_removed {
+            if let Err(error) = client_aliases::save_client_aliases(&self.client_aliases) {
+                self.push_log(format!("force delete client alias cleanup failed: {error}"));
+            }
+        }
+        if group_removed {
+            if let Err(error) = client_groups::save_client_groups(&self.client_groups) {
+                self.push_log(format!("force delete client group cleanup failed: {error}"));
+            }
+        }
+        self.push_log(format!("force deleted offline client {label}"));
+    }
+
+    fn render_force_delete_client_confirm(&mut self, ctx: &egui::Context) {
+        let Some(client_id) = self.force_delete_client_confirm.clone() else {
+            return;
+        };
+        let label = self.client_display_name(&client_id);
+
+        egui::Window::new(t("Confirm Delete Client"))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(t(
+                        "Remove this offline client from the admin list?",
+                    ))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(crate::theme::muted_text(t("Client")));
+                    ui.label(crate::theme::body_text(&label));
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(t(
+                        "This only removes the saved admin row. It cannot delete the remote client identity until the client reconnects.",
+                    ))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new(t("Delete Client"))
+                                .color(color_bad())
+                                .strong(),
+                        ))
+                        .clicked()
+                    {
+                        self.force_delete_client(&client_id);
+                        self.force_delete_client_confirm = None;
+                    }
+                    if ui.button(t("Cancel")).clicked() {
+                        self.force_delete_client_confirm = None;
+                    }
+                });
+            });
+    }
+
     fn send_command(&mut self, client_id: &str, command: CommandKind) {
         if command == CommandKind::MoveToGroup {
             self.open_move_group_window(client_id);
@@ -890,6 +971,10 @@ impl AdminApp {
             .map(ClientStatus::can_receive_commands)
             .unwrap_or(false)
         {
+            if command == CommandKind::DeleteClient {
+                self.open_force_delete_client_confirm(client_id);
+                return;
+            }
             self.push_log(format!(
                 "blocked command={} to {}: client is offline",
                 command.as_str(),
@@ -977,9 +1062,9 @@ impl AdminApp {
         });
         self.open_command_window(client_id, command.clone());
         self.push_log(format!(
-            "sent command={} to {}",
+            ">> command={} to {}",
             command.as_str(),
-            client_id
+            self.client_display_name(client_id)
         ));
     }
 
@@ -1166,6 +1251,15 @@ impl AdminApp {
             .unwrap_or_else(|| client_id.to_string())
     }
 
+    fn client_display_name(&self, client_id: &str) -> String {
+        let name = self
+            .client_aliases
+            .get(client_id)
+            .cloned()
+            .unwrap_or_else(|| self.default_client_alias(client_id));
+        format!("[{}]", name)
+    }
+
     fn open_move_group_window(&mut self, client_id: &str) {
         let label = self
             .clients
@@ -1235,6 +1329,9 @@ impl AdminApp {
             process_kill_requested: Arc::new(Mutex::new(None)),
             startup_delete_confirm: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
+            startup_detail_requested: Arc::new(Mutex::new(None)),
+            startup_detail_pending: Arc::new(AtomicBool::new(false)),
+            startup_detail: Arc::new(Mutex::new(None)),
             registry_key_requested: Arc::new(Mutex::new(None)),
             registry_expanded_keys: Arc::new(Mutex::new(HashSet::new())),
             startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
@@ -1311,13 +1408,6 @@ impl AdminApp {
         accepted: bool,
         detail: String,
     ) {
-        self.push_log(format!(
-            "ack client={} command={} accepted={}",
-            client_id,
-            command.as_str(),
-            accepted
-        ));
-
         if accepted && detail == "forwarded" {
             user_interaction::handle_ack(
                 &mut self.interaction_command_windows,
@@ -1328,6 +1418,13 @@ impl AdminApp {
             );
             return;
         }
+
+        self.push_log(format!(
+            "<< command={} from {} accepted={}",
+            command.as_str(),
+            self.client_display_name(&client_id),
+            accepted
+        ));
 
         if command == CommandKind::TextChat {
             self.handle_chat_ack(&client_id, accepted, detail);
@@ -1459,6 +1556,35 @@ impl AdminApp {
                 window.last_auto_refresh_at = None;
                 return;
             }
+            if window.command == CommandKind::StartupManager && startup_detail_result(&detail) {
+                window
+                    .startup_detail_pending
+                    .store(false, Ordering::Relaxed);
+                window.status = if accepted {
+                    CommandResultStatus::Accepted
+                } else {
+                    CommandResultStatus::Failed
+                };
+                window.hostname = hostname;
+                window.username = username;
+                window.status_notice = Some(
+                    t(if accepted {
+                        "Startup item details loaded"
+                    } else {
+                        "Startup item details failed"
+                    })
+                    .to_string(),
+                );
+                window.open = true;
+                if let Ok(mut value) = window.startup_detail.lock() {
+                    *value = Some(StartupDetailDialog {
+                        open: true,
+                        title: t("Startup Item Details").to_string(),
+                        detail,
+                    });
+                }
+                return;
+            }
             update_command_window(window, accepted, detail, hostname, username);
             return;
         }
@@ -1469,6 +1595,35 @@ impl AdminApp {
             .rev()
             .find(|window| window.client_id == client_id && window.command == command)
         {
+            if window.command == CommandKind::StartupManager && startup_detail_result(&detail) {
+                window
+                    .startup_detail_pending
+                    .store(false, Ordering::Relaxed);
+                window.status = if accepted {
+                    CommandResultStatus::Accepted
+                } else {
+                    CommandResultStatus::Failed
+                };
+                window.hostname = hostname;
+                window.username = username;
+                window.status_notice = Some(
+                    t(if accepted {
+                        "Startup item details loaded"
+                    } else {
+                        "Startup item details failed"
+                    })
+                    .to_string(),
+                );
+                window.open = true;
+                if let Ok(mut value) = window.startup_detail.lock() {
+                    *value = Some(StartupDetailDialog {
+                        open: true,
+                        title: t("Startup Item Details").to_string(),
+                        detail,
+                    });
+                }
+                return;
+            }
             update_command_window(window, accepted, detail, hostname, username);
             return;
         }
@@ -1519,6 +1674,9 @@ impl AdminApp {
             process_kill_requested: Arc::new(Mutex::new(None)),
             startup_delete_confirm: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
+            startup_detail_requested: Arc::new(Mutex::new(None)),
+            startup_detail_pending: Arc::new(AtomicBool::new(false)),
+            startup_detail: Arc::new(Mutex::new(None)),
             registry_key_requested: Arc::new(Mutex::new(None)),
             registry_expanded_keys: Arc::new(Mutex::new(HashSet::new())),
             startup_add_form: Arc::new(Mutex::new(StartupAddForm::default())),
@@ -1816,6 +1974,11 @@ impl AdminApp {
                 window.last_auto_refresh_at = None;
             }
             if window.refresh_requested.swap(false, Ordering::Relaxed) {
+                if window.command == CommandKind::StartupManager {
+                    window
+                        .startup_detail_pending
+                        .store(false, Ordering::Relaxed);
+                }
                 refresh_command_window(
                     &self.input_tx,
                     window,
@@ -1844,6 +2007,9 @@ impl AdminApp {
                 if let Some(payload) = startup_payload {
                     let action = payload_field(&payload, "action")
                         .unwrap_or_else(|| "startup_action".to_string());
+                    window
+                        .startup_detail_pending
+                        .store(false, Ordering::Relaxed);
                     let _ = self.input_tx.send(AdminInput::Command {
                         target_id: window.client_id.clone(),
                         command: CommandKind::StartupManager,
@@ -1856,6 +2022,23 @@ impl AdminApp {
                         "startup manager {} on {}",
                         action, window.client_id
                     ));
+                }
+                let startup_detail_payload = window
+                    .startup_detail_requested
+                    .lock()
+                    .ok()
+                    .and_then(|mut value| value.take());
+                if let Some(payload) = startup_detail_payload {
+                    let _ = self.input_tx.send(AdminInput::Command {
+                        target_id: window.client_id.clone(),
+                        command: CommandKind::StartupManager,
+                        payload,
+                    });
+                    window.startup_detail_pending.store(true, Ordering::Relaxed);
+                    window.status = CommandResultStatus::Pending;
+                    window.status_notice = Some(t("Loading startup item details...").to_string());
+                    window.open = true;
+                    pending_logs.push(format!("startup item details on {}", window.client_id));
                 }
             }
             if window.command == CommandKind::RegistryManager {
@@ -1910,7 +2093,7 @@ impl AdminApp {
                 command_window_identity_title(&window.hostname, &window.username)
             );
             let viewport_id = egui::ViewportId::from_hash_of(("command_result", window.id));
-            let builder = windowing::child_viewport_builder(title, [760.0, 460.0], [260.0, 180.0]);
+            let builder = windowing::child_viewport_builder(title, [880.0, 540.0], [260.0, 180.0]);
 
             let command = window.command.clone();
             let status = window.status;
@@ -1923,6 +2106,9 @@ impl AdminApp {
             let process_kill_requested = window.process_kill_requested.clone();
             let startup_delete_confirm = window.startup_delete_confirm.clone();
             let startup_action_requested = window.startup_action_requested.clone();
+            let startup_detail_requested = window.startup_detail_requested.clone();
+            let startup_detail_pending = window.startup_detail_pending.clone();
+            let startup_detail = window.startup_detail.clone();
             let registry_key_requested = window.registry_key_requested.clone();
             let registry_expanded_keys = window.registry_expanded_keys.clone();
             let startup_add_form = window.startup_add_form.clone();
@@ -1966,6 +2152,9 @@ impl AdminApp {
                                             process_kill_requested: &process_kill_requested,
                                             startup_delete_confirm: &startup_delete_confirm,
                                             startup_action_requested: &startup_action_requested,
+                                            startup_detail_requested: &startup_detail_requested,
+                                            startup_detail_pending: &startup_detail_pending,
+                                            startup_detail: &startup_detail,
                                             registry_key_requested: &registry_key_requested,
                                             registry_expanded_keys: &registry_expanded_keys,
                                             startup_add_form: &startup_add_form,
@@ -2099,9 +2288,9 @@ impl AdminApp {
                 payload: outbound.payload,
             });
             self.push_log(format!(
-                "sent command={} to {}",
+                ">> command={} to {}",
                 outbound.command.as_str(),
-                outbound.client_id
+                self.client_display_name(&outbound.client_id)
             ));
         }
     }
@@ -2126,9 +2315,9 @@ impl AdminApp {
             payload: outbound.payload,
         });
         self.push_log(format!(
-            "sent command={} to {}",
+            ">> command={} to {}",
             outbound.command.as_str(),
-            outbound.client_id
+            self.client_display_name(&outbound.client_id)
         ));
     }
 
@@ -2196,9 +2385,9 @@ impl AdminApp {
                 payload: outbound.payload,
             });
             self.push_log(format!(
-                "sent command={} to {}",
+                ">> command={} to {}",
                 outbound.command.as_str(),
-                outbound.client_id
+                self.client_display_name(&outbound.client_id)
             ));
         }
     }

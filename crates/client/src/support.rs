@@ -7,9 +7,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 static HOSTNAME_CACHE: OnceLock<String> = OnceLock::new();
+const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 60;
 
 pub fn run_command(program: &str, args: &[&str], max_lines: usize) -> String {
-    run_command_timeout(program, args, max_lines, Duration::from_secs(12))
+    run_command_timeout(program, args, max_lines, Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS))
 }
 
 pub fn run_command_with_env(
@@ -18,7 +19,7 @@ pub fn run_command_with_env(
     env: &[(&str, &str)],
     max_lines: usize,
 ) -> String {
-    run_command_timeout_with_env(program, args, env, max_lines, Duration::from_secs(12))
+    run_command_timeout_with_env(program, args, env, max_lines, Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS))
 }
 
 pub fn run_command_timeout(

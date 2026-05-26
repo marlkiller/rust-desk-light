@@ -3,8 +3,8 @@ use eframe::egui;
 use std::sync::Arc;
 
 pub(super) use crate::theme::{
-    ResolvedTheme, ThemeKind, COLOR_ACCENT, COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT,
-    COLOR_WARN,
+    ResolvedTheme, ThemeKind, color_accent, color_bad, color_good, color_muted, color_text,
+    color_warn,
 };
 pub(super) const TOOLBAR_CONTROL_HEIGHT: f32 = crate::theme::CONTROL_HEIGHT;
 const ACTIVITY_LOG_LIMIT: usize = 300;

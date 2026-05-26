@@ -43,12 +43,12 @@ fn info_icon_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
 impl AdminApp {
     pub(super) fn render_status_bar(&mut self, ui: &mut egui::Ui) {
         let (status_text, notice, color) = if self.connected {
-            (t("Online"), t("Connected to service"), COLOR_GOOD)
+            (t("Online"), t("Connected to service"), color_good())
         } else {
             (
                 t("Reconnecting"),
                 t("Waiting for service connection"),
-                COLOR_BAD,
+                color_bad(),
             )
         };
         crate::theme::status_frame().show(ui, |ui| {

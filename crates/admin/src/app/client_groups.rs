@@ -78,7 +78,7 @@ pub(super) fn render_move_group_window(
                 ui.label(
                     egui::RichText::new(&state.error)
                         .size(12.0)
-                        .color(crate::theme::COLOR_BAD),
+                        .color(crate::theme::color_bad()),
                 );
             }
 

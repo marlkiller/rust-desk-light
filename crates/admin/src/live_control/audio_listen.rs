@@ -1,6 +1,6 @@
 use crate::{
     i18n::{t, tf},
-    theme::{COLOR_BAD, COLOR_GOOD, COLOR_WARN},
+    theme::{color_bad, color_good, color_warn},
     windowing,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -557,11 +557,11 @@ fn render_meter(ui: &mut egui::Ui, peak: f32, notice: &str) {
     );
     let meter_rect = rect.shrink2(egui::vec2(18.0, 28.0));
     ui.painter()
-        .rect_filled(meter_rect, 4.0, crate::theme::COLOR_METER_BG);
+        .rect_filled(meter_rect, 4.0, crate::theme::color_meter_bg());
     let fill_width = meter_rect.width() * peak.clamp(0.0, 1.0);
     let fill_rect =
         egui::Rect::from_min_size(meter_rect.min, egui::vec2(fill_width, meter_rect.height()));
-    ui.painter().rect_filled(fill_rect, 4.0, COLOR_GOOD);
+    ui.painter().rect_filled(fill_rect, 4.0, color_good());
     ui.painter().text(
         rect.center_top() + egui::vec2(0.0, 9.0),
         egui::Align2::CENTER_TOP,
@@ -618,9 +618,9 @@ fn render_status_bar(ui: &mut egui::Ui, status: AudioStatus, notice: &str, stats
 fn status_pill(ui: &mut egui::Ui, status: AudioStatus) {
     let (label, color) = match status {
         AudioStatus::Ready => (t("Ready"), crate::theme::palette().muted),
-        AudioStatus::Pending => (t("Pending"), COLOR_WARN),
-        AudioStatus::Live => (t("Live"), COLOR_GOOD),
-        AudioStatus::Failed => (t("Failed"), COLOR_BAD),
+        AudioStatus::Pending => (t("Pending"), color_warn()),
+        AudioStatus::Live => (t("Live"), color_good()),
+        AudioStatus::Failed => (t("Failed"), color_bad()),
     };
     egui::Frame::default()
         .fill(color.gamma_multiply(0.10))

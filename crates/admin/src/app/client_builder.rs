@@ -1,5 +1,5 @@
 use super::ui::{
-    token_text_edit, COLOR_BAD, COLOR_GOOD, COLOR_MUTED, COLOR_TEXT, TOOLBAR_CONTROL_HEIGHT,
+    token_text_edit, color_bad, color_good, color_muted, color_text, TOOLBAR_CONTROL_HEIGHT,
 };
 use crate::{
     client_binary::detect_binary_format,
@@ -266,7 +266,7 @@ fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, open_file: bool)
 fn form_label(ui: &mut egui::Ui, label: &str) {
     ui.add_sized(
         [FORM_LABEL_WIDTH, TOOLBAR_CONTROL_HEIGHT],
-        egui::Label::new(egui::RichText::new(label).color(COLOR_MUTED)),
+        egui::Label::new(egui::RichText::new(label).color(color_muted())),
     );
 }
 
@@ -296,10 +296,10 @@ fn render_build_status_bar(ui: &mut egui::Ui, status: &BuildStatus) {
         BuildStatus::Idle => (
             t("Ready"),
             t("No client has been generated in this window yet"),
-            COLOR_MUTED,
+            color_muted(),
         ),
-        BuildStatus::Success(message) => (t("Generated"), message.as_str(), COLOR_GOOD),
-        BuildStatus::Error(message) => (t("Failed"), message.as_str(), COLOR_BAD),
+        BuildStatus::Success(message) => (t("Generated"), message.as_str(), color_good()),
+        BuildStatus::Error(message) => (t("Failed"), message.as_str(), color_bad()),
     };
     egui::Frame::default()
         .fill(color.gamma_multiply(0.08))
@@ -314,10 +314,10 @@ fn render_build_status_bar(ui: &mut egui::Ui, status: &BuildStatus) {
                 ui.label(
                     egui::RichText::new(label)
                         .size(12.0)
-                        .color(COLOR_TEXT)
+                        .color(color_text())
                         .strong(),
                 );
-                ui.label(egui::RichText::new(notice).size(12.0).color(COLOR_MUTED))
+                ui.label(egui::RichText::new(notice).size(12.0).color(color_muted()))
                     .on_hover_text(notice);
             });
         });

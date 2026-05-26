@@ -290,7 +290,7 @@ fn render_create_form(
                 ui.label(
                     egui::RichText::new(disabled_message)
                         .size(12.0)
-                        .color(crate::theme::COLOR_WARN),
+                        .color(crate::theme::color_warn()),
                 );
             }
         });
@@ -557,7 +557,7 @@ fn render_delete_confirm(
                 if ui
                     .add(egui::Button::new(
                         egui::RichText::new(t("Delete"))
-                            .color(crate::theme::COLOR_BAD)
+                            .color(crate::theme::color_bad())
                             .strong(),
                     ))
                     .clicked()
