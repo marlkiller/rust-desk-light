@@ -7,3 +7,4 @@
 /config/client.toml
 /config/server.toml
 /config/*.local.toml
+.claude/settings.local.json

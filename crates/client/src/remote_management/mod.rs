@@ -1278,13 +1278,7 @@ fn event_log_summary() -> String {
     } else if cfg!(target_os = "macos") {
         macos_event_log_summary()
     } else {
-        run_first_available(
-            &[
-                ("journalctl", &["-n", "20", "--no-pager"][..]),
-                ("dmesg", &["-T"][..]),
-            ],
-            80,
-        )
+        linux_event_log_summary()
     };
     join_sections("event_log_summary", vec![output])
 }
@@ -1365,6 +1359,42 @@ fn split_at_checked(value: &str, mid: usize) -> Option<(&str, &str)> {
         return None;
     }
     Some(value.split_at(mid))
+}
+
+fn linux_event_log_summary() -> String {
+    let output = run_first_available(
+        &[
+            ("journalctl", &["-n", "20", "--no-pager", "--output=short-iso"][..]),
+            ("dmesg", &["-T"][..]),
+        ],
+        80,
+    );
+    if output.starts_with("journalctl failed:") || output.starts_with("dmesg failed:") || output.starts_with("dmesg timed out") {
+        return output;
+    }
+
+    let mut rows = vec!["Time\tLevel\tProvider\tId\tMessage".to_string()];
+    for line in output.lines().filter(|l| !l.trim().is_empty()).take(80) {
+        // journalctl --output=short-iso: "2024-01-15T10:30:00+0800 hostname process[pid]: message"
+        // dmesg -T: "[Sun Jan 15 10:30:00 2024] kernel: message"
+        let trimmed = line.trim();
+        let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+        if parts.len() >= 3 {
+            let time = parts[0]; // ISO timestamp or dmesg bracket
+            // parts[1] is hostname in journalctl output; skip it
+            let rest = parts[2]; // "process[pid]: message"
+            let proc_msg: Vec<&str> = rest.splitn(2, ": ").collect();
+            let provider = proc_msg[0];
+            let message = if proc_msg.len() > 1 { proc_msg[1] } else { rest };
+            rows.push(format!("{}\t-\t{}\t-\t{}", time, provider, sanitize_table_cell(message)));
+        } else {
+            rows.push(format!("-\t-\t-\t-\t{}", sanitize_table_cell(trimmed)));
+        }
+    }
+    if rows.len() == 1 {
+        rows.push("none\tInfo\t-\t-\tNo recent log events found".to_string());
+    }
+    rows.join("\n")
 }
 
 fn sanitize_table_cell(value: &str) -> String {

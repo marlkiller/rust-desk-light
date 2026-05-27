@@ -77,6 +77,13 @@ copy_config_templates() {
   fi
 }
 
+copy_i18n() {
+  local dest="$1"
+  if [[ -d "$ROOT_DIR/assets/i18n" ]]; then
+    cp -R "$ROOT_DIR/assets/i18n" "$dest/i18n"
+  fi
+}
+
 write_macos_plist() {
   local plist="$1"
   local bundle_id="$2"
@@ -138,6 +145,9 @@ package_macos_app() {
   chmod +x "$macos_dir/$binary_name"
   cp "$icon_source" "$resources_dir/rdl-icon.icns"
   copy_config_templates "$resources_dir"
+  if [[ "$binary_name" == "rdl-admin-gui" ]]; then
+    copy_i18n "$macos_dir"
+  fi
   printf '%s\n\nDouble-click this app to start it. It does not require a terminal window.\n' "$display_name" >"$resources_dir/README.txt"
   write_macos_plist "$app_dir/Contents/Info.plist" "$bundle_id" "$display_name" "$binary_name" "$usage_keys"
 
@@ -209,6 +219,9 @@ package_linux_appdir() {
   cp "$icon_source" "$app_dir/.DirIcon"
   cp "$icon_source" "$app_dir/usr/share/icons/hicolor/256x256/apps/rdl-icon.png"
   copy_config_templates "$app_dir"
+  if [[ "$binary_name" == "rdl-admin-gui" ]]; then
+    copy_i18n "$app_dir"
+  fi
   write_app_run "$app_dir/AppRun" "$binary_name"
   write_desktop_file "$app_dir/$desktop_name.desktop" "$display_name" "AppRun"
   printf '%s\n\nDouble-click AppRun or the GUI binary to start the app. Terminal=false is set in the desktop entry, and icons are included for AppDir/AppImage-compatible launchers.\n' "$display_name" >"$app_dir/README.txt"
