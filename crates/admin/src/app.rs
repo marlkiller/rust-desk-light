@@ -2058,6 +2058,29 @@ impl AdminApp {
                     pending_logs.push(format!("startup item details on {}", window.client_id));
                 }
             }
+            if window.command == CommandKind::ServiceManager {
+                let service_payload = window
+                    .startup_action_requested
+                    .lock()
+                    .ok()
+                    .and_then(|mut value| value.take());
+                if let Some(payload) = service_payload {
+                    let action = payload_field(&payload, "action")
+                        .unwrap_or_else(|| "service_action".to_string());
+                    let _ = self.input_tx.send(AdminInput::Command {
+                        target_id: window.client_id.clone(),
+                        command: CommandKind::ServiceManager,
+                        payload,
+                    });
+                    window.status = CommandResultStatus::Pending;
+                    window.status_notice = Some(t("Waiting for client result...").to_string());
+                    window.open = true;
+                    pending_logs.push(format!(
+                        "service manager {} on {}",
+                        action, window.client_id
+                    ));
+                }
+            }
             if window.command == CommandKind::RegistryManager {
                 let registry_payload = window
                     .registry_key_requested

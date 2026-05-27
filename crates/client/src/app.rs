@@ -28,6 +28,18 @@ use std::thread;
 const GUI_FRAME_INTERVAL_MS: u64 = 16;
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let run_as_service = args.contains(&"--service".to_string());
+    let no_gui = args.contains(&"--no-gui".to_string()) || run_as_service;
+
+    #[cfg(target_os = "windows")]
+    if run_as_service {
+        if let Err(e) = crate::windows_service::run() {
+            eprintln!("Windows service dispatcher failed: {}", e);
+        }
+        return Ok(());
+    }
+
     let config = Config::from_env()?;
     let process_lock = crate::runtime::acquire_client_process_lock()?;
     debug_log!(
@@ -35,7 +47,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         process_lock.path().display()
     );
 
-    let startup_notice_printed = if gui_available() {
+    let startup_notice_printed = if !no_gui && gui_available() {
         #[cfg(feature = "gui")]
         {
             eprintln!("{}", config.startup_config_notice());
@@ -121,7 +133,7 @@ fn disable_macos_automatic_window_tabbing() {
 #[cfg(all(feature = "gui", not(target_os = "macos")))]
 fn disable_macos_automatic_window_tabbing() {}
 
-fn run_terminal(config: Config, print_startup_notice: bool) -> io::Result<()> {
+pub(crate) fn run_terminal(config: Config, print_startup_notice: bool) -> io::Result<()> {
     let identity = load_client_identity();
     let (event_tx, event_rx) = mpsc::channel();
     let (_input_tx, input_rx) = mpsc::channel();

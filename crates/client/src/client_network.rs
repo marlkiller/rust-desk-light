@@ -973,7 +973,13 @@ fn client_connection_once(
                     P2pAction::ServerReady => {}
                 }
             }
-            Message::Ping => queue_message(&out_tx, &session_token, Message::Pong)?,
+            Message::Ping => {
+                debug_log!("Received Ping from server, replying with Pong");
+                queue_message(&out_tx, &session_token, Message::Pong)?
+            }
+            Message::Pong => {
+                debug_log!("Received Pong from server");
+            }
             Message::Error { detail } if detail.starts_with("auth failed") => {
                 event_sink.send(ClientEvent::Log(format!("server: {detail}")));
                 break;

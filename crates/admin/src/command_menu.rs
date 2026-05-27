@@ -224,6 +224,13 @@ fn render_remote_management(
             CommandKind::StartupManager,
             send_command,
         );
+        menu_command(
+            ui,
+            client_id,
+            "Service Manager",
+            CommandKind::ServiceManager,
+            send_command,
+        );
         menu_command_enabled(
             ui,
             client_id,
@@ -534,6 +541,7 @@ fn command_icon(command: &CommandKind) -> &'static str {
         CommandKind::ProcessManager => "⚙",
         CommandKind::WindowManager => "▣",
         CommandKind::StartupManager => "🚀",
+        CommandKind::ServiceManager => "🛠",
         CommandKind::RegistryManager => "📚",
         CommandKind::DriverManager => "🔌",
         CommandKind::EventLog => "📄",
@@ -556,6 +564,7 @@ fn command_icon(command: &CommandKind) -> &'static str {
         CommandKind::CreateTask => "⏱",
         CommandKind::CommandPreset => "★",
         CommandKind::PluginManager => "🔌",
+        CommandKind::Unknown(_) => "❓",
     }
 }
 
@@ -576,6 +585,7 @@ fn command_is_implemented(command: &CommandKind) -> bool {
             | CommandKind::ProcessManager
             | CommandKind::WindowManager
             | CommandKind::StartupManager
+            | CommandKind::ServiceManager
             | CommandKind::RegistryManager
             | CommandKind::DriverManager
             | CommandKind::RemoteDesktop

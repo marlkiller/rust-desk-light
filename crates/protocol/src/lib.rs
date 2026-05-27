@@ -452,7 +452,7 @@ impl Role {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandKind {
     UpdateClient,
     UninstallClient,
@@ -470,6 +470,7 @@ pub enum CommandKind {
     StartupManager,
     RegistryManager,
     DriverManager,
+    ServiceManager,
     EventLog,
     ActiveConnections,
     PerformanceMonitor,
@@ -491,6 +492,7 @@ pub enum CommandKind {
     CommandPreset,
     PluginManager,
     ClientConfig,
+    Unknown(u16),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -641,6 +643,7 @@ impl CommandKind {
             Self::ProcessManager => "process_manager",
             Self::WindowManager => "window_manager",
             Self::StartupManager => "startup_manager",
+            Self::ServiceManager => "service_manager",
             Self::RegistryManager => "registry_manager",
             Self::DriverManager => "driver_manager",
             Self::EventLog => "event_log",
@@ -664,6 +667,7 @@ impl CommandKind {
             Self::CommandPreset => "command_preset",
             Self::PluginManager => "plugin_manager",
             Self::ClientConfig => "client_config",
+            Self::Unknown(_) => "unknown",
         }
     }
 
@@ -683,6 +687,7 @@ impl CommandKind {
             "process_manager" => Self::ProcessManager,
             "window_manager" => Self::WindowManager,
             "startup_manager" => Self::StartupManager,
+            "service_manager" => Self::ServiceManager,
             "registry_manager" => Self::RegistryManager,
             "driver_manager" => Self::DriverManager,
             "event_log" => Self::EventLog,
@@ -725,6 +730,7 @@ impl CommandKind {
             Self::ProcessManager => 11,
             Self::WindowManager => 12,
             Self::StartupManager => 13,
+            Self::ServiceManager => 38,
             Self::RegistryManager => 14,
             Self::DriverManager => 15,
             Self::EventLog => 16,
@@ -749,6 +755,7 @@ impl CommandKind {
             Self::PluginManager => 35,
             Self::KillTargetProcess => 36,
             Self::ClientConfig => 37,
+            Self::Unknown(code) => *code,
         }
     }
 
@@ -791,7 +798,8 @@ impl CommandKind {
             35 => Self::PluginManager,
             36 => Self::KillTargetProcess,
             37 => Self::ClientConfig,
-            _ => return Err(ProtocolError::InvalidCommand),
+            38 => Self::ServiceManager,
+            v => Self::Unknown(v),
         })
     }
 }

@@ -24,16 +24,16 @@ pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     }
 }
 
-struct AutostartPaths {
-    current_exe: PathBuf,
-    target_exe: PathBuf,
-    entry_path: String,
-    config_path: PathBuf,
-    home_dir: PathBuf,
+pub(crate) struct AutostartPaths {
+    pub(crate) current_exe: PathBuf,
+    pub(crate) target_exe: PathBuf,
+    pub(crate) entry_path: String,
+    pub(crate) config_path: PathBuf,
+    pub(crate) home_dir: PathBuf,
 }
 
 impl AutostartPaths {
-    fn detect() -> Result<Self, String> {
+    pub(crate) fn detect() -> Result<Self, String> {
         let current_exe =
             std::env::current_exe().map_err(|error| format!("current exe unavailable: {error}"))?;
         let file_name = current_exe
@@ -73,7 +73,7 @@ impl AutostartPaths {
     }
 }
 
-fn install_current_binary(paths: &AutostartPaths) -> Result<(), String> {
+pub(crate) fn install_current_binary(paths: &AutostartPaths) -> Result<(), String> {
     if same_path(&paths.current_exe, &paths.target_exe) {
         return Ok(());
     }

@@ -387,12 +387,18 @@ fn admin_connection_once(
                         detail,
                     });
                 }
-                Message::Ping => send(
-                    &mut stream,
-                    &mut next_message_id,
-                    &session_token,
-                    Message::Pong,
-                )?,
+                Message::Ping => {
+                    debug_log!("Received Ping from server, replying with Pong");
+                    send(
+                        &mut stream,
+                        &mut next_message_id,
+                        &session_token,
+                        Message::Pong,
+                    )?
+                }
+                Message::Pong => {
+                    debug_log!("Received Pong from server");
+                }
                 other => {
                     event_sink.send(AdminEvent::Log(format!("server: {other:?}")));
                 }

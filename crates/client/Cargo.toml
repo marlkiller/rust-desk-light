@@ -63,3 +63,6 @@ core-graphics = { version = "0.23.2", optional = true }
 nokhwa = { version = "0.10.10", default-features = true, features = ["input-avfoundation"], optional = true }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWindow"], optional = true }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std"], optional = true }
+
+[target."cfg(windows)".dependencies]
+windows-service = "0.8.1"

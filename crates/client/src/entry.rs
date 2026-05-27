@@ -35,6 +35,8 @@ mod tools;
 mod user_interaction;
 #[cfg(feature = "gui")]
 mod windowing;
+#[cfg(target_os = "windows")]
+mod windows_service;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     app::run()

@@ -26,6 +26,7 @@ pub fn handle(command: &CommandKind, payload: &str) -> String {
         CommandKind::RegistryManager => registry_manager::handle(payload),
         CommandKind::RemoteTerminal => remote_terminal::execute(payload),
         CommandKind::StartupManager => startup_manager(payload),
+        CommandKind::ServiceManager => service_manager(payload),
         CommandKind::WindowManager => window_manager(),
         CommandKind::PerformanceMonitor => performance_snapshot(),
         CommandKind::EventLog => event_log_summary(),
@@ -64,6 +65,231 @@ fn window_manager() -> String {
         linux_window_manager()
     };
     join_sections("window_manager", vec![output])
+}
+
+fn service_manager(payload: &str) -> String {
+    let request = ServiceRequest::parse(payload);
+    let output = match request.action.as_str() {
+        "list" => service_manager_list(),
+        "start" | "stop" | "restart" | "enable" | "disable" => match apply_service_action(&request) {
+            Ok(()) => service_manager_list(),
+            Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+        },
+        "enable_client_service" => {
+            if cfg!(target_os = "windows") {
+                match windows_enable_client_service() {
+                    Ok(()) => service_manager_list(),
+                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+                }
+            } else {
+                match client_autostart::apply_startup_manager_action("enable") {
+                    Ok(()) => service_manager_list(),
+                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+                }
+            }
+        },
+        "disable_client_service" => {
+            if cfg!(target_os = "windows") {
+                match windows_disable_client_service() {
+                    Ok(()) => service_manager_list(),
+                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+                }
+            } else {
+                match client_autostart::apply_startup_manager_action("disable") {
+                    Ok(()) => service_manager_list(),
+                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+                }
+            }
+        }
+        action => {
+            return format!("service_manager_error\nstatus=unsupported\nmessage=unsupported service_manager action: {action}");
+        }
+    };
+    join_sections("service_manager", vec![output])
+}
+
+fn service_manager_list() -> String {
+    if cfg!(target_os = "windows") {
+        windows_service_manager()
+    } else if cfg!(target_os = "macos") {
+        macos_service_manager()
+    } else {
+        linux_service_manager()
+    }
+}
+
+#[derive(Debug)]
+struct ServiceRequest {
+    action: String,
+    name: Option<String>,
+}
+
+impl ServiceRequest {
+    fn parse(payload: &str) -> Self {
+        let action = startup_payload_field(payload, "action")
+            .unwrap_or_else(|| "list".to_string())
+            .to_ascii_lowercase();
+        Self {
+            action,
+            name: startup_payload_field(payload, "name"),
+        }
+    }
+}
+
+fn apply_service_action(request: &ServiceRequest) -> Result<(), String> {
+    let name = request
+        .name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "service_manager action requires name".to_string())?;
+
+    if cfg!(target_os = "windows") {
+        windows_apply_service_action(name, &request.action)
+    } else if cfg!(target_os = "macos") {
+        macos_apply_service_action(name, &request.action)
+    } else {
+        linux_apply_service_action(name, &request.action)
+    }
+}
+
+fn windows_service_manager() -> String {
+    run_powershell(
+        r#"
+function Clean($value) {
+  if ($null -eq $value) { return "-" }
+  $text = [string]$value
+  $text = $text -replace "`r|`n|`t", " "
+  if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
+}
+Write-Output "Name`tDisplayName`tStatus`tStartType"
+Get-Service | ForEach-Object {
+  "{0}`t{1}`t{2}`t{3}" -f (Clean $_.Name),(Clean $_.DisplayName),(Clean $_.Status),(Clean $_.StartType)
+}
+"#,
+        600,
+    )
+}
+
+fn windows_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    let cmd = match action {
+        "start" => format!("Start-Service -Name \"{name}\" -ErrorAction Stop"),
+        "stop" => format!("Stop-Service -Name \"{name}\" -Force -ErrorAction Stop"),
+        "restart" => format!("Restart-Service -Name \"{name}\" -Force -ErrorAction Stop"),
+        "enable" => format!("Set-Service -Name \"{name}\" -StartupType Automatic -ErrorAction Stop"),
+        "disable" => format!("Set-Service -Name \"{name}\" -StartupType Disabled -ErrorAction Stop"),
+        _ => return Err(format!("unsupported Windows service action: {action}")),
+    };
+    let script = format!("try {{ {cmd} }} catch {{ Write-Host $_.Exception.Message; exit 1 }}");
+    startup_command_result(run_powershell(&script, 60), &format!("{action} Windows service"))
+}
+
+fn windows_enable_client_service() -> Result<(), String> {
+    let paths = client_autostart::AutostartPaths::detect()?;
+    client_autostart::install_current_binary(&paths)?;
+    let exe = paths.target_exe.display().to_string();
+    let name = "RustDeskLightClientService";
+    let desc = "rust-desk-light Client";
+    let script = format!(
+        r#"
+try {{
+    if (Get-Service -Name '{name}' -ErrorAction SilentlyContinue) {{
+        Set-Service -Name '{name}' -StartupType Automatic -ErrorAction Stop
+        Write-Host "Service already exists, startup type set to Automatic."
+    }} else {{
+        New-Service -Name '{name}' -BinaryPathName '"{exe}" --service' -DisplayName '{desc}' -Description '{desc}' -StartupType Automatic -ErrorAction Stop | Out-Null
+        Write-Host "Service created successfully."
+    }}
+}} catch {{
+    Write-Host $_.Exception.Message
+    exit 1
+}}
+        "#
+    );
+    startup_command_result(run_powershell(&script, 60), "enable Windows client service")
+}
+
+fn windows_disable_client_service() -> Result<(), String> {
+    let name = "RustDeskLightClientService";
+    let script = format!(
+        r#"
+try {{
+    if (Get-Service -Name '{name}' -ErrorAction SilentlyContinue) {{
+        Stop-Service -Name '{name}' -Force -ErrorAction SilentlyContinue
+        if ($PSVersionTable.PSVersion.Major -ge 6) {{
+            Remove-Service -Name '{name}' -ErrorAction Stop
+        }} else {{
+            sc.exe delete '{name}' | Out-Null
+        }}
+        Write-Host "Service removed successfully."
+    }} else {{
+        Write-Host "Service does not exist."
+    }}
+}} catch {{
+    Write-Host $_.Exception.Message
+    exit 1
+}}
+        "#
+    );
+    startup_command_result(run_powershell(&script, 60), "disable Windows client service")
+}
+
+fn macos_service_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+printf 'PID\tStatus\tLabel\n'
+launchctl list | awk 'NR > 1 { printf "%s\t%s\t%s\n", $1, $2, $3 }'
+"#,
+        ],
+        600,
+    )
+}
+
+fn macos_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    // macOS launchctl actions are complex because they often require the full path to the plist.
+    // If only the label is provided, we can try some common commands.
+    let output = match action {
+        "start" => run_command("launchctl", &["start", name], 40),
+        "stop" => run_command("launchctl", &["stop", name], 40),
+        "restart" => {
+            run_command("launchctl", &["stop", name], 40);
+            run_command("launchctl", &["start", name], 40)
+        }
+        _ => return Err(format!("unsupported macOS service action: {action}")),
+    };
+    startup_command_result(output, &format!("{action} macOS service"))
+}
+
+fn linux_service_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+if command -v systemctl >/dev/null 2>&1; then
+  printf 'Unit\tLoad\tActive\tSub\tDescription\n'
+  systemctl list-units --type=service --all --no-legend --no-pager | awk '{ description=""; for(i=5; i<=NF; i++) description=description (i>5?" ":"") $i; printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, description }'
+else
+  printf 'Unit\tLoad\tActive\tSub\tDescription\n-\t-\t-\t-\tSystemctl not found\n'
+fi
+"#,
+        ],
+        600,
+    )
+}
+
+fn linux_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    let output = match action {
+        "start" => run_command("systemctl", &["start", name], 40),
+        "stop" => run_command("systemctl", &["stop", name], 40),
+        "restart" => run_command("systemctl", &["restart", name], 40),
+        "enable" => run_command("systemctl", &["enable", name], 40),
+        "disable" => run_command("systemctl", &["disable", name], 40),
+        _ => return Err(format!("unsupported Linux service action: {action}")),
+    };
+    startup_command_result(output, &format!("{action} Linux service"))
 }
 
 fn startup_manager(payload: &str) -> String {
@@ -1560,7 +1786,8 @@ fn startup_command_result(output: String, context: &str) -> Result<(), String> {
         || lower.starts_with("systemctl failed:")
         || lower.contains(" timed out")
     {
-        Err(format!("{context} failed: {text}"))
+        let inline_text = text.replace(['\r', '\n', '\t'], " ");
+        Err(format!("{context} failed: {inline_text}"))
     } else {
         Ok(())
     }
