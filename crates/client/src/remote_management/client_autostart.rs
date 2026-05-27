@@ -438,7 +438,7 @@ fn linux_systemd_service_unit(
 
 fn systemd_exec_command(target_exe: &Path, config_path: &Path) -> String {
     format!(
-        "{} --config {}",
+        "{} --service --config {}",
         systemd_unit_value(target_exe),
         systemd_unit_value(config_path)
     )
