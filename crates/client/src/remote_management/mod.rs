@@ -187,6 +187,7 @@ fn windows_enable_client_service() -> Result<(), String> {
     let paths = client_autostart::AutostartPaths::detect()?;
     client_autostart::install_current_binary(&paths)?;
     let exe = paths.target_exe.display().to_string();
+    let config_path = paths.config_path.display().to_string();
     let name = "RustDeskLightClientService";
     let desc = "rust-desk-light Client";
     let script = format!(
@@ -196,14 +197,15 @@ try {{
         Set-Service -Name '{name}' -StartupType Automatic -ErrorAction Stop
         Write-Host "Service already exists, startup type set to Automatic."
     }} else {{
-        New-Service -Name '{name}' -BinaryPathName '"{exe}" --service' -DisplayName '{desc}' -Description '{desc}' -StartupType Automatic -ErrorAction Stop | Out-Null
+        $binPath = '"{exe}" --service --config "{config_path}"'
+        New-Service -Name '{name}' -BinaryPathName $binPath -DisplayName '{desc}' -Description '{desc}' -StartupType Automatic -ErrorAction Stop | Out-Null
         Write-Host "Service created successfully."
     }}
 }} catch {{
     Write-Host $_.Exception.Message
     exit 1
 }}
-        "#
+        "#,
     );
     startup_command_result(run_powershell(&script, 60), "enable Windows client service")
 }
