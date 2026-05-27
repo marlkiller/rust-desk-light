@@ -112,6 +112,7 @@ jobs:
           cp target/release/rdl-admin-gui "dist/$package/"
           cp README.md "dist/$package/"
           cp -R config "dist/$package/"
+          cp -R assets/i18n "dist/$package/"
           chmod +x "dist/$package"/rdl-*
           tar -czf "dist/$package.tar.gz" -C "dist/$package" .
 
@@ -127,6 +128,7 @@ jobs:
           Copy-Item "target\release\rdl-admin-gui.exe" "dist\$package\"
           Copy-Item "README.md" "dist\$package\"
           Copy-Item "config" "dist\$package\" -Recurse
+          Copy-Item "assets\i18n" "dist\$package\" -Recurse
           Compress-Archive -Path "dist\$package\*" -DestinationPath "dist\$package.zip"
 
       - name: Upload build artifact
@@ -181,6 +183,7 @@ jobs:
             ├── rdl-client-cli      # Terminal-only client application
             ├── rdl-admin-gui       # Administration GUI utility
             ├── config/             # Server, client, and admin config templates
+            ├── i18n/               # Admin GUI translation files
             └── README.md           # Documentation
             ```
 
@@ -190,6 +193,7 @@ jobs:
             - `rdl-client-cli` - Terminal-only client application built without GUI dependencies
             - `rdl-admin-gui` - Admin GUI tool (executable binary)
             - `config/*.template.toml` - Example configuration files for server, client, and admin
+            - `i18n/*.toml` - Optional translation files for rdl-admin-gui
 
             All binaries are native Rust release builds optimized for their respective platforms.
 

@@ -1,58 +1,236 @@
 use rdl_protocol::CommandKind;
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::OnceLock;
 
-static CURRENT_LANGUAGE: AtomicU8 = AtomicU8::new(Language::English as u8);
+static CURRENT_LANGUAGE_INDEX: AtomicU8 = AtomicU8::new(0);
+static LANGUAGES: OnceLock<Vec<LanguageInfo>> = OnceLock::new();
+static TRANSLATIONS: OnceLock<HashMap<String, HashMap<String, &'static str>>> = OnceLock::new();
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Language {
-    English = 0,
-    Chinese = 1,
+struct LanguageInfo {
+    code: String,
+    label: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Language(u8);
+
 impl Language {
-    pub(crate) const ALL: [Self; 2] = [Self::English, Self::Chinese];
+    pub(crate) const ENGLISH: Language = Language(0);
 
     pub(crate) fn from_config(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "zh" | "zh-cn" | "zh_cn" | "cn" | "chinese" => Self::Chinese,
-            _ => Self::English,
+        let code = value.trim().to_ascii_lowercase();
+        let languages = get_languages();
+        for (i, lang) in languages.iter().enumerate() {
+            if lang.code.to_ascii_lowercase() == code {
+                return Language(i as u8);
+            }
         }
+        // Fallbacks
+        if matches!(code.as_str(), "en" | "english") {
+            return Self::ENGLISH;
+        }
+        Self::ENGLISH
     }
 
     pub(crate) fn as_config(self) -> &'static str {
-        match self {
-            Self::English => "en",
-            Self::Chinese => "zh-CN",
-        }
+        get_languages()
+            .get(self.0 as usize)
+            .map(|l| leak_string(&l.code))
+            .unwrap_or("en")
     }
 
     pub(crate) fn native_label(self) -> &'static str {
-        match self {
-            Self::English => "English",
-            Self::Chinese => "中文",
+        get_languages()
+            .get(self.0 as usize)
+            .map(|l| leak_string(&l.label))
+            .unwrap_or("English")
+    }
+
+    pub(crate) const ALL: LanguageList = LanguageList;
+}
+
+pub(crate) struct LanguageList;
+
+impl IntoIterator for LanguageList {
+    type Item = Language;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        (0..get_languages().len())
+            .map(|i| Language(i as u8))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
+fn get_languages() -> &'static [LanguageInfo] {
+    LANGUAGES.get_or_init(|| {
+        vec![LanguageInfo {
+            code: "en".to_string(),
+            label: "English".to_string(),
+        }]
+    })
+}
+
+pub(crate) fn initialize(config_dir: &Path) {
+    let mut all_languages = vec![LanguageInfo {
+        code: "en".to_string(),
+        label: "English".to_string(),
+    }];
+
+    let mut all_translations = HashMap::new();
+
+    // Load from i18n directory
+    let i18n_dir = config_dir.join("i18n");
+    if let Ok(entries) = std::fs::read_dir(i18n_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    let code = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if code == "en" {
+                        continue;
+                    }
+                    if let Some(label) = parse_toml_label(&text) {
+                        if let Some(translations) = parse_i18n_toml(&text) {
+                            // Update or add language
+                            if let Some(existing) = all_languages.iter_mut().find(|l| l.code == code)
+                            {
+                                existing.label = label;
+                            } else {
+                                all_languages.push(LanguageInfo {
+                                    code: code.clone(),
+                                    label,
+                                });
+                            }
+                            all_translations.insert(code, leak_translations(translations));
+                        }
+                    }
+                }
+            }
         }
     }
+
+    let _ = LANGUAGES.set(all_languages);
+    let _ = TRANSLATIONS.set(all_translations);
+}
+
+fn leak_translations(map: HashMap<String, String>) -> HashMap<String, &'static str> {
+    let mut leaked = HashMap::new();
+    for (k, v) in map {
+        leaked.insert(k, leak_string(&v));
+    }
+    leaked
+}
+
+fn leak_string(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
+fn parse_toml_label(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("label") {
+            if let Some(value) = rest.trim().strip_prefix('=') {
+                return Some(parse_toml_value(value.trim()));
+            }
+        }
+    }
+    None
+}
+
+fn parse_i18n_toml(text: &str) -> Option<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    let mut in_translations = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line == "[translations]" {
+            in_translations = true;
+            continue;
+        }
+        if line.starts_with('[') {
+            in_translations = false;
+            continue;
+        }
+        if in_translations {
+            if let Some((key, value)) = line.split_once('=') {
+                let key = parse_toml_value(key.trim());
+                let value = parse_toml_value(value.trim());
+                map.insert(key, value);
+            }
+        }
+    }
+    Some(map)
+}
+
+fn parse_toml_value(value: &str) -> String {
+    let value = value.trim();
+    if let Some(inner) = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    {
+        let mut out = String::new();
+        let mut escaped = false;
+        for ch in inner.chars() {
+            if escaped {
+                match ch {
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    other => out.push(other),
+                }
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else {
+                out.push(ch);
+            }
+        }
+        return out;
+    }
+    value.to_string()
 }
 
 pub(crate) fn set_language(language: Language) {
-    CURRENT_LANGUAGE.store(language as u8, Ordering::Relaxed);
+    CURRENT_LANGUAGE_INDEX.store(language.0, Ordering::Relaxed);
 }
 
 pub(crate) fn current_language() -> Language {
-    match CURRENT_LANGUAGE.load(Ordering::Relaxed) {
-        1 => Language::Chinese,
-        _ => Language::English,
-    }
+    Language(CURRENT_LANGUAGE_INDEX.load(Ordering::Relaxed))
 }
 
-pub(crate) fn t(key: &'static str) -> &'static str {
-    match current_language() {
-        Language::English => key,
-        Language::Chinese => zh(key),
+pub(crate) fn t(key: &str) -> &str {
+    let index = CURRENT_LANGUAGE_INDEX.load(Ordering::Relaxed);
+    if index == 0 {
+        return key;
     }
+
+    if let Some(languages) = LANGUAGES.get() {
+        if let Some(lang) = languages.get(index as usize) {
+            if let Some(translations) = TRANSLATIONS.get() {
+                if let Some(map) = translations.get(&lang.code) {
+                    if let Some(translated) = map.get(key) {
+                        return translated;
+                    }
+                }
+            }
+        }
+    }
+    key
 }
 
-pub(crate) fn tf(key: &'static str, args: &[(&str, &str)]) -> String {
+pub(crate) fn tf(key: &str, args: &[(&str, &str)]) -> String {
     let mut text = t(key).to_string();
     for (name, value) in args {
         text = text.replace(&format!("{{{name}}}"), value);
@@ -111,698 +289,5 @@ pub(crate) fn command_key(command: &CommandKind) -> &'static str {
         CommandKind::CommandPreset => "Command Preset",
         CommandKind::PluginManager => "Plugin Manager",
         CommandKind::KillTargetProcess => "Kill Process",
-    }
-}
-
-fn zh(key: &'static str) -> &'static str {
-    match key {
-        "About" => "关于",
-        "Accepted" => "已接受",
-        "Accept failed: {error}" => "接受连接失败：{error}",
-        "Action" => "操作",
-        "Active Connections" => "活动连接",
-        "Address type not supported" => "地址类型不支持",
-        "Activity" => "活动日志",
-        "Add" => "添加",
-        "Add Item" => "添加项目",
-        "Admin" => "管理员",
-        "Admin network queue is closed" => "管理员网络队列已关闭",
-        "Alias" => "别名",
-        "Alias cannot be empty" => "别名不能为空",
-        "All OS" => "全部系统",
-        "Already listening" => "已在监听",
-        "Appearance" => "外观",
-        "Arch" => "架构",
-        "Arguments" => "参数",
-        "At startup" => "启动时",
-        "Audio Listen" => "音频监听",
-        "Audio output failed" => "音频输出失败",
-        "Auth Token Configured" => "已配置认证令牌",
-        "audio listen failed" => "音频监听失败",
-        "Auth Token" => "认证令牌",
-        "Auth token" => "认证令牌",
-        "Author" => "作者",
-        "Auto refresh (5s)" => "自动刷新 (5秒)",
-        "Balloon Tip" => "气泡提示",
-        "Body is empty" => "正文为空",
-        "Browse" => "浏览",
-        "bytes" => "字节",
-        "Call" => "呼叫",
-        "Call Ended" => "通话已结束",
-        "Call Failed" => "通话失败",
-        "Call ended" => "通话已结束",
-        "Calling" => "呼叫中",
-        "Calling client" => "正在呼叫客户端",
-        "Camera" => "摄像头",
-        "Cancel" => "取消",
-        "CPU" => "CPU",
-        "CPU Load" => "CPU 负载",
-        "Cancelled" => "已取消",
-        "Cancelling" => "正在取消",
-        "Choose local folder" => "选择本地文件夹",
-        "Choose..." => "选择...",
-        "Clear" => "清空",
-        "Clear Closed" => "清除已关闭",
-        "Clear Group" => "清除分组",
-        "CLI IP Override" => "命令行 IP 覆盖",
-        "CLI Port Override" => "命令行端口覆盖",
-        "Clear or adjust the filter to show clients on the map." => {
-            "清空或调整筛选条件以在地图上显示客户端。"
-        }
-        "Client" => "客户端",
-        "Client Autostart: Off" => "客户端自启动：关闭",
-        "Client Autostart: On" => "客户端自启动：开启",
-        "Client Autostart: Unknown" => "客户端自启动：未知",
-        "Client accepted audio listen" => "客户端已接受音频监听",
-        "Client Builder" => "客户端生成器",
-        "Client Config" => "客户端配置",
-        "Client config loaded." => "客户端配置已加载。",
-        "Client config saved. Restarting client." => "客户端配置已保存，正在重启客户端。",
-        "Client Program Path" => "客户端程序路径",
-        "Client Mode" => "客户端模式",
-        "Client restart/update scheduled." => "客户端重启/更新已安排。",
-        "Client list exported to" => "客户端列表已导出到",
-        "Clone Client Settings" => "克隆客户端设置",
-        "Clone local socket failed: {error}" => "克隆本地套接字失败：{error}",
-        "Clone target stream failed: {error}" => "克隆目标连接失败：{error}",
-        "Client ID" => "客户端 ID",
-        "Client Map" => "客户端地图",
-        "Client offline - commands disabled" => "客户端离线，命令已禁用",
-        "Client stale - commands disabled" => "客户端状态过期，命令已禁用",
-        "Clients" => "客户端",
-        "Clipboard" => "剪贴板",
-        "Close" => "关闭",
-        "Closed" => "已关闭",
-        "Closing: stopping active file transfers" => "正在关闭：停止活动文件传输",
-        "Closing" => "正在关闭",
-        "Code" => "代码",
-        "Command" => "命令",
-        "Command not supported" => "命令不支持",
-        "Command Preset" => "命令预设",
-        "Command failed" => "命令失败",
-        "Command is required" => "命令不能为空",
-        "Config File Content" => "配置文件内容",
-        "Config Mode" => "配置模式",
-        "Config Path" => "配置路径",
-        "Command or executable path" => "命令或可执行文件路径",
-        "Command sent" => "命令已发送",
-        "Completed" => "已完成",
-        "Computer" => "计算机",
-        "Computer Info" => "计算机信息",
-        "Confirm" => "确认",
-        "Confirm Delete" => "确认删除",
-        "Confirm Delete Startup Item" => "确认删除启动项",
-        "Confirm Delete Task" => "确认删除任务",
-        "Confirm Kill Process" => "确认结束进程",
-        "Confirm Local Delete" => "确认删除本地项",
-        "Confirm Save" => "确认保存",
-        "Confirmation required" => "需要确认",
-        "Configure login autostart for this client" => "配置此客户端的登录自启动",
-        "Connected to service" => "已连接服务",
-        "Connected {target}" => "已连接 {target}",
-        "Connect proxy endpoint failed: {error}" => "连接代理端点失败：{error}",
-        "Connect target failed: {target} ({error})" => "连接目标失败：{target}（{error}）",
-        "Connection" => "连接",
-        "Connection not allowed by ruleset" => "规则不允许连接",
-        "Connection refused" => "连接被拒绝",
-        "Connections" => "连接",
-        "Closed and failed connections are capped" => "已关闭和失败的连接会按上限保留",
-        "Connection saved. Connected." => "连接已保存，已连接。",
-        "Connection saved. Reconnecting..." => "连接已保存，正在重连...",
-        "Connection settings are saved to the admin config." => "连接设置会保存到 admin 配置。",
-        "Copy" => "复制",
-        "Copy All" => "全部复制",
-        "Copy Cell" => "复制单元格",
-        "Copy Current Folder Path" => "复制当前文件夹路径",
-        "Copy Data" => "复制数据",
-        "Copy Full Path" => "复制完整路径",
-        "Copy Key Path" => "复制键路径",
-        "Copy Name" => "复制名称",
-        "Copy Path" => "复制路径",
-        "Copy Row" => "复制行",
-        "Copy Type" => "复制类型",
-        "Copy Value Data" => "复制值数据",
-        "Copy Value Name" => "复制值名称",
-        "Copy repository" => "复制仓库地址",
-        "Create" => "创建",
-        "Create or update task" => "创建或更新任务",
-        "Create Task" => "创建任务",
-        "Create save directory failed" => "创建保存目录失败",
-        "Create folder in current local directory" => "在当前本地目录创建文件夹",
-        "Create folder in current remote directory" => "在当前远程目录创建文件夹",
-        "Custom" => "自定义",
-        "Daily" => "每天",
-        "Dark" => "深色",
-        "Data" => "数据",
-        "Delay Seconds" => "延迟秒数",
-        "Delete" => "删除",
-        "Delete Client" => "删除客户端",
-        "Delete Startup Item" => "删除启动项",
-        "Delete this local item?" => "删除这个本地项目？",
-        "Delete this remote item?" => "删除这个远程项目？",
-        "Delete this startup item?" => "删除这个启动项？",
-        "Delete this task?" => "删除这个任务？",
-        "Device" => "设备",
-        "Direction" => "方向",
-        "Disk" => "磁盘",
-        "Details" => "详情",
-        "Detail" => "详情",
-        "Disable" => "禁用",
-        "Disable Startup Item" => "禁用启动项",
-        "Disabled: selected client has no client UI" => "已禁用：选中的客户端没有客户端界面",
-        "Disabled: Registry Manager is only available on Windows clients" => {
-            "\u{5df2}\u{7981}\u{7528}\u{ff1a}\u{6ce8}\u{518c}\u{8868}\u{7ba1}\u{7406}\u{4ec5}\u{652f}\u{6301} Windows \u{5ba2}\u{6237}\u{7aef}"
-        }
-        "Dismiss" => "关闭",
-        "Done" => "完成",
-        "Download" => "下载",
-        "Download selected remote file or folder" => "下载选中的远程文件或文件夹",
-        "Download..." => "下载...",
-        "Driver Manager" => "驱动管理",
-        "Enable" => "启用",
-        "Enabled" => "已启用",
-        "Enable Startup Item" => "启用启动项",
-        "Effective Server" => "生效服务器",
-        "Embedded Config" => "嵌入配置",
-        "Embedded config" => "嵌入配置",
-        "Embedded config slot is missing" => "缺少嵌入配置槽",
-        "Embedded mode: generated clients do not load, create, or save client.toml" => {
-            "嵌入模式：生成后的客户端不会加载、创建或保存 client.toml"
-        }
-        "Embedded slot" => "嵌入槽",
-        "empty" => "空",
-        "error" => "错误",
-        "Error" => "错误",
-        "Event Log" => "事件日志",
-        "Edit Alias" => "编辑别名",
-        "Edit Task" => "编辑任务",
-        "Export client list" => "导出客户端列表",
-        "Export client list failed" => "导出客户端列表失败",
-        "Execute" => "执行",
-        "Execute Code" => "执行代码",
-        "Execute File" => "执行文件",
-        "Execute Static Command" => "执行静态命令",
-        "Failed" => "失败",
-        "File Manager" => "文件管理器",
-        "File Name" => "文件名",
-        "File Path" => "文件路径",
-        "File path is required" => "文件路径不能为空",
-        "File transfer queued" => "文件传输已排队",
-        "Files" => "文件",
-        "Filter" => "筛选",
-        "Filter table content" => "筛选表格内容",
-        "Filtered clients" => "筛选客户端",
-        "Fingerprint" => "指纹",
-        "Folder name" => "文件夹名称",
-        "Format" => "格式",
-        "Frame received" => "已收到画面",
-        "Frames" => "帧数",
-        "FPS" => "FPS",
-        "Generate" => "生成",
-        "Generated" => "已生成",
-        "General SOCKS server failure" => "SOCKS 服务器通用失败",
-        "Go" => "转到",
-        "Group" => "分组",
-        "Group Name" => "分组名称",
-        "GUI" => "图形界面",
-        "GeoIP may be configured, but current clients have no public IP location. Local, LAN, VPN, proxy, and relay addresses cannot be placed on the map." => {
-            "GeoIP 可能已配置，但当前客户端没有公网 IP 位置。本地、局域网、VPN、代理和中继地址无法标注到地图上。"
-        }
-        "Hang Up" => "挂断",
-        "Hello from Rust Desk Light." => "来自 Rust Desk Light 的消息。",
-        "High" => "高",
-        "Host" => "主机",
-        "Host unreachable" => "主机不可达",
-        "History limit {limit}" => "历史上限 {limit}",
-        "ID" => "ID",
-        "IP" => "IP",
-        "IP or host" => "IP 或主机名",
-        "IP location is approximate" => "IP 位置为近似结果",
-        "Invalid listen port" => "监听端口无效",
-        "Invalid test target port" => "测试目标端口无效",
-        "Invalid SOCKS domain name" => "无效的 SOCKS 域名",
-        "Invalid SOCKS reply" => "无效的 SOCKS 响应",
-        "If this is a public client, restart rdl-server-cli with --geoip-db /path/GeoLite2-City.mmdb." => {
-            "如果这是公网客户端，请使用 --geoip-db /path/GeoLite2-City.mmdb 重启 rdl-server-cli。"
-        }
-        "Item" => "项目",
-        "Item name" => "项目名称",
-        "Jump" => "跳转",
-        "Keyboard" => "键盘",
-        "Killed by admin" => "管理员已结束",
-        "Kill process completed" => "\u{8fdb}\u{7a0b}\u{5df2}\u{7ed3}\u{675f}",
-        "Kill process failed" => "\u{7ed3}\u{675f}\u{8fdb}\u{7a0b}\u{5931}\u{8d25}",
-        "Kill Process" => "结束进程",
-        "Kill this process?" => "结束这个进程？",
-        "Known" => "已知",
-        "Kill Client Process" => "结束客户端进程",
-        "Language" => "语言",
-        "Language and code are required" => "语言和代码不能为空",
-        "License" => "许可证",
-        "Light" => "浅色",
-        "Listen failed: {error}" => "监听失败：{error}",
-        "Listener setup failed: {error}" => "监听器初始化失败：{error}",
-        "Listening" => "监听中",
-        "Listening on {addr}" => "正在监听 {addr}",
-        "Live" => "实时",
-        "Live Control" => "实时控制",
-        "Loading audio input devices" => "正在加载音频输入设备",
-        "Loading languages..." => "正在加载语言...",
-        "Loading..." => "加载中...",
-        "Local" => "本地",
-        "Local Replacement Binary" => "本地替换二进制文件",
-        "Local read failed: {error}" => "读取本地连接失败：{error}",
-        "Local replacement binary must be a file." => "本地替换二进制必须是文件。",
-        "Local side closed" => "本地侧已关闭",
-        "Local SOCKS client disconnected" => "本地 SOCKS 客户端已断开",
-        "Local socket closed" => "本地连接已关闭",
-        "Local path" => "本地路径",
-        "Located clients" => "定位客户端",
-        "Location" => "位置",
-        "Low" => "低",
-        "Medium" => "中",
-        "Message" => "消息",
-        "Message Box" => "消息框",
-        "Mic off" => "麦克风关",
-        "Mic on" => "麦克风开",
-        "Memory" => "内存",
-        "Mode" => "模式",
-        "Network unreachable" => "网络不可达",
-        "Modified" => "修改时间",
-        "Move To Group" => "移动到分组",
-        "Mouse" => "鼠标",
-        "Mouse Click" => "鼠标点击",
-        "Mouse Move" => "鼠标移动",
-        "Name" => "名称",
-        "Name and command are required." => "名称和命令不能为空。",
-        "New Local Folder" => "新建本地文件夹",
-        "New Remote Folder" => "新建远程文件夹",
-        "New Folder" => "新建文件夹",
-        "New Task" => "新建任务",
-        "New name" => "新名称",
-        "No camera frame to save" => "没有可保存的摄像头画面",
-        "No clients online" => "没有在线客户端",
-        "No startup arguments" => "无启动参数",
-        "No connections" => "暂无连接",
-        "No client has been generated in this window yet" => "此窗口尚未生成客户端",
-        "No audio input devices found" => "未找到音频输入设备",
-        "No file transfers" => "没有文件传输",
-        "No geolocatable clients" => "没有可定位的客户端",
-        "No input devices" => "没有输入设备",
-        "No matching clients" => "没有匹配的客户端",
-        "No managed tasks" => "没有托管任务",
-        "No messages yet." => "暂无消息。",
-        "No output yet" => "暂无输出",
-        "No registry values match the current filter." => "没有注册表值匹配当前筛选条件。",
-        "No rows match the current filter." => "没有行匹配当前筛选条件。",
-        "No screen" => "无屏幕",
-        "No supported language found" => "未找到支持的语言",
-        "No values in this key." => "此键没有值。",
-        "not loaded" => "未加载",
-        "not selected" => "未选择",
-        "Notification" => "通知",
-        "Off" => "关闭",
-        "Offline" => "离线",
-        "Online" => "在线",
-        "Open" => "打开",
-        "Opening" => "正在打开",
-        "Only SOCKS5 CONNECT is supported" => "仅支持 SOCKS5 CONNECT",
-        "Open Text In Notepad" => "在记事本中打开文本",
-        "Optional" => "可选",
-        "Optional client auth token" => "可选客户端认证令牌",
-        "Optional path on the client" => "客户端上的可选路径",
-        "OS Version" => "系统版本",
-        "Output" => "输出",
-        "Pending" => "等待中",
-        "PID" => "PID",
-        "Path on the client" => "客户端上的路径",
-        "Paste" => "粘贴",
-        "Performance Monitor" => "性能监控",
-        "Performance metrics could not be parsed" => "无法解析性能指标",
-        "Plugin Manager" => "插件管理器",
-        "Plugins" => "插件",
-        "Port" => "端口",
-        "Platform" => "平台",
-        "Preset" => "预设",
-        "present" => "存在",
-        "Process Manager" => "进程管理",
-        "Process" => "进程",
-        "Progress" => "进度",
-        "Proxy" => "代理",
-        "Proxy data arrived before open result" => "代理打开前收到了数据",
-        "Proxy endpoint has no address" => "代理端点没有可用地址",
-        "Proxy open result channel closed" => "代理打开结果通道已关闭",
-        "Proxy open timed out" => "代理打开超时",
-        "Proxy stopped" => "代理已停止",
-        "Proxy stream closed" => "代理连接已关闭",
-        "Proxy stream is not open" => "代理连接未打开",
-        "Proxy target writer stopped" => "代理目标写入已停止",
-        "Quick" => "快捷",
-        "Ready" => "就绪",
-        "Reboot" => "重启",
-        "Receiving audio frame" => "正在接收音频帧",
-        "Receiving audio frame {seq}" => "正在接收音频帧 {seq}",
-        "Reconnect failed: {detail}" => "重连失败：{detail}",
-        "Reconnecting" => "正在重连",
-        "Refresh" => "刷新",
-        "Refresh table content" => "刷新表格内容",
-        "Refreshing..." => "正在刷新...",
-        "Resolve proxy endpoint failed: {error}" => "解析代理端点失败：{error}",
-        "Registry" => "注册表",
-        "Registry action failed" => "\u{6ce8}\u{518c}\u{8868}\u{64cd}\u{4f5c}\u{5931}\u{8d25}",
-        "Registry Manager" => "注册表管理",
-        "Rejected" => "已拒绝",
-        "Reload Devices" => "重新加载设备",
-        "Reload Screens" => "重新加载屏幕",
-        "Reload Template" => "重新加载模板",
-        "Remote" => "远程",
-        "Remote Desktop" => "远程桌面",
-        "Remote Management" => "远程管理",
-        "Remote Terminal" => "远程终端",
-        "Remote commands are disabled until this client reconnects." => {
-            "客户端重新连接前远程命令不可用。"
-        }
-        "Remote commands become available when the client reconnects" => {
-            "客户端重新连接后远程命令将可用"
-        }
-        "Remote path" => "远程路径",
-        "Read local replacement binary failed" => "读取本地替换二进制失败",
-        "Remove client binary after exit" => "退出后删除客户端二进制文件",
-        "Removes local client identity and stops the client." => "移除本地客户端身份并停止客户端。",
-        "Removes this client identity and stops the client." => "移除此客户端身份并停止客户端。",
-        "Rename" => "重命名",
-        "Rename Item" => "重命名项目",
-        "Rename Local Item" => "重命名本地项目",
-        "Rename local item" => "重命名本地项目",
-        "Rename remote item" => "重命名远程项目",
-        "Replacement Binary Path" => "替换二进制路径",
-        "Replacement binary is not a rust-desk-light client build." => {
-            "替换二进制不是 rust-desk-light 客户端构建。"
-        }
-        "Replacement binary is not a supported executable format." => {
-            "替换二进制不是支持的可执行文件格式。"
-        }
-        "Replacement binary architecture does not match the selected client." => {
-            "替换二进制架构与所选客户端不匹配。"
-        }
-        "Replacement binary platform does not match the selected client." => {
-            "替换二进制平台与所选客户端不匹配。"
-        }
-        "Replacement binary validation failed" => "替换二进制校验失败",
-        "Restarts the remote client process." => "重启远程客户端进程。",
-        "Restarts the remote computer." => "重启远程计算机。",
-        "Restore Default" => "恢复默认",
-        "Repository" => "仓库",
-        "Resource usage" => "资源使用",
-        "Result received" => "已收到结果",
-        "Reverse Proxy" => "反向代理",
-        "Right click a row for commands" => "右键行以执行命令",
-        "Right click a row to delete" => "右键行以删除",
-        "Run" => "运行",
-        "Run Task" => "运行任务",
-        "Run Preset" => "运行预设",
-        "Running" => "运行中",
-        "Running..." => "运行中...",
-        "Rx" => "接收",
-        "primary" => "主屏",
-        "Save Frame" => "保存画面",
-        "Save Frame..." => "保存画面...",
-        "Save frame cancelled" => "已取消保存画面",
-        "Saved frame to" => "画面已保存到",
-        "Save frame failed" => "保存画面失败",
-        "Save camera frame" => "保存摄像头画面",
-        "Save configured client" => "保存已配置客户端",
-        "Save connection and reconnect" => "保存连接并重连",
-        "Save failed: {error}" => "保存失败：{error}",
-        "Save preferences failed: {error}" => "保存偏好失败：{error}",
-        "Save" => "保存",
-        "Save alias failed" => "保存别名失败",
-        "Save Alias" => "保存别名",
-        "Save this client config and restart the client?" => "保存此客户端配置并重启客户端？",
-        "Save group failed" => "保存分组失败",
-        "Save Group" => "保存分组",
-        "Save Task" => "保存任务",
-        "Save theme" => "保存主题",
-        "Save settings" => "保存设置",
-        "Schedule" => "计划",
-        "Scanning" => "扫描中",
-        "Screen" => "屏幕",
-        "Select a local replacement binary." => "请选择本地替换二进制文件。",
-        "Select a client for actions" => "选择客户端后执行操作",
-        "Select a client template binary" => "选择客户端模板二进制文件",
-        "Select a client template binary." => "请选择客户端模板二进制文件。",
-        "Select an input device and click Start" => "选择输入设备并点击开始",
-        "Select a remote file or folder" => "选择远程文件或文件夹",
-        "Select an output path." => "请选择输出路径。",
-        "Select client template" => "选择客户端模板",
-        "Select replacement binary" => "选择替换二进制文件",
-        "Select replacement binary with Browse to validate." => {
-            "请通过浏览选择替换二进制以完成校验。"
-        }
-        "Selected" => "已选择",
-        "Selected replacement binary is invalid." => "所选替换二进制校验失败。",
-        "Selected replacement binary passed validation." => "所选替换二进制已通过校验。",
-        "Send" => "发送",
-        "Select All" => "全选",
-        "Send this command to the client?" => "发送此命令到客户端？",
-        "Search by id, fingerprint, host, user, OS, or location" => {
-            "按 ID、指纹、主机、用户、系统或位置搜索"
-        }
-        "Search by id, fingerprint, group, host, user, OS, or location" => {
-            "按 ID、指纹、分组、主机、用户、系统或位置搜索"
-        }
-        "Search by alias, fingerprint, group, host, user, OS, or location" => {
-            "按别名、指纹、分组、主机、用户、系统或位置搜索"
-        }
-        "Search by alias, mode, fingerprint, group, host, user, OS, or location" => {
-            "按别名、模式、指纹、分组、主机、用户、系统或位置搜索"
-        }
-        "Search by id, fingerprint, host, user, or OS" => "按 ID、指纹、主机、用户或系统搜索",
-        "Sending" => "发送中",
-        "Sending command..." => "正在发送命令...",
-        "Sent to client" => "已发送到客户端",
-        "Server" => "服务器",
-        "server" => "服务器",
-        "Server IP" => "服务器 IP",
-        "Server IP cannot be empty." => "服务器 IP 不能为空。",
-        "Server Port" => "服务器端口",
-        "Server port must be 1-65535." => "服务器端口必须为 1-65535。",
-        "Service" => "服务",
-        "Session" => "会话",
-        "Setting" => "设置",
-        "Shutdown" => "关机",
-        "Powers off the remote computer." => "关闭远程计算机电源。",
-        "Speaker off" => "扬声器关",
-        "Speaker on" => "扬声器开",
-        "Size" => "大小",
-        "SOCKS authentication method rejected" => "SOCKS 认证方式被拒绝",
-        "SOCKS connect failed: {code}" => "SOCKS 连接失败：{code}",
-        "SOCKS connect reply failed: {error}" => "读取 SOCKS 连接响应失败：{error}",
-        "SOCKS connect request failed: {error}" => "发送 SOCKS 连接请求失败：{error}",
-        "SOCKS handshake failed: {error}" => "SOCKS 握手失败：{error}",
-        "SOCKS no acceptable authentication method" => "SOCKS 没有可接受的认证方式",
-        "SOCKS request failed: {error}" => "SOCKS 请求失败：{error}",
-        "SOCKS request timed out" => "SOCKS 请求超时",
-        "Stale" => "过期",
-        "Start" => "开始",
-        "Start Capture" => "开始捕获",
-        "Start Time" => "开始时间",
-        "Settings Summary" => "设置摘要",
-        "Source" => "来源",
-        "Start a client or refresh after it connects." => "启动客户端，或在连接后刷新。",
-        "Start proxy before testing" => "请先启动代理再测试",
-        "Starting" => "正在启动",
-        "Startup Manager" => "启动项管理",
-        "Startup Item Details" => "启动项详情",
-        "Startup item details failed" => "启动项详情加载失败",
-        "Startup item details loaded" => "启动项详情已加载",
-        "Loading startup item details..." => "正在加载启动项详情...",
-        "State" => "状态",
-        "Status" => "状态",
-        "Stop" => "停止",
-        "Stop Capture" => "停止捕获",
-        "Stops the remote client process." => "停止远程客户端进程。",
-        "Stopped" => "已停止",
-        "Succeeded" => "成功",
-        "Stopping" => "正在停止",
-        "Stopping audio listen" => "正在停止音频监听",
-        "Stopping camera" => "正在停止摄像头",
-        "Stopping remote desktop" => "正在停止远程桌面",
-        "System" => "跟随系统",
-        "System sender" => "系统",
-        "System Info" => "系统信息",
-        "Table data could not be parsed" => "无法解析表格数据",
-        "Target" => "目标",
-        "Target closed" => "目标已关闭",
-        "Target read failed: {error}" => "读取目标失败：{error}",
-        "Target write failed: {error}" => "写入目标失败：{error}",
-        "Terminal" => "终端",
-        "Test" => "测试",
-        "Test failed: {error}" => "测试失败：{error}",
-        "Test SOCKS5 through {target}" => "通过 {target} 测试 SOCKS5",
-        "Test succeeded: {target}" => "测试成功：{target}",
-        "Test target host:port" => "测试目标 host:port",
-        "Test target host is too long" => "测试目标主机名过长",
-        "Test target is required" => "测试目标不能为空",
-        "Test target must be host:port" => "测试目标必须是 host:port",
-        "Template" => "模板",
-        "Task Name" => "任务名称",
-        "Task" => "任务",
-        "Task Manager" => "任务管理器",
-        "Task name is required" => "任务名称不能为空",
-        "Task Details" => "任务详情",
-        "Template bytes cannot be read" => "无法读取模板内容",
-        "Template cannot be read" => "无法读取模板",
-        "Template not loaded" => "模板未加载",
-        "Template path is not a file" => "模板路径不是文件",
-        "Text" => "文本",
-        "Text Chat" => "文字聊天",
-        "The client will disconnect after acknowledging the command." => {
-            "客户端确认命令后将断开连接。"
-        }
-        "Theme" => "主题",
-        "Theme changes apply immediately. System follows the OS appearance." => {
-            "主题修改会立即生效；跟随系统将使用操作系统外观。"
-        }
-        "Theme saved. Theme applied." => "主题已保存并应用。",
-        "Settings saved." => "设置已保存。",
-        "Testing..." => "测试中...",
-        "Testing connection to {target}" => "正在测试连接到 {target}",
-        "Timed out waiting for audio result" => "等待音频结果超时",
-        "Timed out waiting for camera result" => "等待摄像头结果超时",
-        "Timed out waiting for remote desktop result" => "等待远程桌面结果超时",
-        "Time" => "时间",
-        "Time must be HH:MM" => "时间必须为 HH:MM",
-        "Title" => "标题",
-        "Token" => "令牌",
-        "Token cannot be empty." => "令牌不能为空。",
-        "Hide token" => "隐藏令牌",
-        "Show token" => "显示令牌",
-        "Transfer" => "传输",
-        "Transfers" => "传输",
-        "Trigger" => "触发器",
-        "Type" => "类型",
-        "Tx" => "发送",
-        "Uninstall Client" => "卸载客户端",
-        "Unassigned SOCKS reply code" => "未分配的 SOCKS 响应码",
-        "Unsupported SOCKS address type" => "不支持的 SOCKS 地址类型",
-        "Unsupported SOCKS version" => "不支持的 SOCKS 版本",
-        "Unsupported SOCKS reply address type" => "不支持的 SOCKS 响应地址类型",
-        "Unsupported or unknown binary format" => "不支持或未知的二进制格式",
-        "Update Client" => "更新客户端",
-        "Up" => "上级",
-        "Upload" => "上传",
-        "Upload cancelled" => "上传已取消",
-        "Upload complete. Update command sent; client may disconnect." => {
-            "上传完成，已发送更新命令；客户端可能会断开连接。"
-        }
-        "Upload failed" => "上传失败",
-        "Upload File..." => "上传文件...",
-        "Upload Folder..." => "上传文件夹...",
-        "Upload local replacement binary first" => "先上传本地替换二进制文件",
-        "Upload queued" => "上传已排队",
-        "Upload selected local file or folder" => "上传选中的本地文件或文件夹",
-        "Uploading" => "正在上传",
-        "Upload uses the client's temporary directory before restart." => {
-            "上传会先使用客户端的临时目录，然后再重启。"
-        }
-        "Update command sent; client may disconnect." => "更新命令已发送；客户端可能会断开连接。",
-        "Use admin token" => "使用管理员令牌",
-        "Use current" => "使用当前",
-        "Use brackets for IPv6 test targets" => "IPv6 测试目标请使用方括号",
-        "User" => "用户",
-        "User Interaction" => "用户交互",
-        "Version" => "版本",
-        "Voice Chat" => "语音聊天",
-        "Wait for the current upload to finish." => "请等待当前上传完成。",
-        "Waiting for client audio" => "等待客户端音频",
-        "Waiting for client result" => "等待客户端结果",
-        "Waiting for client result..." => "等待客户端结果...",
-        "Waiting for service connection" => "等待服务连接",
-        "Window Manager" => "窗口管理",
-        "Writes the remote client's config file and restarts it from that file." => {
-            "写入远程客户端配置文件，并从该文件重启客户端。"
-        }
-        "Working Directory" => "工作目录",
-        "You" => "你",
-        "{count} language(s) available" => "{count} 种语言可用",
-        "{count} clients" => "{count} 个客户端",
-        "{count} download queued" => "{count} 个下载已排队",
-        "{count} downloads queued" => "{count} 个下载已排队",
-        "{count} locations" => "{count} 个位置",
-        "{clients} clients / {clusters} clusters" => "{clients} 个客户端 / {clusters} 个集群",
-        "cwd: resolving..." => "cwd：解析中...",
-        "locations" => "位置",
-        "clients" => "客户端",
-        "clusters" => "集群",
-        "download queued" => "下载已排队",
-        "downloads queued" => "下载已排队",
-        "capacity" => "容量",
-        "invalid" => "无效",
-        "missing" => "缺失",
-        "missing (not a supported client template)" => "缺失（不是受支持的客户端模板）",
-        "modified unavailable" => "修改时间不可用",
-        "no audio" => "无音频",
-        "no" => "否",
-        "offset" => "偏移",
-        "Reuse: existing embedded config will be replaced when generated" => {
-            "生成时会替换现有嵌入配置"
-        }
-        "template is ready" => "模板已就绪",
-        "token" => "令牌",
-        "unknown accuracy" => "精度未知",
-        "used" => "已用",
-        "Validation" => "验证",
-        "valid" => "有效",
-        "yes" => "是",
-        "Decode" => "解码",
-        "Texture" => "纹理",
-        "No data" => "无数据",
-        "No existing groups" => "没有已有分组",
-        "Select existing group" => "选择已有分组",
-        "Config Path Source" => "配置路径来源",
-        "Loading client config..." => "正在加载客户端配置...",
-        "Builder Client" => "Builder 客户端",
-        "Builder/embedded client uses read-only embedded config; startup arguments and config file are shown only for reference." => {
-            "Builder/嵌入配置客户端使用只读嵌入配置；启动参数和配置文件仅用于查看。"
-        }
-        "Builder/embedded clients are read-only." => "Builder/嵌入配置客户端是只读的。",
-        "Reads Config File" => "读取配置文件",
-        "Read-only" => "只读",
-        "Runtime Config Path" => "运行配置路径",
-        "Save Config Path" => "保存配置路径",
-        "Saving client config..." => "正在保存客户端配置...",
-        "Saving writes the default client config path and restarts from that file." => {
-            "保存会写入默认客户端配置路径，并从该文件重启。"
-        }
-        "Startup Arguments" => "启动参数",
-        "Startup Command" => "启动命令",
-        "Startup Config File Content" => "启动配置文件内容",
-        "Startup Config Path" => "启动配置路径",
-        "Tools" => "工具",
-        "P2P Test" => "P2P 测试",
-        "Start Test" => "开始测试",
-        "Stop Test" => "停止测试",
-        "Select" => "选择",
-        "Select Online" => "选择在线",
-        "Clear Selection" => "清空选择",
-        "Clear Logs" => "清空日志",
-        "P2P Result" => "P2P 结果",
-        "Test Logs" => "测试日志",
-        "No logs yet." => "暂无日志。",
-        "Waiting" => "等待中",
-        "Probing" => "探测中",
-        "Waiting for server session..." => "等待服务端会话...",
-        "P2P test requested for" => "已请求 P2P 测试",
-        "P2P server ready for" => "P2P 服务端已就绪",
-        "Probing direct UDP path..." => "正在探测 UDP 直连路径...",
-        "P2P peer endpoint ready for" => "P2P 对端地址已就绪",
-        "P2P peer endpoint invalid for" => "P2P 对端地址无效",
-        "P2P test failed for" => "P2P 测试失败",
-        "Waiting for client config snapshot before changes are enabled." => {
-            "等待客户端配置快照返回后才可修改。"
-        }
-        "Startup action failed" => "\u{542f}\u{52a8}\u{9879}\u{64cd}\u{4f5c}\u{5931}\u{8d25}",
-        _ => key,
     }
 }

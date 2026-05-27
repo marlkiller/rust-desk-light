@@ -59,6 +59,15 @@ function Copy-ConfigTemplates {
     }
 }
 
+function Copy-I18n {
+    param([string]$Destination)
+
+    $I18nSource = Join-Path $RootDir "assets\i18n"
+    if (Test-Path -LiteralPath $I18nSource) {
+        Copy-Item -LiteralPath $I18nSource -Destination (Join-Path $Destination "i18n") -Recurse -Force
+    }
+}
+
 function Ensure-ResourceUpdater {
     if ("NativeResourceUpdater" -as [type]) {
         return
@@ -270,6 +279,9 @@ function New-WindowsAppPackage {
     Write-ExecutableIcon -ExePath $PackagedExe -IconPath $IconSource
     Copy-Item -LiteralPath $IconSource -Destination (Join-Path $AppDir "rdl-icon.ico") -Force
     Copy-ConfigTemplates $AppDir
+    if ($BinaryName -eq "rdl-admin-gui") {
+        Copy-I18n $AppDir
+    }
 
     @(
         $DisplayName,

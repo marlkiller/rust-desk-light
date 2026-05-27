@@ -101,6 +101,11 @@ const ROOT_STATUS_BAR_BOTTOM_MARGIN: f32 = 12.0;
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
     eprintln!("{}", config.startup_config_notice());
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            i18n::initialize(parent);
+        }
+    }
     run_gui(config)?;
     Ok(())
 }
