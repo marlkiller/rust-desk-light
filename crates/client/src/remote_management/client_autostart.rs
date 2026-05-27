@@ -9,8 +9,8 @@ const WINDOWS_RUN_VALUE: &str = "RustDeskLightClient";
 const WINDOWS_RUN_KEY: &str = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const WINDOWS_RUN_DISABLED_KEY: &str =
     "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunDisabled";
-const MACOS_LAUNCH_AGENT_LABEL: &str = "com.rust-desk-light.client";
-const LINUX_SYSTEMD_SERVICE_NAME: &str = "rust-desk-light-client.service";
+pub(crate) const MACOS_LAUNCH_AGENT_LABEL: &str = "com.rust-desk-light.client";
+pub(crate) const LINUX_SYSTEMD_SERVICE_NAME: &str = "rust-desk-light-client.service";
 
 pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     let paths = AutostartPaths::detect()?;

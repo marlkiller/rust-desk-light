@@ -7,7 +7,7 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::{define_windows_service, service_dispatcher};
 
-const SERVICE_NAME: &str = "RustDeskLightClientService";
+pub(crate) const SERVICE_NAME: &str = "RustDeskLightClientService";
 
 define_windows_service!(ffi_service_main, my_service_main);
 
