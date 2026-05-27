@@ -426,7 +426,7 @@ fn schedule_restart(current_exe: &Path, args: &[OsString]) -> io::Result<()> {
     if running_as_service() {
         let label = crate::remote_management::MACOS_LAUNCH_AGENT_LABEL;
         let script = format!(
-            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; launchctl kickstart -k gui/$(id -u)/{}",
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; launchctl kickstart -k system/{}",
             std::process::id(), label
         );
         spawn_shell(&script)
@@ -540,7 +540,7 @@ fn schedule_replace_and_restart(
         let script = format!(
             "while kill -0 {} 2>/dev/null; do sleep 0.2; done; \
              i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; \
-             launchctl kickstart -k gui/$(id -u)/{}",
+             launchctl kickstart -k system/{}",
             std::process::id(),
             sh_quote(update_path.as_os_str()),
             sh_quote(current_exe.as_os_str()),

@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod client_autostart;
+mod client_service;
 
 #[cfg(target_os = "linux")]
 pub(crate) use client_autostart::LINUX_SYSTEMD_SERVICE_NAME;
@@ -82,29 +83,15 @@ fn service_manager(payload: &str) -> String {
             Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
         },
         "enable_client_service" => {
-            if cfg!(target_os = "windows") {
-                match windows_enable_client_service() {
-                    Ok(()) => service_manager_list(),
-                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
-                }
-            } else {
-                match client_autostart::apply_service_manager_action("enable") {
-                    Ok(()) => service_manager_list(),
-                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
-                }
+            match client_service::apply_service_manager_action("enable") {
+                Ok(()) => service_manager_list(),
+                Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
             }
         },
         "disable_client_service" => {
-            if cfg!(target_os = "windows") {
-                match windows_disable_client_service() {
-                    Ok(()) => service_manager_list(),
-                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
-                }
-            } else {
-                match client_autostart::apply_service_manager_action("disable") {
-                    Ok(()) => service_manager_list(),
-                    Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
-                }
+            match client_service::apply_service_manager_action("disable") {
+                Ok(()) => service_manager_list(),
+                Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
             }
         }
         action => {
@@ -118,7 +105,7 @@ fn service_manager_list() -> String {
     if cfg!(target_os = "windows") {
         windows_service_manager()
     } else if cfg!(target_os = "macos") {
-        macos_service_manager()
+        String::new()
     } else {
         linux_service_manager()
     }
@@ -152,7 +139,7 @@ fn apply_service_action(request: &ServiceRequest) -> Result<(), String> {
     if cfg!(target_os = "windows") {
         windows_apply_service_action(name, &request.action)
     } else if cfg!(target_os = "macos") {
-        macos_apply_service_action(name, &request.action)
+        Err("service actions are not supported on macOS".to_string())
     } else {
         linux_apply_service_action(name, &request.action)
     }
@@ -167,7 +154,7 @@ fn service_details(request: &ServiceRequest) -> String {
     let output = if cfg!(target_os = "windows") {
         windows_service_details(name)
     } else if cfg!(target_os = "macos") {
-        macos_service_details(name)
+        startup_detail_error_text("service management is not supported on macOS")
     } else {
         linux_service_details(name)
     };
@@ -215,99 +202,6 @@ fn windows_service_details(name: &str) -> String {
         &format!("Get-Service -Name \"{name}\" | Format-List *"),
         160,
     )
-}
-
-fn windows_enable_client_service() -> Result<(), String> {
-    let current_paths = client_autostart::AutostartPaths::detect()?;
-    let system_paths = client_autostart::AutostartPaths::detect_system()?;
-
-    // 1. Install binary to system-level location
-    client_autostart::install_current_binary(&system_paths)?;
-
-    // 2. Sync current user's config to system profile directory
-    client_autostart::install_config(&current_paths.config_path, &system_paths.config_path)?;
-
-    let exe = system_paths.target_exe.display().to_string();
-    let config_path = system_paths.config_path.display().to_string();
-    let name = "RustDeskLightClientService";
-    let desc = "rust-desk-light Client";
-    let script = format!(
-        r#"
-try {{
-    if (Get-Service -Name '{name}' -ErrorAction SilentlyContinue) {{
-        Set-Service -Name '{name}' -StartupType Automatic -ErrorAction Stop
-        Write-Host "Service already exists, startup type set to Automatic."
-    }} else {{
-        $binPath = '"{exe}" --service --config "{config_path}"'
-        New-Service -Name '{name}' -BinaryPathName $binPath -DisplayName '{desc}' -Description '{desc}' -StartupType Automatic -ErrorAction Stop | Out-Null
-        Write-Host "Service created successfully."
-    }}
-}} catch {{
-    Write-Host $_.Exception.Message
-    exit 1
-}}
-        "#,
-    );
-    startup_command_result(run_powershell(&script, 60), "enable Windows client service")
-}
-
-fn windows_disable_client_service() -> Result<(), String> {
-    let name = "RustDeskLightClientService";
-    let script = format!(
-        r#"
-try {{
-    if (Get-Service -Name '{name}' -ErrorAction SilentlyContinue) {{
-        Stop-Service -Name '{name}' -Force -ErrorAction SilentlyContinue
-        if ($PSVersionTable.PSVersion.Major -ge 6) {{
-            Remove-Service -Name '{name}' -ErrorAction Stop
-        }} else {{
-            sc.exe delete '{name}' | Out-Null
-        }}
-        Write-Host "Service removed successfully."
-    }} else {{
-        Write-Host "Service does not exist."
-    }}
-}} catch {{
-    Write-Host $_.Exception.Message
-    exit 1
-}}
-        "#
-    );
-    startup_command_result(run_powershell(&script, 60), "disable Windows client service")
-}
-
-fn macos_service_manager() -> String {
-    run_command(
-        "sh",
-        &[
-            "-lc",
-            r#"
-printf 'PID\tStatus\tLabel\n'
-launchctl list | awk 'NR > 1 { printf "%s\t%s\t%s\n", $1, $2, $3 }'
-"#,
-        ],
-        600,
-    )
-}
-
-fn macos_apply_service_action(name: &str, action: &str) -> Result<(), String> {
-    // macOS launchctl actions are complex because they often require the full path to the plist.
-    // If only the label is provided, we can try some common commands.
-    let output = match action {
-        "start" => run_command("launchctl", &["start", name], 40),
-        "stop" => run_command("launchctl", &["stop", name], 40),
-        "restart" => {
-            run_command("launchctl", &["stop", name], 40);
-            run_command("launchctl", &["start", name], 40)
-        }
-        "delete" => run_command("launchctl", &["remove", name], 40),
-        _ => return Err(format!("unsupported macOS service action: {action}")),
-    };
-    startup_command_result(output, &format!("{action} macOS service"))
-}
-
-fn macos_service_details(name: &str) -> String {
-    run_command("launchctl", &["list", name], 160)
 }
 
 fn linux_service_manager() -> String {
@@ -960,9 +854,7 @@ startup_status() {
 for dir in \
   "$HOME/Library/LaunchAgents" \
   "/Library/LaunchAgents" \
-  "/Library/LaunchDaemons" \
-  "/System/Library/LaunchAgents" \
-  "/System/Library/LaunchDaemons"
+  "/Library/LaunchDaemons" 
 do
   [ -d "$dir" ] || continue
   case "$dir" in
@@ -1839,8 +1731,12 @@ fn startup_command_result(output: String, context: &str) -> Result<(), String> {
     let lower = text.to_ascii_lowercase();
     if lower.starts_with("powershell exited with error")
         || lower.starts_with("systemctl exited with error")
+        || lower.starts_with("launchctl exited with error")
+        || lower.starts_with("sh exited with error")
         || lower.starts_with("powershell failed:")
         || lower.starts_with("systemctl failed:")
+        || lower.starts_with("launchctl failed:")
+        || lower.starts_with("sh failed:")
         || lower.contains(" timed out")
     {
         let inline_text = text.replace(['\r', '\n', '\t'], " ");

@@ -24,72 +24,6 @@ pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     }
 }
 
-pub(super) fn apply_service_manager_action(action: &str) -> Result<(), String> {
-    let paths = AutostartPaths::detect_system()?;
-    match action {
-        "enable" => {
-            let current_paths = AutostartPaths::detect()?;
-            install_current_binary(&paths)?;
-            install_config(&current_paths.config_path, &paths.config_path)?;
-            enable_service(&paths)
-        }
-        "disable" => disable_service(&paths),
-        _ => Err(format!("unsupported client_service action: {action}")),
-    }
-}
-
-fn enable_service(paths: &AutostartPaths) -> Result<(), String> {
-    if cfg!(target_os = "macos") {
-        macos_enable_autostart(paths)
-    } else if cfg!(target_os = "linux") {
-        linux_enable_service(paths)
-    } else {
-        enable_autostart(paths)
-    }
-}
-
-fn disable_service(paths: &AutostartPaths) -> Result<(), String> {
-    if cfg!(target_os = "macos") {
-        rename_autostart_entry_disabled(paths)
-    } else if cfg!(target_os = "linux") {
-        linux_disable_service(paths)
-    } else {
-        disable_autostart(paths)
-    }
-}
-
-fn linux_enable_service(paths: &AutostartPaths) -> Result<(), String> {
-    if !linux_is_root_user() {
-        return Err("enabling system service requires root privileges".to_string());
-    }
-    linux_enable_systemd_service(
-        &linux_system_service_path(),
-        &["daemon-reload"],
-        &["enable", LINUX_SYSTEMD_SERVICE_NAME],
-        linux_systemd_service_unit(
-            &paths.target_exe,
-            &paths.config_path,
-            &paths.home_dir,
-            true,
-        ),
-        "enable Linux systemd client service",
-    )
-}
-
-fn linux_disable_service(_paths: &AutostartPaths) -> Result<(), String> {
-    if !linux_is_root_user() {
-        return Err("disabling system service requires root privileges".to_string());
-    }
-    let system_service_path = linux_system_service_path();
-    if system_service_path.exists() {
-        systemctl_result(
-            run_command("systemctl", &["disable", LINUX_SYSTEMD_SERVICE_NAME], 40),
-            "disable Linux systemd client service",
-        )?;
-    }
-    Ok(())
-}
-
 pub(crate) struct AutostartPaths {
     pub(crate) current_exe: PathBuf,
     pub(crate) target_exe: PathBuf,
@@ -387,7 +321,7 @@ fn linux_disable_autostart(paths: &AutostartPaths) -> Result<(), String> {
     }
 }
 
-fn linux_enable_systemd_service(
+pub(super) fn linux_enable_systemd_service(
     service_path: &Path,
     daemon_reload_args: &[&str],
     enable_args: &[&str],
@@ -415,7 +349,7 @@ fn linux_enable_systemd_service(
     systemctl_result(run_command("systemctl", enable_args, 40), context)
 }
 
-fn linux_systemd_service_unit(
+pub(super) fn linux_systemd_service_unit(
     target_exe: &Path,
     config_path: &Path,
     home_dir: &Path,
@@ -454,7 +388,7 @@ fn linux_systemctl_available() -> bool {
     !command_output_failed(&run_command("systemctl", &["--version"], 4), "systemctl")
 }
 
-fn linux_is_root_user() -> bool {
+pub(super) fn linux_is_root_user() -> bool {
     std::env::var("USER")
         .map(|value| value == "root")
         .unwrap_or(false)
@@ -465,7 +399,7 @@ fn linux_is_root_user() -> bool {
             .unwrap_or(false)
 }
 
-fn linux_system_service_path() -> PathBuf {
+pub(super) fn linux_system_service_path() -> PathBuf {
     PathBuf::from("/etc/systemd/system").join(LINUX_SYSTEMD_SERVICE_NAME)
 }
 
@@ -563,7 +497,7 @@ fn powershell_result(output: String, context: &str) -> Result<(), String> {
     command_result(output, "powershell", context)
 }
 
-fn systemctl_result(output: String, context: &str) -> Result<(), String> {
+pub(super) fn systemctl_result(output: String, context: &str) -> Result<(), String> {
     command_result(output, "systemctl", context)
 }
 
@@ -660,7 +594,7 @@ fn quote_path(path: &Path) -> String {
     format!("\"{text}\"")
 }
 
-fn xml_escape(value: &str) -> String {
+pub(super) fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -669,7 +603,7 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn path_text(path: &Path) -> String {
+pub(super) fn path_text(path: &Path) -> String {
     path.display().to_string()
 }
 

@@ -1909,10 +1909,10 @@ fn startup_row_status(
 
     let status = table_value(headers, row, "status")?;
     match status.trim().to_ascii_lowercase().as_str() {
-        "enabled" | "registry" | "file" | "present" | "desktopentry" => {
+        "enabled" | "registry" | "file" | "present" | "desktopentry" | "running" | "loaded" => {
             Some(StartupClientAutostartStatus::Enabled)
         }
-        "disabled" | "mismatch" | "outdated" | "stale" => {
+        "disabled" | "mismatch" | "outdated" | "stale" | "stopped" => {
             Some(StartupClientAutostartStatus::Disabled)
         }
         "error" => Some(StartupClientAutostartStatus::Unknown),
@@ -1933,6 +1933,7 @@ fn startup_row_is_client_autostart(headers: &[String], row: &[String]) -> bool {
             | "rustdesklightclientdesktop"
             | "rustdesklightclientdesktopdisabled"
             | "rustdesklightclientservice"
+            | "comrustdesklightclient"
             | "comrustdesklightclientplist"
             | "comrustdesklightclientplistdisabled"
     )
