@@ -34,6 +34,14 @@ pub(crate) struct AutostartPaths {
 
 impl AutostartPaths {
     pub(crate) fn detect() -> Result<Self, String> {
+        Self::detect_impl(false)
+    }
+
+    pub(crate) fn detect_system() -> Result<Self, String> {
+        Self::detect_impl(true)
+    }
+
+    fn detect_impl(system: bool) -> Result<Self, String> {
         let current_exe =
             std::env::current_exe().map_err(|error| format!("current exe unavailable: {error}"))?;
         let file_name = current_exe
@@ -41,26 +49,49 @@ impl AutostartPaths {
             .filter(|name| !name.to_string_lossy().is_empty())
             .map(|name| name.to_os_string())
             .unwrap_or_else(|| default_exe_name().into());
-        let target_dir = stable_client_dir()?;
+        
+        let target_dir = if system {
+            system_client_dir()?
+        } else {
+            stable_client_dir()?
+        };
         let target_exe = target_dir.join(file_name);
-        let home_dir = home_dir()?;
-        let config_path = current_client_config_path();
+        
+        let home_dir = if system {
+            system_home_dir()?
+        } else {
+            home_dir()?
+        };
+        
+        let config_path = if system {
+            target_dir.join(rdl_config::ConfigKind::Client.file_name())
+        } else {
+            current_client_config_path()
+        };
+
         let entry_path = if cfg!(target_os = "windows") {
             format!("{WINDOWS_RUN_KEY}\\{WINDOWS_RUN_VALUE}")
         } else if cfg!(target_os = "macos") {
-            home_dir
-                .join("Library")
-                .join("LaunchAgents")
-                .join(format!("{MACOS_LAUNCH_AGENT_LABEL}.plist"))
+            let base = if system {
+                PathBuf::from("/Library/LaunchDaemons")
+            } else {
+                home_dir.join("Library/LaunchAgents")
+            };
+            base.join(format!("{MACOS_LAUNCH_AGENT_LABEL}.plist"))
                 .display()
                 .to_string()
         } else {
-            home_dir
-                .join(".config")
-                .join("autostart")
-                .join(format!("{AUTOSTART_ITEM_NAME}.desktop"))
-                .display()
-                .to_string()
+            let base = if system {
+                PathBuf::from("/etc/systemd/system")
+            } else {
+                home_dir.join(".config/autostart")
+            };
+            let name = if system {
+                LINUX_SYSTEMD_SERVICE_NAME.to_string()
+            } else {
+                format!("{AUTOSTART_ITEM_NAME}.desktop")
+            };
+            base.join(name).display().to_string()
         };
 
         Ok(Self {
@@ -71,6 +102,52 @@ impl AutostartPaths {
             home_dir,
         })
     }
+}
+
+fn system_client_dir() -> Result<PathBuf, String> {
+    if cfg!(target_os = "windows") {
+        // SYSTEM AppData
+        Ok(PathBuf::from(r"C:\Windows\System32\config\systemprofile\AppData\Roaming").join(APP_DIR_NAME))
+    } else if cfg!(target_os = "macos") {
+        Ok(PathBuf::from("/Library/Application Support").join(APP_DIR_NAME))
+    } else {
+        Ok(PathBuf::from("/etc").join(APP_DIR_NAME))
+    }
+}
+
+fn system_home_dir() -> Result<PathBuf, String> {
+    if cfg!(target_os = "windows") {
+        Ok(PathBuf::from(r"C:\Windows\System32\config\systemprofile"))
+    } else if cfg!(target_os = "macos") {
+        Ok(PathBuf::from("/var/root"))
+    } else {
+        Ok(PathBuf::from("/root"))
+    }
+}
+
+pub(crate) fn install_config(source: &Path, target: &Path) -> Result<(), String> {
+    if source == target {
+        return Ok(());
+    }
+    if !source.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create config target directory {} failed: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::copy(source, target).map_err(|error| {
+        format!(
+            "copy config from {} to {} failed: {error}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
 }
 
 pub(crate) fn install_current_binary(paths: &AutostartPaths) -> Result<(), String> {

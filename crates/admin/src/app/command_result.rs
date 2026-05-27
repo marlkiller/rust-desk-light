@@ -47,6 +47,7 @@ pub(super) struct CommandResultWindow {
     pub(super) process_kill_confirm: Arc<Mutex<Option<ProcessKillConfirm>>>,
     pub(super) process_kill_requested: Arc<Mutex<Option<String>>>,
     pub(super) startup_delete_confirm: Arc<Mutex<Option<StartupDeleteConfirm>>>,
+    pub(super) service_delete_confirm: Arc<Mutex<Option<ServiceDeleteConfirm>>>,
     pub(super) startup_action_requested: Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_requested: Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_pending: Arc<AtomicBool>,
@@ -70,6 +71,12 @@ pub(super) struct StartupDeleteConfirm {
     payload: String,
     name: String,
     source: String,
+}
+
+#[derive(Clone)]
+pub(super) struct ServiceDeleteConfirm {
+    payload: String,
+    name: String,
 }
 
 #[derive(Clone)]
@@ -399,6 +406,7 @@ pub(super) struct CommandResultRenderState<'a> {
     pub(super) process_kill_confirm: &'a Arc<Mutex<Option<ProcessKillConfirm>>>,
     pub(super) process_kill_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) startup_delete_confirm: &'a Arc<Mutex<Option<StartupDeleteConfirm>>>,
+    pub(super) service_delete_confirm: &'a Arc<Mutex<Option<ServiceDeleteConfirm>>>,
     pub(super) startup_action_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_pending: &'a Arc<AtomicBool>,
@@ -491,9 +499,13 @@ pub(super) fn render_command_result(
                 state.startup_delete_confirm,
                 state.startup_action_requested,
             );
-            render_startup_detail_dialog(ui, state.startup_detail, state.startup_detail_pending);
-            return;
+            render_service_delete_confirm(
+                ui,
+                state.service_delete_confirm,
+                state.startup_action_requested,
+            );
         }
+        render_startup_detail_dialog(ui, state.startup_detail, state.startup_detail_pending);
         return;
     }
     if matches!(command, CommandKind::PerformanceMonitor) {
@@ -1345,6 +1357,12 @@ fn render_result_table(
                             startup_row_delete_payload(command, &table.headers, &row_data.cells);
                         let startup_detail_payload =
                             startup_row_details_payload(command, &table.headers, &row_data.cells);
+                        let service_detail_payload = if matches!(command, CommandKind::ServiceManager) {
+                            table_value(&table.headers, &row_data.cells, "name")
+                                .map(|name| service_detail_payload(name))
+                        } else {
+                            None
+                        };
                         let startup_row_fill =
                             startup_client_row_fill(command, &table.headers, &row_data.cells);
                         let service_actions =
@@ -1377,6 +1395,7 @@ fn render_result_table(
                             let startup_delete_payload = startup_delete_payload.clone();
                             let startup_detail_payload = startup_detail_payload.clone();
                             let service_actions = service_actions.clone();
+                            let service_detail_payload = service_detail_payload.clone();
                             cell_response.context_menu(|ui| {
                                 if ui.button(t("Copy Cell")).clicked() {
                                     ui.ctx().copy_text(cell_text.clone());
@@ -1395,6 +1414,19 @@ fn render_result_table(
                                         if let Ok(mut value) = state.startup_detail_requested.lock()
                                         {
                                             *value = Some(startup_detail_payload);
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                                if let Some(service_detail_payload) = service_detail_payload.clone()
+                                {
+                                    if ui.button(t("Details")).clicked() {
+                                        if let Ok(mut selected) = state.table_selected_row.lock() {
+                                            *selected = Some(row_key.clone());
+                                        }
+                                        if let Ok(mut value) = state.startup_detail_requested.lock()
+                                        {
+                                            *value = Some(service_detail_payload);
                                         }
                                         ui.close();
                                     }
@@ -1452,10 +1484,29 @@ fn render_result_table(
                                             {
                                                 *selected = Some(row_key.clone());
                                             }
-                                            if let Ok(mut value) =
-                                                state.startup_action_requested.lock()
-                                            {
-                                                *value = Some(action.payload.clone());
+
+                                            if action.label == "Delete Service" {
+                                                if let Ok(mut value) =
+                                                    state.service_delete_confirm.lock()
+                                                {
+                                                    let name = table_value(
+                                                        &table.headers,
+                                                        &row_data.cells,
+                                                        "name",
+                                                    )
+                                                    .unwrap_or_default()
+                                                    .to_string();
+                                                    *value = Some(ServiceDeleteConfirm {
+                                                        payload: action.payload.clone(),
+                                                        name,
+                                                    });
+                                                }
+                                            } else {
+                                                if let Ok(mut value) =
+                                                    state.startup_action_requested.lock()
+                                                {
+                                                    *value = Some(action.payload.clone());
+                                                }
                                             }
                                             ui.close();
                                         }
@@ -1612,6 +1663,62 @@ fn render_startup_delete_confirm(
         });
 }
 
+fn render_service_delete_confirm(
+    ui: &mut egui::Ui,
+    service_delete_confirm: &Arc<Mutex<Option<ServiceDeleteConfirm>>>,
+    service_action_requested: &Arc<Mutex<Option<String>>>,
+) {
+    let pending = service_delete_confirm
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let Some(pending) = pending else {
+        return;
+    };
+
+    egui::Window::new(t("Confirm Delete Service"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(460.0)
+        .show(ui.ctx(), |ui| {
+            ui.label(
+                egui::RichText::new(t("Delete this service?"))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+            );
+            if !pending.name.trim().is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(crate::theme::muted_text(t("Name")));
+                    ui.label(crate::theme::body_text(&pending.name));
+                });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new(t("Delete Service"))
+                            .color(color_bad())
+                            .strong(),
+                    ))
+                    .clicked()
+                {
+                    if let Ok(mut value) = service_action_requested.lock() {
+                        *value = Some(pending.payload.clone());
+                    }
+                    if let Ok(mut value) = service_delete_confirm.lock() {
+                        *value = None;
+                    }
+                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                }
+                if ui.button(t("Cancel")).clicked() {
+                    if let Ok(mut value) = service_delete_confirm.lock() {
+                        *value = None;
+                    }
+                }
+            });
+        });
+}
+
 fn startup_detail_body(detail: &str) -> String {
     detail
         .lines()
@@ -1638,7 +1745,7 @@ fn render_startup_detail_dialog(
     let title = snapshot
         .as_ref()
         .map(|dialog| dialog.title.clone())
-        .unwrap_or_else(|| t("Startup Item Details").to_string());
+        .unwrap_or_else(|| t("Details").to_string());
     let detail = snapshot
         .as_ref()
         .map(|dialog| dialog.detail.clone())
@@ -1653,7 +1760,7 @@ fn render_startup_detail_dialog(
         .show(ui.ctx(), |ui| {
             if pending {
                 ui.label(
-                    egui::RichText::new(t("Loading startup item details..."))
+                    egui::RichText::new(t("Loading..."))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1675,7 +1782,7 @@ fn render_startup_detail_dialog(
         } else if open && pending {
             *value = Some(StartupDetailDialog {
                 open,
-                title: t("Startup Item Details").to_string(),
+                title: t("Details").to_string(),
                 detail: String::new(),
             });
         }
@@ -1916,7 +2023,17 @@ fn service_row_actions(
         });
     }
 
+    // Delete
+    actions.push(CommandRowAction {
+        label: "Delete Service",
+        payload: format!("action=delete\nname={name}"),
+    });
+
     actions
+}
+
+fn service_detail_payload(name: &str) -> String {
+    format!("action=details\nname={name}")
 }
 
 fn startup_row_action(

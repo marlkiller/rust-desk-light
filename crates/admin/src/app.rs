@@ -1345,6 +1345,7 @@ impl AdminApp {
             process_kill_confirm: Arc::new(Mutex::new(None)),
             process_kill_requested: Arc::new(Mutex::new(None)),
             startup_delete_confirm: Arc::new(Mutex::new(None)),
+            service_delete_confirm: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
             startup_detail_requested: Arc::new(Mutex::new(None)),
             startup_detail_pending: Arc::new(AtomicBool::new(false)),
@@ -1573,7 +1574,9 @@ impl AdminApp {
                 window.last_auto_refresh_at = None;
                 return;
             }
-            if window.command == CommandKind::StartupManager && startup_detail_result(&detail) {
+            if matches!(window.command, CommandKind::StartupManager | CommandKind::ServiceManager)
+                && startup_detail_result(&detail)
+            {
                 window
                     .startup_detail_pending
                     .store(false, Ordering::Relaxed);
@@ -1586,9 +1589,9 @@ impl AdminApp {
                 window.username = username;
                 window.status_notice = Some(
                     t(if accepted {
-                        "Startup item details loaded"
+                        "Details loaded"
                     } else {
-                        "Startup item details failed"
+                        "Details failed"
                     })
                     .to_string(),
                 );
@@ -1596,7 +1599,12 @@ impl AdminApp {
                 if let Ok(mut value) = window.startup_detail.lock() {
                     *value = Some(StartupDetailDialog {
                         open: true,
-                        title: t("Startup Item Details").to_string(),
+                        title: t(if window.command == CommandKind::ServiceManager {
+                            "Service Details"
+                        } else {
+                            "Startup Item Details"
+                        })
+                        .to_string(),
                         detail,
                     });
                 }
@@ -1612,7 +1620,9 @@ impl AdminApp {
             .rev()
             .find(|window| window.client_id == client_id && window.command == command)
         {
-            if window.command == CommandKind::StartupManager && startup_detail_result(&detail) {
+            if matches!(window.command, CommandKind::StartupManager | CommandKind::ServiceManager)
+                && startup_detail_result(&detail)
+            {
                 window
                     .startup_detail_pending
                     .store(false, Ordering::Relaxed);
@@ -1625,9 +1635,9 @@ impl AdminApp {
                 window.username = username;
                 window.status_notice = Some(
                     t(if accepted {
-                        "Startup item details loaded"
+                        "Details loaded"
                     } else {
-                        "Startup item details failed"
+                        "Details failed"
                     })
                     .to_string(),
                 );
@@ -1635,7 +1645,12 @@ impl AdminApp {
                 if let Ok(mut value) = window.startup_detail.lock() {
                     *value = Some(StartupDetailDialog {
                         open: true,
-                        title: t("Startup Item Details").to_string(),
+                        title: t(if window.command == CommandKind::ServiceManager {
+                            "Service Details"
+                        } else {
+                            "Startup Item Details"
+                        })
+                        .to_string(),
                         detail,
                     });
                 }
@@ -1690,6 +1705,7 @@ impl AdminApp {
             process_kill_confirm: Arc::new(Mutex::new(None)),
             process_kill_requested: Arc::new(Mutex::new(None)),
             startup_delete_confirm: Arc::new(Mutex::new(None)),
+            service_delete_confirm: Arc::new(Mutex::new(None)),
             startup_action_requested: Arc::new(Mutex::new(None)),
             startup_detail_requested: Arc::new(Mutex::new(None)),
             startup_detail_pending: Arc::new(AtomicBool::new(false)),
@@ -2080,6 +2096,23 @@ impl AdminApp {
                         action, window.client_id
                     ));
                 }
+                let service_detail_payload = window
+                    .startup_detail_requested
+                    .lock()
+                    .ok()
+                    .and_then(|mut value| value.take());
+                if let Some(payload) = service_detail_payload {
+                    let _ = self.input_tx.send(AdminInput::Command {
+                        target_id: window.client_id.clone(),
+                        command: CommandKind::ServiceManager,
+                        payload,
+                    });
+                    window.startup_detail_pending.store(true, Ordering::Relaxed);
+                    window.status = CommandResultStatus::Pending;
+                    window.status_notice = Some(t("Loading service details...").to_string());
+                    window.open = true;
+                    pending_logs.push(format!("service details on {}", window.client_id));
+                }
             }
             if window.command == CommandKind::RegistryManager {
                 let registry_payload = window
@@ -2155,6 +2188,7 @@ impl AdminApp {
             let table_filter = window.table_filter.clone();
             let table_sort = window.table_sort.clone();
             let table_selected_row = window.table_selected_row.clone();
+            let service_delete_confirm = window.service_delete_confirm.clone();
             let status_notice =
                 explicit_status_notice.or_else(|| command_status_notice(&command, status, &detail));
 
@@ -2191,6 +2225,7 @@ impl AdminApp {
                                             process_kill_confirm: &process_kill_confirm,
                                             process_kill_requested: &process_kill_requested,
                                             startup_delete_confirm: &startup_delete_confirm,
+                                            service_delete_confirm: &service_delete_confirm,
                                             startup_action_requested: &startup_action_requested,
                                             startup_detail_requested: &startup_detail_requested,
                                             startup_detail_pending: &startup_detail_pending,
