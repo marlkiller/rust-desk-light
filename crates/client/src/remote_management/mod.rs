@@ -83,7 +83,7 @@ fn service_manager(payload: &str) -> String {
                     Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
                 }
             } else {
-                match client_autostart::apply_startup_manager_action("enable") {
+                match client_autostart::apply_service_manager_action("enable") {
                     Ok(()) => service_manager_list(),
                     Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
                 }
@@ -96,7 +96,7 @@ fn service_manager(payload: &str) -> String {
                     Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
                 }
             } else {
-                match client_autostart::apply_startup_manager_action("disable") {
+                match client_autostart::apply_service_manager_action("disable") {
                     Ok(()) => service_manager_list(),
                     Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
                 }

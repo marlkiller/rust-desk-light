@@ -436,26 +436,6 @@ pub(super) fn render_command_result(
                 None
             };
 
-        let mut selected_row_actions = Vec::new();
-        if let Some(table) = table.as_ref() {
-            if let Some(selected_key) = state
-                .table_selected_row
-                .lock()
-                .ok()
-                .and_then(|r| r.clone())
-            {
-                if let Some((_idx, row)) = table.rows.iter().enumerate().find(|(idx, row)| {
-                    let key = format!("{}\t{}", idx, row.join("\t"));
-                    key == selected_key
-                }) {
-                    selected_row_actions = service_row_actions(command, &table.headers, row);
-                    if let Some(action) = startup_row_action(command, &table.headers, row) {
-                        selected_row_actions.push(action);
-                    }
-                }
-            }
-        }
-
         render_table_toolbar(
             ui,
             command,
@@ -465,7 +445,6 @@ pub(super) fn render_command_result(
             state.startup_add_form,
             state.startup_action_requested,
             startup_client_status,
-            selected_row_actions,
         );
         if matches!(command, CommandKind::StartupManager) {
             render_startup_add_form(
@@ -910,7 +889,6 @@ fn render_table_toolbar(
     startup_add_form: &Arc<Mutex<StartupAddForm>>,
     startup_action_requested: &Arc<Mutex<Option<String>>>,
     startup_client_status: Option<StartupClientAutostartStatus>,
-    selected_row_actions: Vec<CommandRowAction>,
 ) {
     let mut filter = table_filter
         .lock()
@@ -951,20 +929,6 @@ fn render_table_toolbar(
             .clicked()
         {
             refresh_requested.store(true, Ordering::Relaxed);
-        }
-
-        if !selected_row_actions.is_empty() {
-            ui.separator();
-            for action in selected_row_actions {
-                if ui
-                    .add_enabled(!refresh_in_flight, egui::Button::new(t(action.label)))
-                    .clicked()
-                {
-                    if let Ok(mut value) = startup_action_requested.lock() {
-                        *value = Some(action.payload);
-                    }
-                }
-            }
         }
 
         if matches!(command, CommandKind::StartupManager) {

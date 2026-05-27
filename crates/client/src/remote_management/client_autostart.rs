@@ -24,6 +24,70 @@ pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     }
 }
 
+pub(super) fn apply_service_manager_action(action: &str) -> Result<(), String> {
+    let paths = AutostartPaths::detect_system()?;
+    match action {
+        "enable" => {
+            install_current_binary(&paths)?;
+            enable_service(&paths)
+        }
+        "disable" => disable_service(&paths),
+        _ => Err(format!("unsupported client_service action: {action}")),
+    }
+}
+
+fn enable_service(paths: &AutostartPaths) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        macos_enable_autostart(paths)
+    } else if cfg!(target_os = "linux") {
+        linux_enable_service(paths)
+    } else {
+        enable_autostart(paths)
+    }
+}
+
+fn disable_service(paths: &AutostartPaths) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        rename_autostart_entry_disabled(paths)
+    } else if cfg!(target_os = "linux") {
+        linux_disable_service(paths)
+    } else {
+        disable_autostart(paths)
+    }
+}
+
+fn linux_enable_service(paths: &AutostartPaths) -> Result<(), String> {
+    if !linux_is_root_user() {
+        return Err("enabling system service requires root privileges".to_string());
+    }
+    linux_enable_systemd_service(
+        &linux_system_service_path(),
+        &["daemon-reload"],
+        &["enable", LINUX_SYSTEMD_SERVICE_NAME],
+        linux_systemd_service_unit(
+            &paths.target_exe,
+            &paths.config_path,
+            &paths.home_dir,
+            true,
+        ),
+        "enable Linux systemd client service",
+    )
+}
+
+fn linux_disable_service(_paths: &AutostartPaths) -> Result<(), String> {
+    if !linux_is_root_user() {
+        return Err("disabling system service requires root privileges".to_string());
+    }
+    let system_service_path = linux_system_service_path();
+    if system_service_path.exists() {
+        systemctl_result(
+            run_command("systemctl", &["disable", LINUX_SYSTEMD_SERVICE_NAME], 40),
+            "disable Linux systemd client service",
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) struct AutostartPaths {
     pub(crate) current_exe: PathBuf,
     pub(crate) target_exe: PathBuf,
