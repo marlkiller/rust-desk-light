@@ -105,7 +105,7 @@ fn service_manager_list() -> String {
     if cfg!(target_os = "windows") {
         windows_service_manager()
     } else if cfg!(target_os = "macos") {
-        String::new()
+        macos_service_manager()
     } else {
         linux_service_manager()
     }
@@ -139,7 +139,7 @@ fn apply_service_action(request: &ServiceRequest) -> Result<(), String> {
     if cfg!(target_os = "windows") {
         windows_apply_service_action(name, &request.action)
     } else if cfg!(target_os = "macos") {
-        Err("service actions are not supported on macOS".to_string())
+        macos_apply_service_action(name, &request.action)
     } else {
         linux_apply_service_action(name, &request.action)
     }
@@ -154,7 +154,7 @@ fn service_details(request: &ServiceRequest) -> String {
     let output = if cfg!(target_os = "windows") {
         windows_service_details(name)
     } else if cfg!(target_os = "macos") {
-        startup_detail_error_text("service management is not supported on macOS")
+        macos_service_details(name)
     } else {
         linux_service_details(name)
     };
@@ -241,6 +241,76 @@ fn linux_apply_service_action(name: &str, action: &str) -> Result<(), String> {
 
 fn linux_service_details(name: &str) -> String {
     run_command("systemctl", &["show", name, "--no-pager"], 160)
+}
+
+fn macos_service_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+printf 'Name\tStatus\tPID\n'
+if command -v launchctl >/dev/null 2>&1; then
+  launchctl list 2>/dev/null | while IFS=$'\t' read -r pid status label; do
+    [ -z "$label" ] && continue
+    [ "$label" = "PID" ] && continue
+    if [ "$pid" = "-" ]; then
+      pid_display="-"
+    else
+      pid_display="$pid"
+    fi
+    case "$status" in
+      0) status_display="Loaded" ;;
+      -) status_display="Loaded" ;;
+      78) status_display="Unloaded" ;;
+      *) status_display="Error($status)" ;;
+    esac
+    printf '%s\t%s\t%s\n' "$label" "$status_display" "$pid_display"
+  done
+else
+  printf '-\t-\t-\n'
+fi
+"#,
+        ],
+        60,
+    )
+}
+
+fn macos_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    match action {
+        "start" => {
+            let output = run_command("launchctl", &["kickstart", "-kp", "system/", name], 30);
+            startup_command_result(output, "start macOS service")
+        }
+        "stop" => {
+            let output = run_command("launchctl", &["kill", "SIGTERM", &format!("system/{}", name)], 30);
+            startup_command_result(output, "stop macOS service")
+        }
+        "restart" => {
+            let output = run_command("launchctl", &["kickstart", "-kp", "system/", name], 30);
+            startup_command_result(output, "restart macOS service")
+        }
+        "enable" => {
+            let output = run_command("launchctl", &["enable", &format!("system/{}", name)], 30);
+            startup_command_result(output, "enable macOS service")
+        }
+        "disable" => {
+            let output = run_command("launchctl", &["disable", &format!("system/{}", name)], 30);
+            startup_command_result(output, "disable macOS service")
+        }
+        "delete" => {
+            let unload = run_command("launchctl", &["unload", "-w", &format!("/Library/LaunchDaemons/{}.plist", name)], 30);
+            let _ = startup_command_result(unload, "unload macOS service");
+            let plist_path = format!("/Library/LaunchDaemons/{}.plist", name);
+            let _ = std::fs::remove_file(&plist_path);
+            Ok(())
+        }
+        _ => Err(format!("unsupported macOS service action: {action}")),
+    }
+}
+
+fn macos_service_details(name: &str) -> String {
+    run_command("launchctl", &["list", name], 60)
 }
 
 fn startup_manager(payload: &str) -> String {

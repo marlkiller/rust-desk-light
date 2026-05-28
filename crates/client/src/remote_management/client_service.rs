@@ -4,6 +4,8 @@ use super::client_autostart::{
     linux_system_service_path, linux_systemd_service_unit, systemctl_result,
     AutostartPaths, LINUX_SYSTEMD_SERVICE_NAME,
 };
+use std::fs;
+use std::path::PathBuf;
 
 pub(super) fn apply_service_manager_action(action: &str) -> Result<(), String> {
     let paths = AutostartPaths::detect_system()?;
@@ -23,7 +25,7 @@ fn enable_service(paths: &AutostartPaths) -> Result<(), String> {
     if cfg!(target_os = "windows") {
         windows_enable_service(paths)
     } else if cfg!(target_os = "macos") {
-        Err("enabling client system service is not supported on macOS".to_string())
+        macos_enable_service(paths)
     } else {
         linux_enable_service(paths)
     }
@@ -33,10 +35,80 @@ fn disable_service(paths: &AutostartPaths) -> Result<(), String> {
     if cfg!(target_os = "windows") {
         windows_disable_service()
     } else if cfg!(target_os = "macos") {
-        Err("disabling client system service is not supported on macOS".to_string())
+        macos_disable_service(paths)
     } else {
         linux_disable_service(paths)
     }
+}
+
+fn macos_enable_service(paths: &AutostartPaths) -> Result<(), String> {
+    let label = "com.rust-desk-light.client";
+    let daemon_dir = PathBuf::from("/Library/LaunchDaemons");
+    let plist_path = daemon_dir.join(format!("{label}.plist"));
+
+    fs::create_dir_all(&daemon_dir).map_err(|error| {
+        format!("create LaunchDaemons directory failed: {error}")
+    })?;
+
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+        <string>--service</string>
+        <string>--config</string>
+        <string>{}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/rust-desk-light-client.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/rust-desk-light-client.log</string>
+</dict>
+</plist>
+"#,
+        super::client_autostart::path_text(&paths.target_exe),
+        super::client_autostart::path_text(&paths.config_path),
+    );
+
+    fs::write(&plist_path, plist).map_err(|error| {
+        format!("write launch daemon plist failed: {error}")
+    })?;
+
+    let load_output = crate::support::run_command(
+        "launchctl",
+        &["load", "-w", &plist_path.display().to_string()],
+        30,
+    );
+    super::startup_command_result(load_output, "load macOS launch daemon")
+}
+
+fn macos_disable_service(_paths: &AutostartPaths) -> Result<(), String> {
+    let label = "com.rust-desk-light.client";
+    let daemon_dir = PathBuf::from("/Library/LaunchDaemons");
+    let plist_path = daemon_dir.join(format!("{label}.plist"));
+
+    if plist_path.exists() {
+        let unload_output = crate::support::run_command(
+            "launchctl",
+            &["unload", "-w", &plist_path.display().to_string()],
+            30,
+        );
+        super::startup_command_result(unload_output, "unload macOS launch daemon")?;
+        fs::remove_file(&plist_path).map_err(|error| {
+            format!("remove launch daemon plist failed: {error}")
+        })?;
+    }
+
+    Ok(())
 }
 
 fn linux_enable_service(paths: &AutostartPaths) -> Result<(), String> {

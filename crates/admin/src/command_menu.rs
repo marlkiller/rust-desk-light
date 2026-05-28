@@ -229,8 +229,8 @@ fn render_remote_management(
             client_id,
             "Service Manager",
             CommandKind::ServiceManager,
-            !client_os_is_macos(client_os),
-            "Disabled: Service Manager is not available on macOS clients",
+            true,
+            "",
             send_command,
         );
         menu_command_enabled(
@@ -284,10 +284,6 @@ fn render_remote_management(
 
 fn client_os_is_windows(client_os: &str) -> bool {
     client_os.to_ascii_lowercase().contains("windows")
-}
-
-fn client_os_is_macos(client_os: &str) -> bool {
-    client_os.to_ascii_lowercase().contains("macos")
 }
 
 fn render_live_control(
