@@ -266,6 +266,7 @@ pub(crate) fn command_key(command: &CommandKind) -> &'static str {
         CommandKind::ProcessManager => "Process Manager",
         CommandKind::WindowManager => "Window Manager",
         CommandKind::StartupManager => "Startup Manager",
+        CommandKind::ServiceManager => "Service Manager",
         CommandKind::RegistryManager => "Registry Manager",
         CommandKind::DriverManager => "Driver Manager",
         CommandKind::EventLog => "Event Log",
@@ -289,5 +290,6 @@ pub(crate) fn command_key(command: &CommandKind) -> &'static str {
         CommandKind::CommandPreset => "Command Preset",
         CommandKind::PluginManager => "Plugin Manager",
         CommandKind::KillTargetProcess => "Kill Process",
+        CommandKind::Unknown(_) => "Unknown Command",
     }
 }

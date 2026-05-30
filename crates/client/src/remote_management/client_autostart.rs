@@ -9,8 +9,8 @@ const WINDOWS_RUN_VALUE: &str = "RustDeskLightClient";
 const WINDOWS_RUN_KEY: &str = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const WINDOWS_RUN_DISABLED_KEY: &str =
     "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\RunDisabled";
-const MACOS_LAUNCH_AGENT_LABEL: &str = "com.rust-desk-light.client";
-const LINUX_SYSTEMD_SERVICE_NAME: &str = "rust-desk-light-client.service";
+pub(crate) const MACOS_LAUNCH_AGENT_LABEL: &str = "com.rust-desk-light.client";
+pub(crate) const LINUX_SYSTEMD_SERVICE_NAME: &str = "rust-desk-light-client.service";
 
 pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     let paths = AutostartPaths::detect()?;
@@ -24,16 +24,24 @@ pub(super) fn apply_startup_manager_action(action: &str) -> Result<(), String> {
     }
 }
 
-struct AutostartPaths {
-    current_exe: PathBuf,
-    target_exe: PathBuf,
-    entry_path: String,
-    config_path: PathBuf,
-    home_dir: PathBuf,
+pub(crate) struct AutostartPaths {
+    pub(crate) current_exe: PathBuf,
+    pub(crate) target_exe: PathBuf,
+    pub(crate) entry_path: String,
+    pub(crate) config_path: PathBuf,
+    pub(crate) home_dir: PathBuf,
 }
 
 impl AutostartPaths {
-    fn detect() -> Result<Self, String> {
+    pub(crate) fn detect() -> Result<Self, String> {
+        Self::detect_impl(false)
+    }
+
+    pub(crate) fn detect_system() -> Result<Self, String> {
+        Self::detect_impl(true)
+    }
+
+    fn detect_impl(system: bool) -> Result<Self, String> {
         let current_exe =
             std::env::current_exe().map_err(|error| format!("current exe unavailable: {error}"))?;
         let file_name = current_exe
@@ -41,26 +49,49 @@ impl AutostartPaths {
             .filter(|name| !name.to_string_lossy().is_empty())
             .map(|name| name.to_os_string())
             .unwrap_or_else(|| default_exe_name().into());
-        let target_dir = stable_client_dir()?;
+        
+        let target_dir = if system {
+            system_client_dir()?
+        } else {
+            stable_client_dir()?
+        };
         let target_exe = target_dir.join(file_name);
-        let home_dir = home_dir()?;
-        let config_path = current_client_config_path();
+        
+        let home_dir = if system {
+            system_home_dir()?
+        } else {
+            home_dir()?
+        };
+        
+        let config_path = if system {
+            target_dir.join(rdl_config::ConfigKind::Client.file_name())
+        } else {
+            current_client_config_path()
+        };
+
         let entry_path = if cfg!(target_os = "windows") {
             format!("{WINDOWS_RUN_KEY}\\{WINDOWS_RUN_VALUE}")
         } else if cfg!(target_os = "macos") {
-            home_dir
-                .join("Library")
-                .join("LaunchAgents")
-                .join(format!("{MACOS_LAUNCH_AGENT_LABEL}.plist"))
+            let base = if system {
+                PathBuf::from("/Library/LaunchDaemons")
+            } else {
+                home_dir.join("Library/LaunchAgents")
+            };
+            base.join(format!("{MACOS_LAUNCH_AGENT_LABEL}.plist"))
                 .display()
                 .to_string()
         } else {
-            home_dir
-                .join(".config")
-                .join("autostart")
-                .join(format!("{AUTOSTART_ITEM_NAME}.desktop"))
-                .display()
-                .to_string()
+            let base = if system {
+                PathBuf::from("/etc/systemd/system")
+            } else {
+                home_dir.join(".config/autostart")
+            };
+            let name = if system {
+                LINUX_SYSTEMD_SERVICE_NAME.to_string()
+            } else {
+                format!("{AUTOSTART_ITEM_NAME}.desktop")
+            };
+            base.join(name).display().to_string()
         };
 
         Ok(Self {
@@ -73,7 +104,53 @@ impl AutostartPaths {
     }
 }
 
-fn install_current_binary(paths: &AutostartPaths) -> Result<(), String> {
+fn system_client_dir() -> Result<PathBuf, String> {
+    if cfg!(target_os = "windows") {
+        // SYSTEM AppData
+        Ok(PathBuf::from(r"C:\Windows\System32\config\systemprofile\AppData\Roaming").join(APP_DIR_NAME))
+    } else if cfg!(target_os = "macos") {
+        Ok(PathBuf::from("/Library/Application Support").join(APP_DIR_NAME))
+    } else {
+        Ok(PathBuf::from("/etc").join(APP_DIR_NAME))
+    }
+}
+
+fn system_home_dir() -> Result<PathBuf, String> {
+    if cfg!(target_os = "windows") {
+        Ok(PathBuf::from(r"C:\Windows\System32\config\systemprofile"))
+    } else if cfg!(target_os = "macos") {
+        Ok(PathBuf::from("/var/root"))
+    } else {
+        Ok(PathBuf::from("/root"))
+    }
+}
+
+pub(crate) fn install_config(source: &Path, target: &Path) -> Result<(), String> {
+    if source == target {
+        return Ok(());
+    }
+    if !source.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "create config target directory {} failed: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::copy(source, target).map_err(|error| {
+        format!(
+            "copy config from {} to {} failed: {error}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn install_current_binary(paths: &AutostartPaths) -> Result<(), String> {
     if same_path(&paths.current_exe, &paths.target_exe) {
         return Ok(());
     }
@@ -244,7 +321,7 @@ fn linux_disable_autostart(paths: &AutostartPaths) -> Result<(), String> {
     }
 }
 
-fn linux_enable_systemd_service(
+pub(super) fn linux_enable_systemd_service(
     service_path: &Path,
     daemon_reload_args: &[&str],
     enable_args: &[&str],
@@ -272,7 +349,7 @@ fn linux_enable_systemd_service(
     systemctl_result(run_command("systemctl", enable_args, 40), context)
 }
 
-fn linux_systemd_service_unit(
+pub(super) fn linux_systemd_service_unit(
     target_exe: &Path,
     config_path: &Path,
     home_dir: &Path,
@@ -297,7 +374,7 @@ fn linux_systemd_service_unit(
 
 fn systemd_exec_command(target_exe: &Path, config_path: &Path) -> String {
     format!(
-        "{} --config {}",
+        "{} --service --config {}",
         systemd_unit_value(target_exe),
         systemd_unit_value(config_path)
     )
@@ -311,7 +388,7 @@ fn linux_systemctl_available() -> bool {
     !command_output_failed(&run_command("systemctl", &["--version"], 4), "systemctl")
 }
 
-fn linux_is_root_user() -> bool {
+pub(super) fn linux_is_root_user() -> bool {
     std::env::var("USER")
         .map(|value| value == "root")
         .unwrap_or(false)
@@ -322,7 +399,7 @@ fn linux_is_root_user() -> bool {
             .unwrap_or(false)
 }
 
-fn linux_system_service_path() -> PathBuf {
+pub(super) fn linux_system_service_path() -> PathBuf {
     PathBuf::from("/etc/systemd/system").join(LINUX_SYSTEMD_SERVICE_NAME)
 }
 
@@ -420,7 +497,7 @@ fn powershell_result(output: String, context: &str) -> Result<(), String> {
     command_result(output, "powershell", context)
 }
 
-fn systemctl_result(output: String, context: &str) -> Result<(), String> {
+pub(super) fn systemctl_result(output: String, context: &str) -> Result<(), String> {
     command_result(output, "systemctl", context)
 }
 
@@ -517,7 +594,7 @@ fn quote_path(path: &Path) -> String {
     format!("\"{text}\"")
 }
 
-fn xml_escape(value: &str) -> String {
+pub(super) fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -526,7 +603,7 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-fn path_text(path: &Path) -> String {
+pub(super) fn path_text(path: &Path) -> String {
     path.display().to_string()
 }
 

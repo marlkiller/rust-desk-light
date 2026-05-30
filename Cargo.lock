@@ -3386,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-admin"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64",
  "chrono",
@@ -3405,7 +3405,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-assets"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "egui",
  "image",
@@ -3413,7 +3413,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64",
  "core-foundation 0.9.4",
@@ -3430,23 +3430,24 @@ dependencies = [
  "rust-desk-light-config",
  "rust-desk-light-protocol",
  "rust-desk-light-version",
+ "windows-service",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "rust-desk-light-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rust-desk-light-protocol",
 ]
 
 [[package]]
 name = "rust-desk-light-protocol"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "rust-desk-light-server"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "getrandom 0.3.4",
  "maxminddb",
@@ -3457,7 +3458,7 @@ dependencies = [
 
 [[package]]
 name = "rust-desk-light-version"
-version = "0.7.0"
+version = "0.8.0"
 
 [[package]]
 name = "rustc-hash"
@@ -4587,6 +4588,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "widestring"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4736,6 +4743,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "windows-service"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "857224b3b211c6f3616921f081ee54721ee3ad2ace2fac6a6337e032f7b4dcf2"
+dependencies = [
+ "bitflags 2.11.1",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

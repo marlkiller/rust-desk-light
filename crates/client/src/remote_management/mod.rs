@@ -7,6 +7,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod client_autostart;
+mod client_service;
+
+#[cfg(target_os = "linux")]
+pub(crate) use client_autostart::LINUX_SYSTEMD_SERVICE_NAME;
+#[cfg(target_os = "macos")]
+pub(crate) use client_autostart::MACOS_LAUNCH_AGENT_LABEL;
 mod file_manager;
 mod registry_manager;
 mod remote_terminal;
@@ -26,6 +32,7 @@ pub fn handle(command: &CommandKind, payload: &str) -> String {
         CommandKind::RegistryManager => registry_manager::handle(payload),
         CommandKind::RemoteTerminal => remote_terminal::execute(payload),
         CommandKind::StartupManager => startup_manager(payload),
+        CommandKind::ServiceManager => service_manager(payload),
         CommandKind::WindowManager => window_manager(),
         CommandKind::PerformanceMonitor => performance_snapshot(),
         CommandKind::EventLog => event_log_summary(),
@@ -64,6 +71,246 @@ fn window_manager() -> String {
         linux_window_manager()
     };
     join_sections("window_manager", vec![output])
+}
+
+fn service_manager(payload: &str) -> String {
+    let request = ServiceRequest::parse(payload);
+    let output = match request.action.as_str() {
+        "list" => service_manager_list(),
+        "details" => service_details(&request),
+        "start" | "stop" | "restart" | "enable" | "disable" | "delete" => match apply_service_action(&request) {
+            Ok(()) => service_manager_list(),
+            Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+        },
+        "enable_client_service" => {
+            match client_service::apply_service_manager_action("enable") {
+                Ok(()) => service_manager_list(),
+                Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+            }
+        },
+        "disable_client_service" => {
+            match client_service::apply_service_manager_action("disable") {
+                Ok(()) => service_manager_list(),
+                Err(error) => return format!("service_manager_error\nstatus=error\nmessage={error}"),
+            }
+        }
+        action => {
+            return format!("service_manager_error\nstatus=unsupported\nmessage=unsupported service_manager action: {action}");
+        }
+    };
+    join_sections("service_manager", vec![output])
+}
+
+fn service_manager_list() -> String {
+    if cfg!(target_os = "windows") {
+        windows_service_manager()
+    } else if cfg!(target_os = "macos") {
+        macos_service_manager()
+    } else {
+        linux_service_manager()
+    }
+}
+
+#[derive(Debug)]
+struct ServiceRequest {
+    action: String,
+    name: Option<String>,
+}
+
+impl ServiceRequest {
+    fn parse(payload: &str) -> Self {
+        let action = startup_payload_field(payload, "action")
+            .unwrap_or_else(|| "list".to_string())
+            .to_ascii_lowercase();
+        Self {
+            action,
+            name: startup_payload_field(payload, "name"),
+        }
+    }
+}
+
+fn apply_service_action(request: &ServiceRequest) -> Result<(), String> {
+    let name = request
+        .name
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "service_manager action requires name".to_string())?;
+
+    if cfg!(target_os = "windows") {
+        windows_apply_service_action(name, &request.action)
+    } else if cfg!(target_os = "macos") {
+        macos_apply_service_action(name, &request.action)
+    } else {
+        linux_apply_service_action(name, &request.action)
+    }
+}
+
+fn service_details(request: &ServiceRequest) -> String {
+    let name = match request.name.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(name) => name,
+        None => return startup_detail_error_text("service_manager details requires name"),
+    };
+
+    let output = if cfg!(target_os = "windows") {
+        windows_service_details(name)
+    } else if cfg!(target_os = "macos") {
+        macos_service_details(name)
+    } else {
+        linux_service_details(name)
+    };
+    startup_detail_output(output)
+}
+
+fn windows_service_manager() -> String {
+    run_powershell(
+        r#"
+function Clean($value) {
+  if ($null -eq $value) { return "-" }
+  $text = [string]$value
+  $text = $text -replace "`r|`n|`t", " "
+  if ([string]::IsNullOrWhiteSpace($text)) { "-" } else { $text.Trim() }
+}
+Write-Output "Name`tDisplayName`tStatus`tStartType"
+Get-Service | ForEach-Object {
+  "{0}`t{1}`t{2}`t{3}" -f (Clean $_.Name),(Clean $_.DisplayName),(Clean $_.Status),(Clean $_.StartType)
+}
+"#,
+        600,
+    )
+}
+
+fn windows_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    let cmd = match action {
+        "start" => format!("Start-Service -Name \"{name}\" -ErrorAction Stop"),
+        "stop" => format!("Stop-Service -Name \"{name}\" -Force -ErrorAction Stop"),
+        "restart" => format!("Restart-Service -Name \"{name}\" -Force -ErrorAction Stop"),
+        "enable" => format!("Set-Service -Name \"{name}\" -StartupType Automatic -ErrorAction Stop"),
+        "disable" => format!("Set-Service -Name \"{name}\" -StartupType Disabled -ErrorAction Stop"),
+        "delete" => format!("sc.exe delete \"{name}\""),
+        _ => return Err(format!("unsupported Windows service action: {action}")),
+    };
+    let script = if action == "delete" {
+        cmd
+    } else {
+        format!("try {{ {cmd} }} catch {{ Write-Host $_.Exception.Message; exit 1 }}")
+    };
+    startup_command_result(run_powershell(&script, 60), &format!("{action} Windows service"))
+}
+
+fn windows_service_details(name: &str) -> String {
+    run_powershell(
+        &format!("Get-Service -Name \"{name}\" | Format-List *"),
+        160,
+    )
+}
+
+fn linux_service_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+if command -v systemctl >/dev/null 2>&1; then
+  printf 'Unit\tLoad\tActive\tSub\tDescription\n'
+  systemctl list-units --type=service --all --no-legend --no-pager | awk '{ description=""; for(i=5; i<=NF; i++) description=description (i>5?" ":"") $i; printf "%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, description }'
+else
+  printf 'Unit\tLoad\tActive\tSub\tDescription\n-\t-\t-\t-\tSystemctl not found\n'
+fi
+"#,
+        ],
+        600,
+    )
+}
+
+fn linux_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    let output = match action {
+        "start" => run_command("systemctl", &["start", name], 40),
+        "stop" => run_command("systemctl", &["stop", name], 40),
+        "restart" => run_command("systemctl", &["restart", name], 40),
+        "enable" => run_command("systemctl", &["enable", name], 40),
+        "disable" => run_command("systemctl", &["disable", name], 40),
+        "delete" => {
+            run_command("systemctl", &["stop", name], 40);
+            run_command("systemctl", &["disable", name], 40);
+            return Ok(());
+        }
+        _ => return Err(format!("unsupported Linux service action: {action}")),
+    };
+    startup_command_result(output, &format!("{action} Linux service"))
+}
+
+fn linux_service_details(name: &str) -> String {
+    run_command("systemctl", &["show", name, "--no-pager"], 160)
+}
+
+fn macos_service_manager() -> String {
+    run_command(
+        "sh",
+        &[
+            "-lc",
+            r#"
+printf 'Name\tStatus\tPID\n'
+if command -v launchctl >/dev/null 2>&1; then
+  launchctl list 2>/dev/null | while IFS=$'\t' read -r pid status label; do
+    [ -z "$label" ] && continue
+    [ "$label" = "PID" ] && continue
+    if [ "$pid" = "-" ]; then
+      pid_display="-"
+    else
+      pid_display="$pid"
+    fi
+    case "$status" in
+      0) status_display="Loaded" ;;
+      -) status_display="Loaded" ;;
+      78) status_display="Unloaded" ;;
+      *) status_display="Error($status)" ;;
+    esac
+    printf '%s\t%s\t%s\n' "$label" "$status_display" "$pid_display"
+  done
+else
+  printf '-\t-\t-\n'
+fi
+"#,
+        ],
+        60,
+    )
+}
+
+fn macos_apply_service_action(name: &str, action: &str) -> Result<(), String> {
+    match action {
+        "start" => {
+            let output = run_command("launchctl", &["kickstart", "-kp", "system/", name], 30);
+            startup_command_result(output, "start macOS service")
+        }
+        "stop" => {
+            let output = run_command("launchctl", &["kill", "SIGTERM", &format!("system/{}", name)], 30);
+            startup_command_result(output, "stop macOS service")
+        }
+        "restart" => {
+            let output = run_command("launchctl", &["kickstart", "-kp", "system/", name], 30);
+            startup_command_result(output, "restart macOS service")
+        }
+        "enable" => {
+            let output = run_command("launchctl", &["enable", &format!("system/{}", name)], 30);
+            startup_command_result(output, "enable macOS service")
+        }
+        "disable" => {
+            let output = run_command("launchctl", &["disable", &format!("system/{}", name)], 30);
+            startup_command_result(output, "disable macOS service")
+        }
+        "delete" => {
+            let unload = run_command("launchctl", &["unload", "-w", &format!("/Library/LaunchDaemons/{}.plist", name)], 30);
+            let _ = startup_command_result(unload, "unload macOS service");
+            let plist_path = format!("/Library/LaunchDaemons/{}.plist", name);
+            let _ = std::fs::remove_file(&plist_path);
+            Ok(())
+        }
+        _ => Err(format!("unsupported macOS service action: {action}")),
+    }
+}
+
+fn macos_service_details(name: &str) -> String {
+    run_command("launchctl", &["list", name], 60)
 }
 
 fn startup_manager(payload: &str) -> String {
@@ -677,9 +924,7 @@ startup_status() {
 for dir in \
   "$HOME/Library/LaunchAgents" \
   "/Library/LaunchAgents" \
-  "/Library/LaunchDaemons" \
-  "/System/Library/LaunchAgents" \
-  "/System/Library/LaunchDaemons"
+  "/Library/LaunchDaemons" 
 do
   [ -d "$dir" ] || continue
   case "$dir" in
@@ -1556,11 +1801,16 @@ fn startup_command_result(output: String, context: &str) -> Result<(), String> {
     let lower = text.to_ascii_lowercase();
     if lower.starts_with("powershell exited with error")
         || lower.starts_with("systemctl exited with error")
+        || lower.starts_with("launchctl exited with error")
+        || lower.starts_with("sh exited with error")
         || lower.starts_with("powershell failed:")
         || lower.starts_with("systemctl failed:")
+        || lower.starts_with("launchctl failed:")
+        || lower.starts_with("sh failed:")
         || lower.contains(" timed out")
     {
-        Err(format!("{context} failed: {text}"))
+        let inline_text = text.replace(['\r', '\n', '\t'], " ");
+        Err(format!("{context} failed: {inline_text}"))
     } else {
         Ok(())
     }

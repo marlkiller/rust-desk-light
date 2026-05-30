@@ -41,6 +41,7 @@ pub fn handle_command(command: &CommandKind, payload: &str, gui_mode: bool) -> C
         | CommandKind::ProcessManager
         | CommandKind::WindowManager
         | CommandKind::StartupManager
+        | CommandKind::ServiceManager
         | CommandKind::RegistryManager
         | CommandKind::DriverManager
         | CommandKind::EventLog

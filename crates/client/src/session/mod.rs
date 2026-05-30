@@ -107,9 +107,16 @@ fn update_client(request: &SessionRequest) -> String {
         Ok(()) => {
             schedule_exit(DEFAULT_RESTART_DELAY_MS, 0);
             let mut lines = vec![
-                "message=client restart scheduled".to_string(),
+                if running_as_service() {
+                    "message=client restart scheduled (service mode)".to_string()
+                } else {
+                    "message=client restart scheduled".to_string()
+                },
                 format!("path={}", clean_value(&current_exe.display().to_string())),
             ];
+            if running_as_service() {
+                lines.push("restart_mode=service".to_string());
+            }
             if let Some(update_path) = request.update_path.as_deref() {
                 lines.push(format!(
                     "update_path={}",
@@ -370,18 +377,71 @@ fn config_file_restart_args(config_path: &Path) -> Vec<OsString> {
     ]
 }
 
-#[cfg(target_os = "windows")]
-fn schedule_restart(current_exe: &Path, args: &[OsString]) -> io::Result<()> {
-    let start_process = powershell_start_process(current_exe, args);
-    let script = format!(
-        "$pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; {}",
-        std::process::id(),
-        start_process
-    );
-    spawn_powershell(&script)
+fn running_as_service() -> bool {
+    std::env::args().any(|a| a == "--service")
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "windows")]
+fn schedule_restart(current_exe: &Path, args: &[OsString]) -> io::Result<()> {
+    if running_as_service() {
+        let script = format!(
+            "$pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; Restart-Service -Name '{svc}' -Force -ErrorAction Stop",
+            std::process::id(),
+            svc = crate::windows_service::SERVICE_NAME
+        );
+        spawn_powershell(&script)
+    } else {
+        let start_process = powershell_start_process(current_exe, args);
+        let script = format!(
+            "$pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; {}",
+            std::process::id(),
+            start_process
+        );
+        spawn_powershell(&script)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn schedule_restart(current_exe: &Path, args: &[OsString]) -> io::Result<()> {
+    if running_as_service() {
+        let svc = crate::remote_management::LINUX_SYSTEMD_SERVICE_NAME;
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; systemctl --user start {} || systemctl start {}",
+            std::process::id(), svc, svc
+        );
+        spawn_shell(&script)
+    } else {
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; exec {} {}",
+            std::process::id(),
+            sh_quote(current_exe.as_os_str()),
+            sh_args(args)
+        );
+        spawn_shell(&script)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_restart(current_exe: &Path, args: &[OsString]) -> io::Result<()> {
+    if running_as_service() {
+        let label = crate::remote_management::MACOS_LAUNCH_AGENT_LABEL;
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; launchctl kickstart -k system/{}",
+            std::process::id(), label
+        );
+        spawn_shell(&script)
+    } else {
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; exec {} {}",
+            std::process::id(),
+            sh_quote(current_exe.as_os_str()),
+            sh_args(args)
+        );
+        spawn_shell(&script)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "linux")))]
 fn schedule_restart(current_exe: &Path, args: &[OsString]) -> io::Result<()> {
     let script = format!(
         "while kill -0 {} 2>/dev/null; do sleep 0.2; done; exec {} {}",
@@ -398,25 +458,122 @@ fn schedule_replace_and_restart(
     update_path: &Path,
     args: &[OsString],
 ) -> io::Result<()> {
-    let start_process = powershell_start_process(current_exe, args);
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; $copied=$false; for ($i=0; $i -lt 60; $i++) {{ try {{ Copy-Item -LiteralPath {} -Destination {} -Force; $copied=$true; break }} catch {{ Start-Sleep -Milliseconds 250 }} }}; {}",
-        std::process::id(),
-        powershell_string(&update_path.display().to_string()),
-        powershell_string(&current_exe.display().to_string()),
-        start_process
-    );
-    spawn_powershell(&script)
+    if running_as_service() {
+        let svc = crate::windows_service::SERVICE_NAME;
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $pidToWait={}; \
+             Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; \
+             Stop-Service -Name '{svc}' -Force -ErrorAction Stop; \
+             $copied=$false; \
+             for ($i=0; $i -lt 60; $i++) {{ \
+                 try {{ \
+                     Copy-Item -LiteralPath {} -Destination {} -Force; \
+                     $copied=$true; \
+                     break \
+                 }} catch {{ \
+                     Start-Sleep -Milliseconds 250 \
+                 }} \
+             }}; \
+             Start-Service -Name '{svc}' -ErrorAction Stop",
+            std::process::id(),
+            powershell_string(&update_path.display().to_string()),
+            powershell_string(&current_exe.display().to_string()),
+        );
+        spawn_powershell(&script)
+    } else {
+        let start_process = powershell_start_process(current_exe, args);
+        let script = format!(
+            "$ErrorActionPreference='Stop'; $pidToWait={}; Wait-Process -Id $pidToWait -ErrorAction SilentlyContinue; $copied=$false; for ($i=0; $i -lt 60; $i++) {{ try {{ Copy-Item -LiteralPath {} -Destination {} -Force; $copied=$true; break }} catch {{ Start-Sleep -Milliseconds 250 }} }}; {}",
+            std::process::id(),
+            powershell_string(&update_path.display().to_string()),
+            powershell_string(&current_exe.display().to_string()),
+            start_process
+        );
+        spawn_powershell(&script)
+    }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn schedule_replace_and_restart(
+    current_exe: &Path,
+    update_path: &Path,
+    args: &[OsString],
+) -> io::Result<()> {
+    if running_as_service() {
+        let svc = crate::remote_management::LINUX_SYSTEMD_SERVICE_NAME;
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; \
+             i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; \
+             systemctl --user start {} || systemctl start {}",
+            std::process::id(),
+            sh_quote(update_path.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            svc, svc
+        );
+        spawn_shell(&script)
+    } else {
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; \
+             i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; \
+             exec {} {}",
+            std::process::id(),
+            sh_quote(update_path.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_args(args)
+        );
+        spawn_shell(&script)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_replace_and_restart(
+    current_exe: &Path,
+    update_path: &Path,
+    args: &[OsString],
+) -> io::Result<()> {
+    if running_as_service() {
+        let label = crate::remote_management::MACOS_LAUNCH_AGENT_LABEL;
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; \
+             i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; \
+             launchctl kickstart -k system/{}",
+            std::process::id(),
+            sh_quote(update_path.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            label
+        );
+        spawn_shell(&script)
+    } else {
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 0.2; done; \
+             i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; \
+             exec {} {}",
+            std::process::id(),
+            sh_quote(update_path.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_quote(current_exe.as_os_str()),
+            sh_args(args)
+        );
+        spawn_shell(&script)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_os = "linux")))]
 fn schedule_replace_and_restart(
     current_exe: &Path,
     update_path: &Path,
     args: &[OsString],
 ) -> io::Result<()> {
     let script = format!(
-        "while kill -0 {} 2>/dev/null; do sleep 0.2; done; i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; exec {} {}",
+        "while kill -0 {} 2>/dev/null; do sleep 0.2; done; \
+         i=0; while [ \"$i\" -lt 60 ]; do cp {} {} && chmod +x {} && break; i=$((i + 1)); sleep 0.25; done; \
+         exec {} {}",
         std::process::id(),
         sh_quote(update_path.as_os_str()),
         sh_quote(current_exe.as_os_str()),

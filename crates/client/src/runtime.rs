@@ -94,7 +94,7 @@ impl Config {
         Self::load(parsed.overrides)
     }
 
-    fn load(overrides: EndpointOverrides) -> Result<Self, rdl_config::ConfigError> {
+    pub(crate) fn load(overrides: EndpointOverrides) -> Result<Self, rdl_config::ConfigError> {
         let loaded = rdl_config::load_endpoint_config(ConfigKind::Client, &overrides)?;
         Ok(Self {
             ip: loaded.endpoint.ip,

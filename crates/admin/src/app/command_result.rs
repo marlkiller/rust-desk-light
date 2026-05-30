@@ -47,6 +47,7 @@ pub(super) struct CommandResultWindow {
     pub(super) process_kill_confirm: Arc<Mutex<Option<ProcessKillConfirm>>>,
     pub(super) process_kill_requested: Arc<Mutex<Option<String>>>,
     pub(super) startup_delete_confirm: Arc<Mutex<Option<StartupDeleteConfirm>>>,
+    pub(super) service_delete_confirm: Arc<Mutex<Option<ServiceDeleteConfirm>>>,
     pub(super) startup_action_requested: Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_requested: Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_pending: Arc<AtomicBool>,
@@ -70,6 +71,12 @@ pub(super) struct StartupDeleteConfirm {
     payload: String,
     name: String,
     source: String,
+}
+
+#[derive(Clone)]
+pub(super) struct ServiceDeleteConfirm {
+    payload: String,
+    name: String,
 }
 
 #[derive(Clone)]
@@ -116,6 +123,19 @@ pub(super) fn update_command_window(
         if let Some(message) = startup_action_error_message(&detail) {
             window.status = CommandResultStatus::Failed;
             window.status_notice = Some(format!("{}: {message}", t("Startup action failed")));
+            if parse_result_table(&window.detail).is_some() {
+                window.hostname = hostname;
+                window.username = username;
+                window.open = true;
+                return;
+            }
+        } else {
+            window.status_notice = None;
+        }
+    } else if matches!(window.command, CommandKind::ServiceManager) {
+        if let Some(message) = plain_action_error_message(&detail) {
+            window.status = CommandResultStatus::Failed;
+            window.status_notice = Some(format!("{}: {message}", t("Service action failed")));
             if parse_result_table(&window.detail).is_some() {
                 window.hostname = hostname;
                 window.username = username;
@@ -300,6 +320,13 @@ fn plain_action_error_message(detail: &str) -> Option<String> {
     if text.is_empty() {
         return None;
     }
+
+    if let Some(msg) = payload_field(text, "message") {
+        if text.starts_with("service_manager_error") {
+            return Some(msg.replace(['\t', '\r', '\n'], " "));
+        }
+    }
+
     let lower = text.to_ascii_lowercase();
     if lower.contains(" failed:")
         || lower.contains(" exited with error")
@@ -318,6 +345,7 @@ fn command_expects_result_table(command: &CommandKind) -> bool {
         CommandKind::ProcessManager
             | CommandKind::WindowManager
             | CommandKind::StartupManager
+            | CommandKind::ServiceManager
             | CommandKind::RegistryManager
             | CommandKind::DriverManager
             | CommandKind::EventLog
@@ -378,6 +406,7 @@ pub(super) struct CommandResultRenderState<'a> {
     pub(super) process_kill_confirm: &'a Arc<Mutex<Option<ProcessKillConfirm>>>,
     pub(super) process_kill_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) startup_delete_confirm: &'a Arc<Mutex<Option<StartupDeleteConfirm>>>,
+    pub(super) service_delete_confirm: &'a Arc<Mutex<Option<ServiceDeleteConfirm>>>,
     pub(super) startup_action_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_requested: &'a Arc<Mutex<Option<String>>>,
     pub(super) startup_detail_pending: &'a Arc<AtomicBool>,
@@ -395,16 +424,18 @@ pub(super) fn render_command_result(
 ) {
     if command_expects_result_table(command) {
         let table = parse_result_table(detail);
-        let startup_client_status = if matches!(command, CommandKind::StartupManager) {
-            Some(
-                table
-                    .as_ref()
-                    .map(startup_client_autostart_status)
-                    .unwrap_or(StartupClientAutostartStatus::Unknown),
-            )
-        } else {
-            None
-        };
+        let startup_client_status =
+            if matches!(command, CommandKind::StartupManager | CommandKind::ServiceManager) {
+                Some(
+                    table
+                        .as_ref()
+                        .map(|t| startup_client_autostart_status(command, t))
+                        .unwrap_or(StartupClientAutostartStatus::Unknown),
+                )
+            } else {
+                None
+            };
+
         render_table_toolbar(
             ui,
             command,
@@ -447,9 +478,13 @@ pub(super) fn render_command_result(
                 state.startup_delete_confirm,
                 state.startup_action_requested,
             );
-            render_startup_detail_dialog(ui, state.startup_detail, state.startup_detail_pending);
-            return;
+            render_service_delete_confirm(
+                ui,
+                state.service_delete_confirm,
+                state.startup_action_requested,
+            );
         }
+        render_startup_detail_dialog(ui, state.startup_detail, state.startup_detail_pending);
         return;
     }
     if matches!(command, CommandKind::PerformanceMonitor) {
@@ -895,7 +930,9 @@ fn render_table_toolbar(
         {
             refresh_requested.store(true, Ordering::Relaxed);
         }
+
         if matches!(command, CommandKind::StartupManager) {
+            ui.separator();
             if ui
                 .add_enabled(!refresh_in_flight, egui::Button::new(t("Add Item")))
                 .clicked()
@@ -910,6 +947,26 @@ fn render_table_toolbar(
                     ui,
                     startup_client_status.unwrap_or(StartupClientAutostartStatus::Unknown),
                     startup_action_requested,
+                    "enable_client_autostart",
+                    "disable_client_autostart",
+                    "Enable",
+                    "Disable",
+                    "Client Autostart",
+                );
+            });
+        }
+        if matches!(command, CommandKind::ServiceManager) {
+            ui.separator();
+            ui.add_enabled_ui(!refresh_in_flight, |ui| {
+                render_client_autostart_menu(
+                    ui,
+                    startup_client_status.unwrap_or(StartupClientAutostartStatus::Unknown),
+                    startup_action_requested,
+                    "enable_client_service",
+                    "disable_client_service",
+                    "Enable",
+                    "Disable",
+                    "Client Service",
                 );
             });
         }
@@ -920,10 +977,15 @@ fn render_client_autostart_menu(
     ui: &mut egui::Ui,
     status: StartupClientAutostartStatus,
     startup_action_requested: &Arc<Mutex<Option<String>>>,
+    enable_action: &str,
+    disable_action: &str,
+    enable_label: &str,
+    disable_label: &str,
+    label_prefix: &str,
 ) {
-    let style = startup_client_autostart_style(status);
+    let style = startup_client_autostart_style(status, label_prefix);
     let button = egui::Button::new(
-        egui::RichText::new(t(style.label))
+        egui::RichText::new(t(&style.label))
             .size(12.0)
             .color(style.text),
     )
@@ -931,16 +993,21 @@ fn render_client_autostart_menu(
     .stroke(egui::Stroke::new(1.0, style.stroke));
 
     let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-        if ui.button(t("Enable")).clicked() {
-            queue_startup_action(startup_action_requested, "enable_client_autostart");
+        if ui.button(t(enable_label)).clicked() {
+            queue_startup_action(startup_action_requested, enable_action);
             ui.close();
         }
-        if ui.button(t("Disable")).clicked() {
-            queue_startup_action(startup_action_requested, "disable_client_autostart");
+        if ui.button(t(disable_label)).clicked() {
+            queue_startup_action(startup_action_requested, disable_action);
             ui.close();
         }
     });
-    response.on_hover_text(t("Configure login autostart for this client"));
+    let hover_text = if label_prefix == "Client Service" {
+        t("Configure system service for this client")
+    } else {
+        t("Configure login autostart for this client")
+    };
+    response.on_hover_text(hover_text);
 }
 
 fn queue_startup_action(startup_action_requested: &Arc<Mutex<Option<String>>>, action: &str) {
@@ -1262,8 +1329,18 @@ fn render_result_table(
                             startup_row_delete_payload(command, &table.headers, &row_data.cells);
                         let startup_detail_payload =
                             startup_row_details_payload(command, &table.headers, &row_data.cells);
+                        let service_detail_payload = if matches!(command, CommandKind::ServiceManager) {
+                            table_value(&table.headers, &row_data.cells, "name")
+                                .or_else(|| table_value(&table.headers, &row_data.cells, "unit"))
+                                .or_else(|| table_value(&table.headers, &row_data.cells, "label"))
+                                .map(|name| service_detail_payload(name))
+                        } else {
+                            None
+                        };
                         let startup_row_fill =
                             startup_client_row_fill(command, &table.headers, &row_data.cells);
+                        let service_actions =
+                            service_row_actions(command, &table.headers, &row_data.cells);
 
                         for (index, _header) in table.headers.iter().enumerate() {
                             let cell = row_data.cells.get(index).map(String::as_str).unwrap_or("");
@@ -1291,6 +1368,8 @@ fn render_result_table(
                             let startup_action = startup_action.clone();
                             let startup_delete_payload = startup_delete_payload.clone();
                             let startup_detail_payload = startup_detail_payload.clone();
+                            let service_actions = service_actions.clone();
+                            let service_detail_payload = service_detail_payload.clone();
                             cell_response.context_menu(|ui| {
                                 if ui.button(t("Copy Cell")).clicked() {
                                     ui.ctx().copy_text(cell_text.clone());
@@ -1309,6 +1388,19 @@ fn render_result_table(
                                         if let Ok(mut value) = state.startup_detail_requested.lock()
                                         {
                                             *value = Some(startup_detail_payload);
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                                if let Some(service_detail_payload) = service_detail_payload.clone()
+                                {
+                                    if ui.button(t("Details")).clicked() {
+                                        if let Ok(mut selected) = state.table_selected_row.lock() {
+                                            *selected = Some(row_key.clone());
+                                        }
+                                        if let Ok(mut value) = state.startup_detail_requested.lock()
+                                        {
+                                            *value = Some(service_detail_payload);
                                         }
                                         ui.close();
                                     }
@@ -1355,6 +1447,43 @@ fn render_result_table(
                                             ));
                                         }
                                         ui.close();
+                                    }
+                                }
+                                if !service_actions.is_empty() {
+                                    ui.separator();
+                                    for action in service_actions {
+                                        if ui.button(t(action.label)).clicked() {
+                                            if let Ok(mut selected) =
+                                                state.table_selected_row.lock()
+                                            {
+                                                *selected = Some(row_key.clone());
+                                            }
+
+                                            if action.label == "Delete Service" {
+                                                if let Ok(mut value) =
+                                                    state.service_delete_confirm.lock()
+                                                {
+                                                    let name = table_value(
+                                                        &table.headers,
+                                                        &row_data.cells,
+                                                        "name",
+                                                    )
+                                                    .unwrap_or_default()
+                                                    .to_string();
+                                                    *value = Some(ServiceDeleteConfirm {
+                                                        payload: action.payload.clone(),
+                                                        name,
+                                                    });
+                                                }
+                                            } else {
+                                                if let Ok(mut value) =
+                                                    state.startup_action_requested.lock()
+                                                {
+                                                    *value = Some(action.payload.clone());
+                                                }
+                                            }
+                                            ui.close();
+                                        }
                                     }
                                 }
                             });
@@ -1508,6 +1637,62 @@ fn render_startup_delete_confirm(
         });
 }
 
+fn render_service_delete_confirm(
+    ui: &mut egui::Ui,
+    service_delete_confirm: &Arc<Mutex<Option<ServiceDeleteConfirm>>>,
+    service_action_requested: &Arc<Mutex<Option<String>>>,
+) {
+    let pending = service_delete_confirm
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let Some(pending) = pending else {
+        return;
+    };
+
+    egui::Window::new(t("Confirm Delete Service"))
+        .collapsible(false)
+        .resizable(false)
+        .default_width(460.0)
+        .show(ui.ctx(), |ui| {
+            ui.label(
+                egui::RichText::new(t("Delete this service?"))
+                    .size(12.0)
+                    .color(crate::theme::palette().muted),
+            );
+            if !pending.name.trim().is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(crate::theme::muted_text(t("Name")));
+                    ui.label(crate::theme::body_text(&pending.name));
+                });
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new(t("Delete Service"))
+                            .color(color_bad())
+                            .strong(),
+                    ))
+                    .clicked()
+                {
+                    if let Ok(mut value) = service_action_requested.lock() {
+                        *value = Some(pending.payload.clone());
+                    }
+                    if let Ok(mut value) = service_delete_confirm.lock() {
+                        *value = None;
+                    }
+                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                }
+                if ui.button(t("Cancel")).clicked() {
+                    if let Ok(mut value) = service_delete_confirm.lock() {
+                        *value = None;
+                    }
+                }
+            });
+        });
+}
+
 fn startup_detail_body(detail: &str) -> String {
     detail
         .lines()
@@ -1534,7 +1719,7 @@ fn render_startup_detail_dialog(
     let title = snapshot
         .as_ref()
         .map(|dialog| dialog.title.clone())
-        .unwrap_or_else(|| t("Startup Item Details").to_string());
+        .unwrap_or_else(|| t("Details").to_string());
     let detail = snapshot
         .as_ref()
         .map(|dialog| dialog.detail.clone())
@@ -1549,7 +1734,7 @@ fn render_startup_detail_dialog(
         .show(ui.ctx(), |ui| {
             if pending {
                 ui.label(
-                    egui::RichText::new(t("Loading startup item details..."))
+                    egui::RichText::new(t("Loading..."))
                         .size(12.0)
                         .color(crate::theme::palette().muted),
                 );
@@ -1571,7 +1756,7 @@ fn render_startup_detail_dialog(
         } else if open && pending {
             *value = Some(StartupDetailDialog {
                 open,
-                title: t("Startup Item Details").to_string(),
+                title: t("Details").to_string(),
                 detail: String::new(),
             });
         }
@@ -1611,9 +1796,8 @@ enum StartupClientAutostartStatus {
     Unknown,
 }
 
-#[derive(Clone, Copy)]
 struct StartupClientAutostartStyle {
-    label: &'static str,
+    label: String,
     fill: egui::Color32,
     stroke: egui::Color32,
     text: egui::Color32,
@@ -1621,23 +1805,25 @@ struct StartupClientAutostartStyle {
 
 fn startup_client_autostart_style(
     status: StartupClientAutostartStatus,
+    label_prefix: &str,
 ) -> StartupClientAutostartStyle {
     let palette = crate::theme::palette();
+    let label = |suffix: &str| format!("{label_prefix}: {suffix}");
     match status {
         StartupClientAutostartStatus::Enabled => StartupClientAutostartStyle {
-            label: "Client Autostart: On",
+            label: label("On"),
             fill: palette.success_bg,
             stroke: palette.border,
             text: palette.good,
         },
         StartupClientAutostartStatus::Disabled => StartupClientAutostartStyle {
-            label: "Client Autostart: Off",
+            label: label("Off"),
             fill: palette.danger_bg,
             stroke: palette.border,
             text: palette.bad,
         },
         StartupClientAutostartStatus::Unknown => StartupClientAutostartStyle {
-            label: "Client Autostart: Unknown",
+            label: label("Unknown"),
             fill: palette.neutral_bg,
             stroke: palette.border,
             text: palette.muted,
@@ -1645,7 +1831,10 @@ fn startup_client_autostart_style(
     }
 }
 
-fn startup_client_autostart_status(table: &ResultTable) -> StartupClientAutostartStatus {
+fn startup_client_autostart_status(
+    command: &CommandKind,
+    table: &ResultTable,
+) -> StartupClientAutostartStatus {
     let mut saw_enabled = false;
     let mut saw_disabled = false;
     let mut saw_unknown = false;
@@ -1653,7 +1842,7 @@ fn startup_client_autostart_status(table: &ResultTable) -> StartupClientAutostar
         if !startup_row_is_client_autostart(&table.headers, row) {
             continue;
         }
-        match startup_row_status(&table.headers, row) {
+        match startup_row_status(command, &table.headers, row) {
             Some(StartupClientAutostartStatus::Enabled) => saw_enabled = true,
             Some(StartupClientAutostartStatus::Disabled) => saw_disabled = true,
             Some(StartupClientAutostartStatus::Unknown) => saw_unknown = true,
@@ -1677,25 +1866,53 @@ fn startup_client_row_fill(
     headers: &[String],
     row: &[String],
 ) -> Option<egui::Color32> {
-    if !matches!(command, CommandKind::StartupManager)
+    if !matches!(command, CommandKind::StartupManager | CommandKind::ServiceManager)
         || !startup_row_is_client_autostart(headers, row)
     {
         return None;
     }
-    let status = startup_row_status(headers, row)?;
+    let status = startup_row_status(command, headers, row)?;
     if status == StartupClientAutostartStatus::Unknown {
         return None;
     }
-    Some(startup_client_autostart_style(status).fill)
+    let label_prefix = if matches!(command, CommandKind::ServiceManager) {
+        "Client Service"
+    } else {
+        "Client Autostart"
+    };
+    Some(startup_client_autostart_style(status, label_prefix).fill)
 }
 
-fn startup_row_status(headers: &[String], row: &[String]) -> Option<StartupClientAutostartStatus> {
+fn startup_row_status(
+    command: &CommandKind,
+    headers: &[String],
+    row: &[String],
+) -> Option<StartupClientAutostartStatus> {
+    if matches!(command, CommandKind::ServiceManager) {
+        if let Some(active) = table_value(headers, row, "active") {
+            return match active.trim().to_ascii_lowercase().as_str() {
+                "active" => Some(StartupClientAutostartStatus::Enabled),
+                "inactive" => Some(StartupClientAutostartStatus::Disabled),
+                _ => None,
+            };
+        }
+    }
+
+    if let Some(start_type) = table_value(headers, row, "starttype") {
+        let lower = start_type.trim().to_ascii_lowercase();
+        if lower.contains("automatic") || lower.contains("enabled") || lower.contains("auto") {
+            return Some(StartupClientAutostartStatus::Enabled);
+        } else if lower.contains("disabled") || lower.contains("manual") {
+            return Some(StartupClientAutostartStatus::Disabled);
+        }
+    }
+
     let status = table_value(headers, row, "status")?;
     match status.trim().to_ascii_lowercase().as_str() {
-        "enabled" | "registry" | "file" | "present" | "desktopentry" => {
+        "enabled" | "registry" | "file" | "present" | "desktopentry" | "running" | "loaded" => {
             Some(StartupClientAutostartStatus::Enabled)
         }
-        "disabled" | "mismatch" | "outdated" | "stale" => {
+        "disabled" | "mismatch" | "outdated" | "stale" | "stopped" => {
             Some(StartupClientAutostartStatus::Disabled)
         }
         "error" => Some(StartupClientAutostartStatus::Unknown),
@@ -1704,7 +1921,10 @@ fn startup_row_status(headers: &[String], row: &[String]) -> Option<StartupClien
 }
 
 fn startup_row_is_client_autostart(headers: &[String], row: &[String]) -> bool {
-    let Some(name) = table_value(headers, row, "name") else {
+    let Some(name) = table_value(headers, row, "name")
+        .or_else(|| table_value(headers, row, "unit"))
+        .or_else(|| table_value(headers, row, "label"))
+    else {
         return false;
     };
     matches!(
@@ -1713,6 +1933,7 @@ fn startup_row_is_client_autostart(headers: &[String], row: &[String]) -> bool {
             | "rustdesklightclientdesktop"
             | "rustdesklightclientdesktopdisabled"
             | "rustdesklightclientservice"
+            | "comrustdesklightclient"
             | "comrustdesklightclientplist"
             | "comrustdesklightclientplistdisabled"
     )
@@ -1728,16 +1949,113 @@ fn compact_startup_identity(value: &str) -> String {
 }
 
 #[derive(Clone)]
-struct StartupRowAction {
+struct CommandRowAction {
     label: &'static str,
     payload: String,
+}
+
+fn service_row_actions(
+    command: &CommandKind,
+    headers: &[String],
+    row: &[String],
+) -> Vec<CommandRowAction> {
+    if !matches!(command, CommandKind::ServiceManager) {
+        return Vec::new();
+    }
+    let name = match table_value(headers, row, "name")
+        .or_else(|| table_value(headers, row, "unit"))
+        .or_else(|| table_value(headers, row, "label"))
+    {
+        Some(name) => name,
+        None => return Vec::new(),
+    };
+
+    let mut actions = Vec::new();
+
+    let status = table_value(headers, row, "status")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let active = table_value(headers, row, "active")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let is_running = status.contains("running")
+        || active == "active"
+        || (status == "0" && table_value(headers, row, "pid").is_some_and(|p| p != "-"));
+    let is_stopped = status.contains("stopped")
+        || active == "inactive"
+        || (status != "-" && !status.is_empty() && status != "0");
+
+    if is_running {
+        actions.push(CommandRowAction {
+            label: "Stop Service",
+            payload: format!("action=stop\nname={name}"),
+        });
+        actions.push(CommandRowAction {
+            label: "Restart Service",
+            payload: format!("action=restart\nname={name}"),
+        });
+    } else if is_stopped {
+        actions.push(CommandRowAction {
+            label: "Start Service",
+            payload: format!("action=start\nname={name}"),
+        });
+    } else if !status.is_empty() && status != "-" {
+        actions.push(CommandRowAction {
+            label: "Start Service",
+            payload: format!("action=start\nname={name}"),
+        });
+        actions.push(CommandRowAction {
+            label: "Stop Service",
+            payload: format!("action=stop\nname={name}"),
+        });
+    }
+
+    // Enable/Disable
+    let start_type = table_value(headers, row, "starttype")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !start_type.is_empty() && start_type != "-" {
+        if start_type.contains("disabled") {
+            actions.push(CommandRowAction {
+                label: "Enable Service",
+                payload: format!("action=enable\nname={name}"),
+            });
+        } else {
+            actions.push(CommandRowAction {
+                label: "Disable Service",
+                payload: format!("action=disable\nname={name}"),
+            });
+        }
+    } else if cfg!(target_os = "linux") && !active.is_empty() && active != "-" {
+        actions.push(CommandRowAction {
+            label: "Enable Service",
+            payload: format!("action=enable\nname={name}"),
+        });
+        actions.push(CommandRowAction {
+            label: "Disable Service",
+            payload: format!("action=disable\nname={name}"),
+        });
+    }
+
+    // Delete
+    actions.push(CommandRowAction {
+        label: "Delete Service",
+        payload: format!("action=delete\nname={name}"),
+    });
+
+    actions
+}
+
+fn service_detail_payload(name: &str) -> String {
+    format!("action=details\nname={name}")
 }
 
 fn startup_row_action(
     command: &CommandKind,
     headers: &[String],
     row: &[String],
-) -> Option<StartupRowAction> {
+) -> Option<CommandRowAction> {
     if !matches!(command, CommandKind::StartupManager) {
         return None;
     }
@@ -1763,7 +2081,7 @@ fn startup_row_action(
 
     let scope = table_value(headers, row, "scope").unwrap_or_default();
     let startup_command = table_value(headers, row, "command").unwrap_or_default();
-    Some(StartupRowAction {
+    Some(CommandRowAction {
         label,
         payload: startup_action_payload(action, scope, source, name, startup_command),
     })
@@ -2107,6 +2425,7 @@ fn table_column_spec(command: &CommandKind, header: &str) -> TableColumnSpec {
         CommandKind::ProcessManager => process_column_spec(header),
         CommandKind::WindowManager => window_column_spec(header),
         CommandKind::StartupManager => startup_column_spec(header),
+        CommandKind::ServiceManager => service_column_spec(header),
         CommandKind::DriverManager => driver_column_spec(header),
         CommandKind::EventLog => event_log_column_spec(header),
         CommandKind::ActiveConnections => connection_column_spec(header),
@@ -2153,6 +2472,18 @@ fn startup_column_spec(header: &str) -> TableColumnSpec {
         "scope" | "source" | "status" => column_spec(86.0, 150.0, 0.0, egui::Align::Min),
         "name" => column_spec(150.0, 320.0, 0.8, egui::Align::Min),
         "command" => column_spec(220.0, 720.0, 2.6, egui::Align::Min),
+        _ => default_column_spec(header),
+    }
+}
+
+fn service_column_spec(header: &str) -> TableColumnSpec {
+    match normalized_table_header(header).as_str() {
+        "pid" => column_spec(42.0, 70.0, 0.0, egui::Align::Max),
+        "status" | "active" | "sub" | "load" | "starttype" => {
+            column_spec(70.0, 115.0, 0.0, egui::Align::Min)
+        }
+        "name" | "unit" | "label" => column_spec(110.0, 260.0, 0.8, egui::Align::Min),
+        "displayname" | "description" => column_spec(220.0, 720.0, 2.2, egui::Align::Min),
         _ => default_column_spec(header),
     }
 }

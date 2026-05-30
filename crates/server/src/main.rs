@@ -1,3 +1,21 @@
+#[cfg(debug_assertions)]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        {
+            let _ = format_args!($($arg)*);
+        }
+    };
+}
+
 use geoip::GeoIpLocator;
 use rdl_protocol::{
     now_epoch_ms, read_envelope, AudioSource, ClientInfo, FileTransferAction,
@@ -1043,6 +1061,7 @@ fn maintain_peers(peers: &mut HashMap<usize, Peer>) {
             && now.saturating_sub(peer.last_ping_epoch_ms) >= HEARTBEAT_INTERVAL_MS
         {
             peer.last_ping_epoch_ms = now;
+            debug_log!("Sending Ping to peer #{peer_id}");
             let _ = peer.sender.send(Message::Ping);
         }
         if now.saturating_sub(peer.last_seen_epoch_ms) > STALE_PEER_MS {
